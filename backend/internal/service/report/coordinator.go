@@ -25,6 +25,7 @@ var ErrReportDeliveryModeUnsupported = errors.New("report delivery requires a se
 
 // DeliveryStore is the durable report scheduling and routing boundary.
 type DeliveryStore interface {
+	SetReportBatchRecipient(context.Context, domain.ProjectID, string, domain.SessionID) error
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListPendingReportSchedule(context.Context, int64) ([]domain.ReportRecord, error)
@@ -177,6 +178,9 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	if err != nil || len(batch.Reports) == 0 {
 		return err
 	}
+	if err := c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target.ID); err != nil {
+		return c.release(ctx, batch, err)
+	}
 	if batch.hasState(domain.ReportStuck) {
 		interrupted := false
 		var nextInterrupt time.Time
@@ -260,7 +264,14 @@ func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.Sessio
 	if rec.Kind != domain.KindOrchestrator || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
 		return PreparedBatch{}, nil
 	}
-	return c.claim(ctx, rec.ProjectID)
+	batch, err := c.claim(ctx, rec.ProjectID)
+	if err == nil && len(batch.Reports) > 0 {
+		err = c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target)
+		if err != nil {
+			return PreparedBatch{}, c.release(ctx, batch, err)
+		}
+	}
+	return batch, err
 }
 
 // AcceptPiggyback acknowledges reports after the combined user turn is accepted.

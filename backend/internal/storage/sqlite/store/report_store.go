@@ -64,6 +64,8 @@ func (s *Store) CreateReport(ctx context.Context, rec domain.ReportRecord) (doma
 			if rec.State == domain.ReportNeedsInput || rec.State == domain.ReportStuck {
 				if rec.State == domain.ReportNeedsInput {
 					story.Question = rec.Note
+					story.QuestionEventID = "report-" + rec.ID
+					story.QuestionRequesterSessionID = rec.SessionID
 				} else {
 					story.BlockedReason = rec.Note
 				}
@@ -371,7 +373,7 @@ func orderedReportRows(rows []gen.Report) []gen.Report {
 
 func reportFromGen(r gen.Report) domain.ReportRecord {
 	return domain.ReportRecord{
-		StoryID: r.StoryID.String, ClientReportID: r.ClientReportID.String,
+		RecipientSessionID: domain.SessionID(r.RecipientSessionID.String), StoryID: r.StoryID.String, ClientReportID: r.ClientReportID.String,
 		ID: r.ID, SessionID: domain.SessionID(r.SessionID), ProjectID: domain.ProjectID(r.ProjectID),
 		RecipientProjectID: domain.ProjectID(r.RecipientProjectID.String),
 		State:              domain.ReportState(r.State), Note: r.Note, Message: r.Message, CreatedAt: r.CreatedAt,
@@ -381,4 +383,18 @@ func reportFromGen(r gen.Report) domain.ReportRecord {
 		AcknowledgedAt: timeFromNull(r.AcknowledgedAt), LastError: r.LastError,
 		DeliveryBatchID: r.DeliveryBatchID,
 	}
+}
+
+// SetReportBatchRecipient preserves the actual destination chosen for this delivery attempt.
+func (s *Store) SetReportBatchRecipient(ctx context.Context, project domain.ProjectID, token string, recipient domain.SessionID) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	count, err := s.qw.SetReportBatchRecipient(ctx, gen.SetReportBatchRecipientParams{ProjectID: sql.NullString{String: string(project), Valid: true}, ClaimToken: token, RecipientSessionID: sql.NullString{String: string(recipient), Valid: true}})
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return domain.ErrInvalidReport
+	}
+	return nil
 }

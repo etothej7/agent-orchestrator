@@ -603,6 +603,7 @@ type Report struct {
 	RecipientProjectID sql.NullString
 	StoryID            sql.NullString
 	ClientReportID     sql.NullString
+	RecipientSessionID sql.NullString
 }
 
 type ReportOutput struct {

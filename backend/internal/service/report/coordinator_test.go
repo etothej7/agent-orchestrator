@@ -29,6 +29,9 @@ func TestCoordinatorFixedFallbackAndSettlementBatch(t *testing.T) {
 	if len(delivery.submissions) != 1 || !strings.Contains(delivery.submissions[0].message, "first") || !strings.Contains(delivery.submissions[0].message, "second") {
 		t.Fatalf("submission = %#v, want one shared batch", delivery.submissions)
 	}
+	if store.reports[0].RecipientSessionID != "orch" {
+		t.Fatalf("lost actual recipient: %+v", store.reports[0])
+	}
 	if store.acked != 2 {
 		t.Fatalf("acknowledged = %d, want 2", store.acked)
 	}
@@ -294,5 +297,16 @@ func (d *coordinatorDelivery) Submit(_ context.Context, target domain.SessionID,
 }
 func (d *coordinatorDelivery) Interrupt(_ context.Context, target domain.SessionID) error {
 	d.interrupts = append(d.interrupts, target)
+	return nil
+}
+
+func (s *coordinatorStore) SetReportBatchRecipient(_ context.Context, project domain.ProjectID, token string, recipient domain.SessionID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.reports {
+		if s.reports[i].DeliveryProjectID() == project && s.reports[i].ClaimToken == token {
+			s.reports[i].RecipientSessionID = recipient
+		}
+	}
 	return nil
 }

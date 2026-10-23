@@ -17,7 +17,7 @@ type storyMessenger struct{ messages []ports.ChatUserMessage }
 
 func (m *storyMessenger) SteerOrSend(_ context.Context, _ domain.SessionID, msg ports.ChatUserMessage, _ bool) (chatsvc.SteerOrSendResult, error) {
 	m.messages = append(m.messages, msg)
-	return chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "turn-" + msg.ClientMessageID}}, nil
+	return chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "turn-" + msg.ClientMessageID, State: domain.TurnStateCompleted}}, nil
 }
 
 func TestStoryIsolationCompletionAndReopen(t *testing.T) {
@@ -75,6 +75,9 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 	if _, err := apply("one", "done", "", "", "", "sha", ""); err == nil {
 		t.Fatal("premature done accepted")
 	}
+	if _, err := apply("one", "implementation", reviewer.ID, "", "", "sha", ""); err == nil {
+		t.Fatal("reviewer authored own implementation")
+	}
 	if _, err := apply("one", "implementation", worker.ID, "", "", "sha", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +123,28 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, kind := range []string{"testing", "review_passed"} {
+		actor := worker.ID
+		if kind == "review_passed" {
+			actor = reviewer.ID
+		}
+		if _, err := apply("one", kind, actor, "", "", "different-revision", "passed"); err != nil {
+			t.Fatal(err)
+		}
+		row, err := db.GetStory(ctx, "one")
+		if err != nil || row.Status != "in_progress" {
+			t.Fatalf("incompatible passing evidence retained approval: %+v %v", row, err)
+		}
+		if _, err := apply("one", kind, actor, "", "", "sha", "passed"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := apply("one", "ready_for_approval", "", "", "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := apply("one", "done", "", "", "", "sha", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// A worker's done report remains a claim and does not complete its other story.
 	now := time.Now().UTC()
 	report := domain.ReportRecord{ID: "rpt_story", SessionID: worker.ID, ProjectID: "repo", StoryID: "two", ClientReportID: "report-key", State: domain.ReportDone, Note: "Completed worker scope", CreatedAt: now, DeliveryState: domain.ReportPending, AvailableAt: now.Add(domain.ReportSettlementWindow), SettlementDeadline: now.Add(domain.ReportSettlementWindow), RepeatCount: 1}
@@ -133,6 +158,16 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 	if _, err := db.CreateReport(ctx, report); err == nil {
 		t.Fatal("report key leaked to another story")
 	}
+	if _, err := db.ClaimPendingReportBatch(ctx, "repo", "delivery-token", now.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetReportBatchRecipient(ctx, "repo", "delivery-token", reviewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AcknowledgeReportBatch(ctx, "repo", "delivery-token", now.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +176,10 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	delivered, found, err := db.GetReport(ctx, "rpt_story")
+	if err != nil || !found || delivered.RecipientSessionID != reviewer.ID || delivered.DeliveryState != domain.ReportAcknowledged {
+		t.Fatalf("lost durable report recipient: %+v %v", delivered, err)
+	}
 	one, err := db.GetStory(ctx, "one")
 	if err != nil || one.Status != "done" {
 		t.Fatalf("one=%+v err=%v", one, err)
@@ -166,7 +205,7 @@ func TestStoryCommandRetryAndRevisionFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &storysvc.Service{Store: db}
-	cmd := storysvc.Command{ID: "k", StoryID: "s", Revision: 1, Kind: "question", Text: "Need Ed's decision"}
+	cmd := storysvc.Command{ID: "k", StoryID: "s", Revision: 1, Kind: "blocked", Text: "Need Ed's decision"}
 	if _, err := svc.Apply(ctx, cmd); err != nil {
 		t.Fatal(err)
 	}
@@ -240,5 +279,151 @@ func TestNativeReviewRemainsLinkedToItsStory(t *testing.T) {
 	events, err := db.StoryEvents(ctx, "s")
 	if err != nil || len(events) != 3 || events[0].Result != "approved" || events[0].Reference != "fixed-sha" || events[0].Text != "Public independent findings" {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+type controlledStoryMessenger struct {
+	result     chatsvc.SteerOrSendResult
+	err        error
+	recipients []domain.SessionID
+	keys       []string
+}
+
+func (m *controlledStoryMessenger) SteerOrSend(_ context.Context, id domain.SessionID, msg ports.ChatUserMessage, _ bool) (chatsvc.SteerOrSendResult, error) {
+	m.recipients = append(m.recipients, id)
+	m.keys = append(m.keys, msg.ClientMessageID)
+	return m.result, m.err
+}
+
+func TestStoryAnswerRoutesToRequesterAndKeepsQuestionUntilDelivered(t *testing.T) {
+	ctx := context.Background()
+	db := newTestStore(t)
+	seedProject(t, db, "repo")
+	requester, err := db.CreateSession(ctx, sampleRecord("repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "backlog", Revision: 1, Assignments: []domain.StoryAssignment{{SessionID: requester.ID, Role: "manager"}}}); err != nil {
+		t.Fatal(err)
+	}
+	m := &controlledStoryMessenger{result: chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "queued-turn", State: domain.TurnStateQueued}}}
+	svc := &storysvc.Service{Store: db, Messenger: m}
+	if _, err = svc.Apply(ctx, storysvc.Command{ID: "question", StoryID: "s", Revision: 1, Kind: "question", SenderSessionID: requester.ID, Text: "Which color?"}); err != nil {
+		t.Fatal(err)
+	}
+	answer := storysvc.Command{ID: "answer", StoryID: "s", Revision: 2, Kind: "answer", Text: "Blue"}
+	event, err := svc.Apply(ctx, answer)
+	if err != nil || event.Result != "queued" {
+		t.Fatalf("queued answer=%+v %v", event, err)
+	}
+	row, _ := db.GetStory(ctx, "s")
+	if row.Question == "" || row.QuestionRequesterSessionID != requester.ID {
+		t.Fatalf("question lost before delivery: %+v", row)
+	}
+	m.result = chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "queued-turn", State: domain.TurnStateRunning, ProviderTurnID: "private-provider-id"}}
+	event, err = svc.Apply(ctx, answer)
+	if err != nil || event.Result != "delivered" {
+		t.Fatalf("delivered answer=%+v %v", event, err)
+	}
+	row, _ = db.GetStory(ctx, "s")
+	if row.Question != "" {
+		t.Fatalf("delivered answer unresolved: %+v", row)
+	}
+	if len(m.keys) != 2 || m.keys[0] != m.keys[1] || m.recipients[0] != requester.ID || m.recipients[1] != requester.ID {
+		t.Fatalf("wrong target or retry key: %+v", m)
+	}
+
+	row, _ = db.GetStory(ctx, "s")
+	if _, err = svc.Apply(ctx, storysvc.Command{ID: "question-two", StoryID: "s", Revision: row.Revision, Kind: "question", SenderSessionID: requester.ID, Text: "Second decision?"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.GetStory(ctx, "s")
+	m.err = chatsvc.ErrNotChatMode
+	event, err = svc.Apply(ctx, storysvc.Command{ID: "failed-answer", StoryID: "s", Revision: row.Revision, Kind: "answer", Text: "Cannot deliver"})
+	if err == nil || event.Result != "failed" {
+		t.Fatalf("failed answer=%+v %v", event, err)
+	}
+	row, _ = db.GetStory(ctx, "s")
+	if row.Question != "Second decision?" {
+		t.Fatal("failed answer cleared unresolved question")
+	}
+}
+
+func TestStoryDeliveryDefinitiveFailureIsNotUncertain(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{{"unsupported", chatsvc.ErrNotChatMode, "failed"}, {"uncertain", chatsvc.ErrSteerDeliveryUncertain, "uncertain"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := newTestStore(t)
+			seedProject(t, db, "repo")
+			recipient, err := db.CreateSession(ctx, sampleRecord("repo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "backlog", Revision: 1, Assignments: []domain.StoryAssignment{{SessionID: recipient.ID, Role: "manager"}}}); err != nil {
+				t.Fatal(err)
+			}
+			m := &controlledStoryMessenger{err: tc.err}
+			svc := &storysvc.Service{Store: db, Messenger: m}
+			cmd := storysvc.Command{ID: "send", StoryID: "s", Revision: 1, Kind: "message", RecipientSessionID: recipient.ID, Text: "Question"}
+			event, err := svc.Apply(ctx, cmd)
+			if err == nil || event.Result != tc.want {
+				t.Fatalf("result=%+v %v", event, err)
+			}
+			_, _ = svc.Apply(ctx, cmd)
+			wantCalls := 2
+			if tc.want == "failed" {
+				wantCalls = 1
+			}
+			if len(m.keys) != wantCalls {
+				t.Fatalf("unexpected redelivery count %d", len(m.keys))
+			}
+		})
+	}
+}
+
+func TestStoryLateAnswerCannotResolveNewerQuestion(t *testing.T) {
+	ctx := context.Background()
+	db := newTestStore(t)
+	seedProject(t, db, "repo")
+	requester, err := db.CreateSession(ctx, sampleRecord("repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "backlog", Revision: 1, Assignments: []domain.StoryAssignment{{SessionID: requester.ID, Role: "manager"}}}); err != nil {
+		t.Fatal(err)
+	}
+	m := &controlledStoryMessenger{result: chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "turn", State: domain.TurnStateQueued}}}
+	svc := &storysvc.Service{Store: db, Messenger: m}
+	if _, err = svc.Apply(ctx, storysvc.Command{ID: "first-question", StoryID: "s", Revision: 1, Kind: "question", SenderSessionID: requester.ID, Text: "First?"}); err != nil {
+		t.Fatal(err)
+	}
+	answer := storysvc.Command{ID: "late-answer", StoryID: "s", Revision: 2, Kind: "answer", Text: "First answer"}
+	if _, err = svc.Apply(ctx, answer); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := db.GetStory(ctx, "s")
+	if _, err = svc.Apply(ctx, storysvc.Command{ID: "new-question", StoryID: "s", Revision: row.Revision, Kind: "question", SenderSessionID: requester.ID, Text: "New question?"}); err != nil {
+		t.Fatal(err)
+	}
+	m.result.Turn.State = domain.TurnStateCompleted
+	if _, err = svc.Apply(ctx, answer); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.GetStory(ctx, "s")
+	if row.Question != "New question?" || row.QuestionEventID != "new-question" {
+		t.Fatalf("late answer cleared a different question: %+v", row)
 	}
 }

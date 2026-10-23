@@ -6538,12 +6538,20 @@ export interface components {
         };
         ReportResponse: {
             /** Format: date-time */
+            acknowledgedAt?: null | string;
+            /** Format: date-time */
             createdAt: string;
+            /** Format: int64 */
+            deliveryAttempts?: number;
+            deliveryBatchId?: string;
+            deliveryState?: string;
             id: string;
             message?: string;
             note?: string;
             outputs?: components["schemas"]["ReportOutputResponse"][];
             projectId: string;
+            recipientProjectId?: string;
+            recipientSessionId?: string;
             /** Format: int64 */
             repeatCount: number;
             sessionId: string;
@@ -7430,6 +7438,8 @@ export interface components {
             id: string;
             projectIds: string[];
             question: string;
+            questionEventId?: string;
+            questionRequesterSessionId?: string;
             /** Format: int64 */
             revision: number;
             scope: string;
@@ -7461,11 +7471,15 @@ export interface components {
         StoryEvent: {
             /** Format: date-time */
             createdAt: string;
+            deliveryKind?: string;
             id: string;
             kind: string;
             recipientSessionId: string;
             reference: string;
+            relatedEventId?: string;
             result: string;
+            reviewId?: string;
+            reviewRunId?: string;
             senderSessionId: string;
             storyId: string;
             text: string;

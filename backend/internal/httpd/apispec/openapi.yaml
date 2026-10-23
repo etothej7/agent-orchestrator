@@ -18702,8 +18702,20 @@ components:
       type: object
     ReportResponse:
       properties:
+        acknowledgedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         createdAt:
           format: date-time
+          type: string
+        deliveryAttempts:
+          format: int64
+          type: integer
+        deliveryBatchId:
+          type: string
+        deliveryState:
           type: string
         id:
           type: string
@@ -18716,6 +18728,10 @@ components:
             $ref: '#/components/schemas/ReportOutputResponse'
           type: array
         projectId:
+          type: string
+        recipientProjectId:
+          type: string
+        recipientSessionId:
           type: string
         repeatCount:
           format: int64
@@ -20981,6 +20997,10 @@ components:
           type: array
         question:
           type: string
+        questionEventId:
+          type: string
+        questionRequesterSessionId:
+          type: string
         revision:
           format: int64
           type: integer
@@ -21069,6 +21089,8 @@ components:
         createdAt:
           format: date-time
           type: string
+        deliveryKind:
+          type: string
         id:
           type: string
         kind:
@@ -21077,7 +21099,13 @@ components:
           type: string
         reference:
           type: string
+        relatedEventId:
+          type: string
         result:
+          type: string
+        reviewId:
+          type: string
+        reviewRunId:
           type: string
         senderSessionId:
           type: string

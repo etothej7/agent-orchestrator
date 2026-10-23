@@ -3473,5 +3473,16 @@
 	"workspace.recording": "Recording…",
 	"workspace.retry_same_request": "Retry same request",
 	"workspace.send_to_agent": "Send to agent",
-	"workspace.record_decision": "Record decision"
+	"workspace.record_decision": "Record decision",
+  "workspace.native_reviewer": "Native reviewer {{id}}",
+  "workspace.delivered": "Delivered to agent; work outcome remains separate",
+  "workspace.review_result": "Review result {{id}}",
+  "workspace.report_claim": "Report claim",
+  "workspace.outbox": "Outbox",
+  "workspace.destination": "Destination",
+  "workspace.recipient_pending": "project {{id}} (recipient not selected)",
+  "workspace.attempts": "Attempts",
+  "workspace.native_review_result": "Native review result",
+  "workspace.review_revision": "Run {{id}} · Revision {{revision}}",
+  "workspace.close_review_result": "Close review result"
 }

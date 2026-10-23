@@ -61,7 +61,7 @@ func (q *Queries) CreateWorkspaceStory(ctx context.Context, arg CreateWorkspaceS
 }
 
 const getStoryReportByClientID = `-- name: GetStoryReportByClientID :one
-SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id, recipient_project_id, story_id, client_report_id FROM reports WHERE session_id = ? AND client_report_id = ?
+SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id, recipient_project_id, story_id, client_report_id, recipient_session_id FROM reports WHERE session_id = ? AND client_report_id = ?
 `
 
 type GetStoryReportByClientIDParams struct {
@@ -93,6 +93,7 @@ func (q *Queries) GetStoryReportByClientID(ctx context.Context, arg GetStoryRepo
 		&i.RecipientProjectID,
 		&i.StoryID,
 		&i.ClientReportID,
+		&i.RecipientSessionID,
 	)
 	return i, err
 }

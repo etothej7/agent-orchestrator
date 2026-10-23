@@ -147,16 +147,39 @@ func (s *Store) ApplyStoryEvent(ctx context.Context, story domain.Story, e domai
 func (s *Store) FinishStoryDelivery(ctx context.Context, e domain.StoryEvent) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	old, err := s.qw.GetWorkspaceEvent(ctx, e.ID)
-	if err != nil {
-		return err
-	}
-	var current domain.StoryEvent
-	if err := json.Unmarshal([]byte(old.Record), &current); err != nil {
-		return err
-	}
-	if current.Result == "accepted" {
+	return s.inTx(ctx, "story delivery", func(q *gen.Queries) error {
+		old, err := q.GetWorkspaceEvent(ctx, e.ID)
+		if err != nil {
+			return err
+		}
+		var current domain.StoryEvent
+		if err := json.Unmarshal([]byte(old.Record), &current); err != nil {
+			return err
+		}
+		if current.Result == "delivered" || current.Result == "failed" {
+			return nil
+		}
+		if err := q.UpdateWorkspaceEvent(ctx, gen.UpdateWorkspaceEventParams{ID: e.ID, Record: storyJSON(e)}); err != nil {
+			return err
+		}
+		if e.Kind == "answer" && e.Result == "delivered" {
+			row, err := q.GetWorkspaceStory(ctx, e.StoryID)
+			if err != nil {
+				return err
+			}
+			var story domain.Story
+			if err := json.Unmarshal([]byte(row.Record), &story); err != nil {
+				return err
+			}
+			if story.QuestionEventID == e.RelatedEventID {
+				story.Question = ""
+				story.QuestionEventID = ""
+				story.QuestionRequesterSessionID = ""
+				story.Revision = row.Revision + 1
+				_, err = q.UpdateWorkspaceStory(ctx, gen.UpdateWorkspaceStoryParams{ID: story.ID, Record: storyJSON(story), Revision: row.Revision})
+				return err
+			}
+		}
 		return nil
-	}
-	return s.qw.UpdateWorkspaceEvent(ctx, gen.UpdateWorkspaceEventParams{ID: e.ID, Record: storyJSON(e)})
+	})
 }

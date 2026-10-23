@@ -7,7 +7,7 @@ import { StoryBoard } from "./CoordinatorWorkspace";
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => ({ data: [{ id: "repo", name: "TEST repo", sessions: [{ id: "manager", workspaceId: "repo" }] }] }) }));
 vi.mock("../lib/use-session-link-navigation", () => ({ useSessionLinkNavigation: () => vi.fn() }));
-const one = { id: "one", epicId: "a", title: "TEST first story", scope: "Agreed scope", projectIds: ["repo", "repo2"], assignments: [{ sessionId: "manager", role: "manager" }], status: "in_progress", blockedReason: "Waiting for fixture", question: "Which fixture?", revision: 3 };
+const one = { id: "one", epicId: "a", title: "TEST first story", scope: "Agreed scope", projectIds: ["repo", "repo2"], assignments: [{ sessionId: "manager", role: "manager" }], status: "in_progress", blockedReason: "Waiting for fixture", question: "Which fixture?", questionRequesterSessionId:"manager", questionEventId:"question", revision: 3 };
 const two = { ...one, id: "two", epicId: "b", title: "TEST second story" };
 beforeEach(() => {
  vi.spyOn(apiClient, "GET").mockImplementation(async path => {
@@ -40,4 +40,26 @@ it("routes the composer to the explicit recipient and story and retains uncertai
  await userEvent.click(screen.getByRole("button", { name: "Retry same request" }));
  await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
  expect(post.mock.calls[1]?.[1]).toEqual(first);
+});
+it("shows actual report destination separately from claim and opens the native review run", async () => {
+ vi.mocked(apiClient.GET).mockImplementation(async path => {
+  if (path === "/api/v1/workspace") return {data:{epics:[],stories:[one]}} as never;
+  return {data:{story:one,events:[{id:"report",kind:"report",storyId:"one",senderSessionId:"worker",recipientSessionId:"manager",text:"Worker claim",reference:"r",result:"done",createdAt:"2026-10-23T12:00:00Z"},{id:"native",kind:"native_review",storyId:"one",senderSessionId:"",recipientSessionId:"worker",reviewId:"reviewer-identity",reviewRunId:"fixed-run",text:"Independent public findings",reference:"fixed-sha",result:"approved",createdAt:"2026-10-23T12:00:00Z"}],reports:[{id:"r",state:"done",deliveryState:"pending",recipientProjectId:"repo",recipientSessionId:"manager",deliveryAttempts:1}]}} as never;
+ });
+ mount();await userEvent.click(await screen.findByText("TEST first story"));
+ expect(await screen.findByText(/Report claim: done.*Outbox: pending/)).toBeInTheDocument();
+ await userEvent.click(screen.getByRole("button",{name:"Native reviewer reviewer-identity"}));
+ expect(screen.getByRole("region",{name:"Native review result"})).toHaveTextContent("fixed-run");
+ expect(screen.getByRole("region",{name:"Native review result"})).toHaveTextContent("fixed-sha");
+});
+
+it("sends an Ed answer without requiring a manually selected destination", async () => {
+ const post=vi.spyOn(apiClient,"POST").mockResolvedValue({data:{}} as never);
+ mount();await userEvent.click(await screen.findByText("TEST first story"));
+ await userEvent.selectOptions(await screen.findByLabelText("Story action"),"answer");
+ expect(screen.queryByLabelText("Responsible agent")).not.toBeInTheDocument();
+ await userEvent.type(screen.getByLabelText("Story message"),"Use the blue fixture");
+ await userEvent.click(screen.getByRole("button",{name:"Send to agent"}));
+ await waitFor(()=>expect(post).toHaveBeenCalledTimes(1));
+ expect(post.mock.calls[0]?.[1]).toMatchObject({body:{kind:"answer",storyId:"one",text:"Use the blue fixture"}});
 });

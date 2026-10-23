@@ -3,6 +3,7 @@ package story
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 // Store is the durable story boundary.
 type Store interface {
+	TurnByID(context.Context, string) (domain.ConversationTurn, error)
 	GetReport(context.Context, string) (domain.ReportRecord, bool, error)
 	ListEpics(context.Context) ([]domain.Epic, error)
 	CreateEpic(context.Context, domain.Epic) error
@@ -96,6 +98,8 @@ func (s *Service) Create(ctx context.Context, story domain.Story) error {
 	story.Assignments = []domain.StoryAssignment{}
 	story.BlockedReason = ""
 	story.Question = ""
+	story.QuestionEventID = ""
+	story.QuestionRequesterSessionID = ""
 	return s.Store.CreateStory(ctx, story)
 }
 
@@ -122,13 +126,16 @@ func validID(id string) bool {
 
 // Apply records explicit decisions before delivery. A retry always retains its original payload.
 func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, error) {
+	if c.Kind == "answer" {
+		c.RecipientSessionID = ""
+	}
 	if c.Kind != "assignment" {
 		c.Role = ""
 	}
 	if c.Kind != "testing" {
 		c.Outcome = ""
 	}
-	if c.Kind == "assignment" || c.Kind == "message" || c.Kind == "handoff" {
+	if c.Kind == "assignment" || c.Kind == "message" || c.Kind == "handoff" || c.Kind == "answer" {
 		c.Reference = ""
 	}
 
@@ -201,13 +208,26 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 		if strings.TrimSpace(c.Text) == "" {
 			return e, invalid("Question is required")
 		}
+		if c.SenderSessionID == "" {
+			return e, invalid("Question must identify its assigned requester")
+		}
 		story.Question = c.Text
+		story.QuestionEventID = c.ID
+		story.QuestionRequesterSessionID = c.SenderSessionID
 	case "answer":
 		if strings.TrimSpace(c.Text) == "" || story.Question == "" {
 			return e, invalid("Answer an unresolved question")
 		}
-		story.Question = ""
+		if story.QuestionRequesterSessionID == "" {
+			return e, invalid("Question has no recorded requester; record a new attributed question")
+		}
+		e.RecipientSessionID = story.QuestionRequesterSessionID
+		e.RelatedEventID = story.QuestionEventID
+		e.Result = "pending"
 	case "implementation", "testing", "installation", "release":
+		if c.Kind == "implementation" && !assigned(story, c.SenderSessionID, "worker") {
+			return e, invalid("Implementation evidence must be recorded by its assigned worker")
+		}
 		if c.Kind == "testing" {
 			if c.Outcome != "passed" && c.Outcome != "failed" {
 				return e, invalid("Test evidence must say passed or failed")
@@ -220,6 +240,11 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 	case "review_passed", "review_failed":
 		if !assigned(story, c.SenderSessionID, "reviewer") || assigned(story, c.SenderSessionID, "worker") {
 			return e, invalid("Independent assigned reviewer is required")
+		}
+		for _, prior := range events {
+			if prior.Kind == "implementation" && prior.Reference == c.Reference && prior.SenderSessionID == c.SenderSessionID {
+				return e, invalid("Implementation author cannot independently review that revision")
+			}
 		}
 		if strings.TrimSpace(c.Reference) == "" || strings.TrimSpace(c.Text) == "" {
 			return e, invalid("Review requires a fixed revision or result reference and findings")
@@ -250,8 +275,8 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 	if e.Result == "pending" && strings.TrimSpace(c.Text) == "" {
 		return e, invalid("Message text is required")
 	}
-	// New implementation or failed verification invalidates earlier approval evidence.
-	if (c.Kind == "implementation" || c.Kind == "review_failed" || (c.Kind == "testing" && c.Outcome == "failed")) && (story.Status == "ready_for_approval" || story.Status == "done") {
+	// Any changed verification evidence must still support the current approval.
+	if (c.Kind == "implementation" || c.Kind == "testing" || c.Kind == "review_passed" || c.Kind == "review_failed") && (story.Status == "ready_for_approval" || story.Status == "done") && !ready(append(events, e)) {
 		story.Status = "in_progress"
 	}
 	e, _, err = s.Store.ApplyStoryEvent(ctx, story, e, commandIdentity(c))
@@ -284,10 +309,15 @@ func has(es []domain.StoryEvent, kind string) bool {
 }
 func ready(es []domain.StoryEvent) bool {
 	var impl, test, review string
+	var author, reviewer domain.SessionID
+	native := false
 	for _, e := range es {
 		switch e.Kind {
 		case "implementation":
 			impl = e.Reference
+			author = e.SenderSessionID
+			reviewer = ""
+			native = false
 			test = ""
 			review = ""
 		case "testing":
@@ -298,17 +328,20 @@ func ready(es []domain.StoryEvent) bool {
 			}
 		case "review_passed":
 			review = e.Reference
+			reviewer = e.SenderSessionID
+			native = false
 		case "review_failed":
 			review = ""
 		case "native_review":
 			if e.Result == "approved" {
 				review = e.Reference
+				native = e.ReviewID != "" && e.ReviewRunID != ""
 			} else {
 				review = ""
 			}
 		}
 	}
-	return impl != "" && impl == test && impl == review
+	return impl != "" && author != "" && impl == test && impl == review && (native || (reviewer != "" && reviewer != author))
 }
 func (s *Service) retry(ctx context.Context, c Command, e domain.StoryEvent) (domain.StoryEvent, error) {
 	story, err := s.Store.GetStory(ctx, c.StoryID)
@@ -319,7 +352,7 @@ func (s *Service) retry(ctx context.Context, c Command, e domain.StoryEvent) (do
 	if err != nil {
 		return e, err
 	}
-	if e.Result == "pending" || e.Result == "uncertain" {
+	if e.Result == "pending" || e.Result == "uncertain" || e.Result == "queued" {
 		return s.deliver(ctx, e, false)
 	}
 	return e, nil
@@ -331,15 +364,22 @@ func (s *Service) deliver(ctx context.Context, e domain.StoryEvent, recoverOnly 
 	msg := ports.ChatUserMessage{Text: fmt.Sprintf("[AO story %s; exchange %s]\n%s\nReply using ao report --story %s --client-report-id <unique-stable-key> with --checkpoint/--needs-input/--stuck/--done and --note, or ao send --story with --client-message-id. Never infer a story from the current session. Report completion does not complete the story.", e.StoryID, e.ID, e.Text, e.StoryID), ClientMessageID: "story-" + e.ID, SenderSessionID: string(e.SenderSessionID), Origin: domain.MessageOriginHuman}
 	result, err := s.Messenger.SteerOrSend(ctx, e.RecipientSessionID, msg, recoverOnly)
 	if err != nil {
+		priorResult := e.Result
 		e.Result = "uncertain"
+		if (priorResult == "pending" && e.Reference == "") && (errors.Is(err, chatsvc.ErrNotChatMode) || errors.Is(err, chatsvc.ErrNoController) || errors.Is(err, ports.ErrSessionNotFound) || errors.Is(err, chatsvc.ErrSteerUnsupported) || errors.Is(err, chatsvc.ErrSteerContentUnsupported) || errors.Is(err, chatsvc.ErrTurnNotSteerable) || errors.Is(err, chatsvc.ErrSteerIdempotencyConflict) || errors.Is(err, domain.ErrClientMessageConflict)) {
+			e.Result = "failed"
+		}
 		_ = s.Store.FinishStoryDelivery(context.WithoutCancel(ctx), e)
 		return e, err
 	}
-	e.Result = "accepted"
+	e.Result = "delivered"
 	if result.Steered {
 		e.Reference = result.Steer.ActivityID
+		e.DeliveryKind = "steer"
 	} else {
 		e.Reference = result.Turn.ID
+		e.DeliveryKind = "turn"
+		e.Result = turnDelivery(result.Turn)
 	}
 	if err := s.Store.FinishStoryDelivery(ctx, e); err != nil {
 		return e, err
@@ -359,4 +399,44 @@ func (s *Service) coordinator(ctx context.Context, id domain.SessionID) bool {
 	}
 	session, ok, err := s.Store.GetSession(ctx, id)
 	return err == nil && ok && !session.IsTerminated && session.Kind == domain.KindOrchestrator && session.ProjectID == cfg.CoordinatorProjectID
+}
+
+func turnDelivery(turn domain.ConversationTurn) string {
+	if turn.ProviderTurnID != "" || turn.State == domain.TurnStateCompleted {
+		return "delivered"
+	}
+	if turn.State == domain.TurnStateQueued {
+		return "queued"
+	}
+	if turn.State == domain.TurnStateFailed || turn.State == domain.TurnStateCancelled {
+		return "failed"
+	}
+	return "uncertain"
+}
+
+// Events projects public delivery facts from durable receipts, never provider payloads.
+func (s *Service) Events(ctx context.Context, id string) ([]domain.StoryEvent, error) {
+	events, err := s.Store.StoryEvents(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for i, e := range events {
+		if e.DeliveryKind != "turn" || (e.Result != "queued" && e.Result != "uncertain") || e.Reference == "" {
+			continue
+		}
+		turn, err := s.Store.TurnByID(ctx, e.Reference)
+		if err != nil {
+			return nil, err
+		}
+		next := turnDelivery(turn)
+		if next == e.Result {
+			continue
+		}
+		e.Result = next
+		if err := s.Store.FinishStoryDelivery(ctx, e); err != nil {
+			return nil, err
+		}
+		events[i] = e
+	}
+	return events, nil
 }

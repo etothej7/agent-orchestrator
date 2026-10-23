@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -82,18 +83,18 @@ func (c *StoriesController) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "storyId")
-	story, err := c.Svc.Store.GetStory(r.Context(), id)
+	_, err := c.Svc.Store.GetStory(r.Context(), id)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	events, err := c.Svc.Store.StoryEvents(r.Context(), id)
+	events, err := c.Svc.Events(r.Context(), id)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
 	reports := []ReportResponse{}
-	for _, event := range events {
+	for i, event := range events {
 		if event.Kind != "report" {
 			continue
 		}
@@ -105,11 +106,22 @@ func (c *StoriesController) detail(w http.ResponseWriter, r *http.Request) {
 		if !found || report.StoryID != id {
 			continue
 		}
+		events[i].RecipientSessionID = report.RecipientSessionID
 		outputs := make([]ReportOutputResponse, 0, len(report.Outputs))
 		for _, output := range report.Outputs {
 			outputs = append(outputs, ReportOutputResponse{Kind: string(output.Kind), Reference: output.Reference, Label: output.Label})
 		}
-		reports = append(reports, ReportResponse{ID: report.ID, StoryID: report.StoryID, SessionID: string(report.SessionID), ProjectID: string(report.ProjectID), State: string(report.State), Note: report.Note, Message: report.Message, Outputs: outputs, CreatedAt: report.CreatedAt, RepeatCount: report.RepeatCount})
+		var acknowledgedAt *time.Time
+		if !report.AcknowledgedAt.IsZero() {
+			at := report.AcknowledgedAt
+			acknowledgedAt = &at
+		}
+		reports = append(reports, ReportResponse{RecipientProjectID: string(report.DeliveryProjectID()), RecipientSessionID: string(report.RecipientSessionID), DeliveryState: string(report.DeliveryState), DeliveryBatchID: report.DeliveryBatchID, DeliveryAttempts: report.DeliveryAttempts, AcknowledgedAt: acknowledgedAt, ID: report.ID, StoryID: report.StoryID, SessionID: string(report.SessionID), ProjectID: string(report.ProjectID), State: string(report.State), Note: report.Note, Message: report.Message, Outputs: outputs, CreatedAt: report.CreatedAt, RepeatCount: report.RepeatCount})
+	}
+	story, err := c.Svc.Store.GetStory(r.Context(), id)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, StoryDetailResponse{Story: story, Events: events, Reports: reports})
 }
