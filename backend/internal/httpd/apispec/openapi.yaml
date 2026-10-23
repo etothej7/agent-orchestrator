@@ -11924,6 +11924,118 @@ paths:
       summary: Turn the cloud offering on or off for this machine
       tags:
       - settings
+  /api/v1/settings/coordination:
+    get:
+      operationId: getCoordination
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read the overall coordinator and repo-manager assignments
+      tags:
+      - settings
+    put:
+      operationId: setCoordination
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCoordinationRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoordinationResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Assign the overall coordinator and repo managers without restarting
+        agents
+      tags:
+      - settings
+  /api/v1/settings/coordination/project:
+    post:
+      operationId: createCoordinatorProject
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCoordinatorProjectRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCoordinatorProjectResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create a dedicated coordination project without touching repository
+        checkouts
+      tags:
+      - settings
   /api/v1/settings/harness-defaults/{agent}:
     patch:
       operationId: updateHarnessDefault
@@ -16035,6 +16147,25 @@ components:
       - cachedTokens
       - totalTokens
       type: object
+    CoordinationConfig:
+      properties:
+        coordinatorProjectId:
+          type: string
+        managedProjectIds:
+          items:
+            type: string
+          type: array
+      required:
+      - coordinatorProjectId
+      - managedProjectIds
+      type: object
+    CoordinationResponse:
+      properties:
+        coordination:
+          $ref: '#/components/schemas/CoordinationConfig'
+      required:
+      - coordination
+      type: object
     CreateAutomationRequest:
       properties:
         cron:
@@ -16087,6 +16218,20 @@ components:
           $ref: '#/components/schemas/SideConversation'
       required:
       - side
+      type: object
+    CreateCoordinatorProjectRequest:
+      properties:
+        agent:
+          type: string
+      required:
+      - agent
+      type: object
+    CreateCoordinatorProjectResponse:
+      properties:
+        projectId:
+          type: string
+      required:
+      - projectId
       type: object
     CreateReportRequest:
       properties:
@@ -20944,6 +21089,25 @@ components:
           - boolean
       required:
       - enabled
+      type: object
+    UpdateCoordinationRequest:
+      properties:
+        coordinatorProjectId:
+          type:
+          - "null"
+          - string
+        managedProjectIds:
+          items:
+            type:
+            - "null"
+            - string
+          maxItems: 1000
+          type:
+          - "null"
+          - array
+      required:
+      - coordinatorProjectId
+      - managedProjectIds
       type: object
     UpdateHarnessDefaultRequest:
       properties:

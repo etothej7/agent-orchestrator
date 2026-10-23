@@ -27,6 +27,10 @@ vi.mock("./settings/DefaultCloudSandboxRow", () => ({
 	DefaultCloudSandboxSection: () => <div data-testid="default-cloud-sandbox-section" />,
 }));
 
+vi.mock("./settings/CoordinationSettingsSection", () => ({
+	CoordinationSettingsSection: () => <div data-testid="coordination-settings-section" />,
+}));
+
 const {
 	getUpdate,
 	setUpdate,

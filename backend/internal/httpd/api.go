@@ -53,11 +53,12 @@ type APIDeps struct {
 	// answers 501 rather than panicking, matching the other optional surfaces.
 	Conversations controllers.ConversationService
 	// Settings is the daemon-owned preference surface.
-	Settings  controllers.SettingsService
-	DevImport controllers.DevImportService
-	CDC       cdc.Source
-	Events    cdcSubscriber
-	Telemetry ports.EventSink
+	Settings     controllers.SettingsService
+	Coordination controllers.CoordinationService
+	DevImport    controllers.DevImportService
+	CDC          cdc.Source
+	Events       cdcSubscriber
+	Telemetry    ports.EventSink
 	// TelemetryIdentity is the live telemetry identity, served to the phone by
 	// GET /api/v1/telemetry/identity and updated by the desktop over loopback.
 	TelemetryIdentity        ports.TelemetryIdentityStore
@@ -205,7 +206,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
 		cues:          &controllers.CuesController{Svc: deps.Cues},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations, Renders: attachmentstore.New(cfg.DataDir)},
-		settings:      &controllers.SettingsController{Svc: deps.Settings},
+		settings:      &controllers.SettingsController{Svc: deps.Settings, Coordination: deps.Coordination},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		system:        &controllers.SystemController{Checks: deps.SystemChecks},

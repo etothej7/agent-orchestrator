@@ -3457,6 +3457,27 @@ type SetConversationTitleResponse struct {
 
 /* ---- settings ---------------------------------------------------------- */
 
+// CoordinationResponse contains the durable local reporting hierarchy.
+type CoordinationResponse struct {
+	Coordination domain.CoordinationConfig `json:"coordination"`
+}
+
+// CreateCoordinatorProjectRequest selects the dedicated coordinator's harness.
+type CreateCoordinatorProjectRequest struct {
+	Agent string `json:"agent" required:"true"`
+}
+
+// CreateCoordinatorProjectResponse identifies the new or existing Scratch project.
+type CreateCoordinatorProjectResponse struct {
+	ProjectID domain.ProjectID `json:"projectId"`
+}
+
+// UpdateCoordinationRequest replaces the complete coordinator assignment set.
+type UpdateCoordinationRequest struct {
+	CoordinatorProjectID *domain.ProjectID   `json:"coordinatorProjectId" required:"true"`
+	ManagedProjectIDs    *[]domain.ProjectID `json:"managedProjectIds" required:"true" maxItems:"1000"`
+}
+
 // SettingsResponse is the daemon-owned preference set.
 type SettingsResponse struct {
 	// HarnessDefaults are per-harness picker preferences, keyed by harness id.

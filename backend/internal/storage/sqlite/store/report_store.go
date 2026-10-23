@@ -24,7 +24,8 @@ func (s *Store) CreateReport(ctx context.Context, rec domain.ReportRecord) (doma
 		var err error
 		row, err = q.CreateReport(ctx, gen.CreateReportParams{
 			ID: rec.ID, SessionID: string(rec.SessionID), ProjectID: string(rec.ProjectID),
-			State: string(rec.State), Note: rec.Note, Message: rec.Message,
+			RecipientProjectID: sql.NullString{String: string(rec.RecipientProjectID), Valid: rec.RecipientProjectID != ""},
+			State:              string(rec.State), Note: rec.Note, Message: rec.Message,
 			CreatedAt: rec.CreatedAt, AvailableAt: rec.AvailableAt,
 			SettlementDeadline: nullTime(rec.SettlementDeadline), RepeatCount: rec.RepeatCount,
 		})
@@ -114,7 +115,7 @@ func (s *Store) ClaimPendingReportBatch(ctx context.Context, projectID domain.Pr
 	var rows []gen.Report
 	err := s.inTx(ctx, "claim project report batch", func(q *gen.Queries) error {
 		scheduled, err := q.ListPendingReportsByProjectSchedule(ctx, gen.ListPendingReportsByProjectScheduleParams{
-			ProjectID: string(projectID), Limit: 1,
+			ProjectID: sql.NullString{String: string(projectID), Valid: true}, Limit: 1,
 		})
 		if err != nil || len(scheduled) == 0 {
 			return err
@@ -123,13 +124,13 @@ func (s *Store) ClaimPendingReportBatch(ctx context.Context, projectID domain.Pr
 		if batchID == "" {
 			batchID = "report-batch:" + scheduled[0].ID
 			if err := q.AssignPendingReportsToBatch(ctx, gen.AssignPendingReportsToBatchParams{
-				DeliveryBatchID: batchID, ProjectID: string(projectID),
+				DeliveryBatchID: batchID, ProjectID: sql.NullString{String: string(projectID), Valid: true},
 			}); err != nil {
 				return err
 			}
 		}
 		rows, err = q.ClaimPendingReportsByBatch(ctx, gen.ClaimPendingReportsByBatchParams{
-			ProjectID: string(projectID), DeliveryBatchID: batchID,
+			ProjectID: sql.NullString{String: string(projectID), Valid: true}, DeliveryBatchID: batchID,
 			ClaimToken: token, ClaimedAt: nullTime(at),
 		})
 		return err
@@ -148,7 +149,7 @@ func (s *Store) AcknowledgeReportBatch(ctx context.Context, projectID domain.Pro
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.AcknowledgeReportBatch(ctx, gen.AcknowledgeReportBatchParams{
-		ProjectID: string(projectID), ClaimToken: token, AcknowledgedAt: nullTime(at),
+		ProjectID: sql.NullString{String: string(projectID), Valid: true}, ClaimToken: token, AcknowledgedAt: nullTime(at),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("acknowledge project report batch: %w", err)
@@ -165,7 +166,7 @@ func (s *Store) ReleaseReportBatch(ctx context.Context, projectID domain.Project
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ReleaseReportBatch(ctx, gen.ReleaseReportBatchParams{
-		ProjectID: string(projectID), ClaimToken: token, AvailableAt: at, LastError: lastError,
+		ProjectID: sql.NullString{String: string(projectID), Valid: true}, ClaimToken: token, AvailableAt: at, LastError: lastError,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("release project report batch: %w", err)
@@ -183,7 +184,7 @@ func (s *Store) DeferReportBatch(ctx context.Context, projectID domain.ProjectID
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.DeferReportBatch(ctx, gen.DeferReportBatchParams{
-		ProjectID: string(projectID), ClaimToken: token, AvailableAt: at, LastError: lastError,
+		ProjectID: sql.NullString{String: string(projectID), Valid: true}, ClaimToken: token, AvailableAt: at, LastError: lastError,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("defer project report batch: %w", err)
@@ -314,7 +315,8 @@ func orderedReportRows(rows []gen.Report) []gen.Report {
 func reportFromGen(r gen.Report) domain.ReportRecord {
 	return domain.ReportRecord{
 		ID: r.ID, SessionID: domain.SessionID(r.SessionID), ProjectID: domain.ProjectID(r.ProjectID),
-		State: domain.ReportState(r.State), Note: r.Note, Message: r.Message, CreatedAt: r.CreatedAt,
+		RecipientProjectID: domain.ProjectID(r.RecipientProjectID.String),
+		State:              domain.ReportState(r.State), Note: r.Note, Message: r.Message, CreatedAt: r.CreatedAt,
 		DeliveryState: domain.ReportDeliveryState(r.DeliveryState), AvailableAt: r.AvailableAt,
 		SettlementDeadline: timeFromNull(r.SettlementDeadline), RepeatCount: r.RepeatCount,
 		ClaimToken: r.ClaimToken, ClaimedAt: timeFromNull(r.ClaimedAt), DeliveryAttempts: r.DeliveryAttempts,

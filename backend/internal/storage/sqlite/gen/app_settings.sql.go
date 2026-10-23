@@ -14,7 +14,7 @@ import (
 
 const getAppSettings = `-- name: GetAppSettings :one
 
-SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh FROM app_settings WHERE id = 1
+SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh, coordination FROM app_settings WHERE id = 1
 `
 
 // Daemon-owned user preferences. One row, seeded by migration 0042, so a read
@@ -29,8 +29,20 @@ func (q *Queries) GetAppSettings(ctx context.Context) (AppSetting, error) {
 		&i.CloudOffering,
 		&i.HarnessDefaults,
 		&i.VersionRefresh,
+		&i.Coordination,
 	)
 	return i, err
+}
+
+const getCoordination = `-- name: GetCoordination :one
+SELECT coordination FROM app_settings WHERE id = 1
+`
+
+func (q *Queries) GetCoordination(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getCoordination)
+	var coordination string
+	err := row.Scan(&coordination)
+	return coordination, err
 }
 
 const resetHarnessDefault = `-- name: ResetHarnessDefault :exec
@@ -61,6 +73,20 @@ type SetCloudOfferingParams struct {
 
 func (q *Queries) SetCloudOffering(ctx context.Context, arg SetCloudOfferingParams) error {
 	_, err := q.db.ExecContext(ctx, setCloudOffering, arg.CloudOffering, arg.UpdatedAt)
+	return err
+}
+
+const setCoordination = `-- name: SetCoordination :exec
+UPDATE app_settings SET coordination = ?, updated_at = ? WHERE id = 1
+`
+
+type SetCoordinationParams struct {
+	Coordination string
+	UpdatedAt    time.Time
+}
+
+func (q *Queries) SetCoordination(ctx context.Context, arg SetCoordinationParams) error {
+	_, err := q.db.ExecContext(ctx, setCoordination, arg.Coordination, arg.UpdatedAt)
 	return err
 }
 

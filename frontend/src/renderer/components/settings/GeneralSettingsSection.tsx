@@ -22,6 +22,7 @@ import { useSettings, useUpdateCloudOffering, useUpdateSessionInterface, useUpda
 import type { SessionMode } from "../../types/workspace";
 import type { TerminalShellKind } from "../../../shared/ui-locale";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/platform";
+import { CoordinationSettingsSection } from "./CoordinationSettingsSection";
 
 /**
  * Default interface for new sessions. Daemon-owned so `ao spawn` and mobile
@@ -200,6 +201,7 @@ export function GeneralSettingsSection({
 	return (
 		<>
 			{/* Appearance */}
+			<CoordinationSettingsSection />
 			<SettingsSection title={t("settings.appearance")} titleHidden={titleHidden} grouped>
 				<SettingsRow label={t("settings.theme")}>
 					<div className="flex items-center gap-1.5">

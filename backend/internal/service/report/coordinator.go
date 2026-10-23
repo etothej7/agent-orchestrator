@@ -126,20 +126,41 @@ func (c *Coordinator) RunDue(ctx context.Context) (time.Duration, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	blocked := map[domain.ProjectID]error{}
 	for {
-		pending, err := c.store.ListPendingReportSchedule(ctx, 1)
+		// ponytail: scan pending reports per delivered batch; a grouped recipient
+		// schedule can replace this if large queues make the scans expensive.
+		pending, err := c.store.ListPendingReportSchedule(ctx, -1)
 		if err != nil {
 			return c.retryDelay, err
 		}
-		if len(pending) == 0 {
-			return -1, nil
-		}
 		now := c.now().UTC()
-		if pending[0].AvailableAt.After(now) {
-			return pending[0].AvailableAt.Sub(now), nil
+		delay := time.Duration(-1)
+		var target domain.ProjectID
+		for _, rec := range pending {
+			id := rec.DeliveryProjectID()
+			wait := rec.AvailableAt.Sub(now)
+			if blocked[id] != nil {
+				wait = c.retryDelay
+			}
+			if wait <= 0 {
+				target = id
+				break
+			}
+			if delay < 0 || wait < delay {
+				delay = wait
+			}
 		}
-		if err := c.deliverProject(ctx, pending[0].ProjectID); err != nil {
-			return c.retryDelay, err
+		if target == "" {
+			failures := make([]error, 0, len(blocked))
+			for _, err := range blocked {
+				failures = append(failures, err)
+			}
+			return delay, errors.Join(failures...)
+		}
+		if err := c.deliverProject(ctx, target); err != nil {
+			// One offline coordinator must not hold up unrelated repo managers.
+			blocked[target] = err
 		}
 	}
 }

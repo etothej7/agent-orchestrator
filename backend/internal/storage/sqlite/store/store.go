@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
@@ -18,11 +19,12 @@ import (
 // CDC is captured by DB triggers (migration 0001), NOT by this layer: the store
 // never writes change_log, it only reads it for the CDC poller.
 type Store struct {
-	writeDB *sql.DB
-	readDB  *sql.DB
-	qw      *gen.Queries // bound to the single writer connection
-	qr      *gen.Queries // bound to the reader pool
-	writeMu *contextMutex
+	writeDB        *sql.DB
+	readDB         *sql.DB
+	qw             *gen.Queries // bound to the single writer connection
+	qr             *gen.Queries // bound to the reader pool
+	writeMu        *contextMutex
+	coordinationMu sync.RWMutex
 }
 
 type contextMutex struct {

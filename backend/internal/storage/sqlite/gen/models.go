@@ -171,6 +171,7 @@ type AppSetting struct {
 	CloudOffering      bool
 	HarnessDefaults    string
 	VersionRefresh     bool
+	Coordination       string
 }
 
 type Automation struct {
@@ -599,6 +600,7 @@ type Report struct {
 	AcknowledgedAt     sql.NullTime
 	LastError          string
 	DeliveryBatchID    string
+	RecipientProjectID sql.NullString
 }
 
 type ReportOutput struct {

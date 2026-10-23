@@ -1,9 +1,9 @@
 -- name: CreateReport :one
 INSERT INTO reports (
     id, session_id, project_id, state, note, message, created_at, available_at,
-    settlement_deadline, repeat_count
+    settlement_deadline, repeat_count, recipient_project_id
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: CreateReportOutput :exec
@@ -36,14 +36,14 @@ LIMIT ?;
 
 -- name: ListPendingReportsByProjectSchedule :many
 SELECT * FROM reports
-WHERE project_id = ? AND delivery_state = 'pending'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'pending'
 ORDER BY available_at, created_at, id
-LIMIT ?;
+LIMIT sqlc.arg('limit');
 
 -- name: AssignPendingReportsToBatch :exec
 UPDATE reports
 SET delivery_batch_id = sqlc.arg(delivery_batch_id)
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'pending'
   AND delivery_batch_id = '';
 
 -- name: ClaimPendingReportsByBatch :many
@@ -51,14 +51,14 @@ UPDATE reports
 SET delivery_state = 'claimed', claim_token = sqlc.arg(claim_token),
     claimed_at = sqlc.arg(claimed_at), delivery_attempts = delivery_attempts + 1,
     last_error = ''
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'pending'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'pending'
   AND delivery_batch_id = sqlc.arg(delivery_batch_id)
 RETURNING *;
 
 -- name: AcknowledgeReportBatch :many
 UPDATE reports
 SET delivery_state = 'acknowledged', acknowledged_at = sqlc.arg(acknowledged_at)
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'claimed'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'claimed'
   AND claim_token = sqlc.arg(claim_token)
 RETURNING *;
 
@@ -66,7 +66,7 @@ RETURNING *;
 UPDATE reports
 SET delivery_state = 'pending', available_at = min(available_at, sqlc.arg(available_at)),
     claim_token = '', claimed_at = NULL, last_error = sqlc.arg(last_error)
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'claimed'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'claimed'
   AND claim_token = sqlc.arg(claim_token)
 RETURNING *;
 
@@ -74,12 +74,15 @@ RETURNING *;
 UPDATE reports
 SET delivery_state = 'pending', available_at = max(available_at, sqlc.arg(available_at)),
     claim_token = '', claimed_at = NULL, last_error = sqlc.arg(last_error)
-WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'claimed'
+WHERE COALESCE(recipient_project_id, project_id) = sqlc.arg(project_id) AND delivery_state = 'claimed'
   AND claim_token = sqlc.arg(claim_token)
 RETURNING *;
 
 -- name: GetReportInterrupt :one
 SELECT last_interrupted_at FROM report_worker_interrupts WHERE session_id = ?;
+
+-- name: CountUndeliveredManagerReports :one
+SELECT count(*) FROM reports WHERE recipient_project_id IS NOT NULL AND delivery_state != 'acknowledged';
 
 -- name: PutReportInterrupt :exec
 INSERT INTO report_worker_interrupts (session_id, last_interrupted_at)
