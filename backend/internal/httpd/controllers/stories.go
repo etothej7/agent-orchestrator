@@ -38,7 +38,7 @@ func (c *StoriesController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	stories, err := c.Svc.Store.ListStories(r.Context())
+	stories, err := c.Svc.List(r.Context())
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

@@ -310,7 +310,7 @@ func TestStoryAnswerRoutesToRequesterAndKeepsQuestionUntilDelivered(t *testing.T
 		t.Fatal(err)
 	}
 	m := &controlledStoryMessenger{result: chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "queued-turn", State: domain.TurnStateQueued}}}
-	svc := &storysvc.Service{Store: db, Messenger: m}
+	svc := &storysvc.Service{Store: &controlledStoryStore{Store: db, m: m}, Messenger: m}
 	if _, err = svc.Apply(ctx, storysvc.Command{ID: "question", StoryID: "s", Revision: 1, Kind: "question", SenderSessionID: requester.ID, Text: "Which color?"}); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestStoryAnswerRoutesToRequesterAndKeepsQuestionUntilDelivered(t *testing.T
 	if row.Question != "" {
 		t.Fatalf("delivered answer unresolved: %+v", row)
 	}
-	if len(m.keys) != 2 || m.keys[0] != m.keys[1] || m.recipients[0] != requester.ID || m.recipients[1] != requester.ID {
+	if len(m.keys) != 1 || m.recipients[0] != requester.ID {
 		t.Fatalf("wrong target or retry key: %+v", m)
 	}
 
@@ -373,7 +373,7 @@ func TestStoryDeliveryDefinitiveFailureIsNotUncertain(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := &controlledStoryMessenger{err: tc.err}
-			svc := &storysvc.Service{Store: db, Messenger: m}
+			svc := &storysvc.Service{Store: &controlledStoryStore{Store: db, m: m}, Messenger: m}
 			cmd := storysvc.Command{ID: "send", StoryID: "s", Revision: 1, Kind: "message", RecipientSessionID: recipient.ID, Text: "Question"}
 			event, err := svc.Apply(ctx, cmd)
 			if err == nil || event.Result != tc.want {
@@ -406,7 +406,7 @@ func TestStoryLateAnswerCannotResolveNewerQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &controlledStoryMessenger{result: chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "turn", State: domain.TurnStateQueued}}}
-	svc := &storysvc.Service{Store: db, Messenger: m}
+	svc := &storysvc.Service{Store: &controlledStoryStore{Store: db, m: m}, Messenger: m}
 	if _, err = svc.Apply(ctx, storysvc.Command{ID: "first-question", StoryID: "s", Revision: 1, Kind: "question", SenderSessionID: requester.ID, Text: "First?"}); err != nil {
 		t.Fatal(err)
 	}
@@ -425,5 +425,205 @@ func TestStoryLateAnswerCannotResolveNewerQuestion(t *testing.T) {
 	row, _ = db.GetStory(ctx, "s")
 	if row.Question != "New question?" || row.QuestionEventID != "new-question" {
 		t.Fatalf("late answer cleared a different question: %+v", row)
+	}
+}
+
+type controlledStoryStore struct {
+	storysvc.Store
+	m *controlledStoryMessenger
+}
+
+func (s *controlledStoryStore) TurnByID(ctx context.Context, id string) (domain.ConversationTurn, error) {
+	if s.m.result.Turn.ID == id {
+		return s.m.result.Turn, nil
+	}
+	return s.Store.TurnByID(ctx, id)
+}
+
+type pausedEvidenceStore struct {
+	storysvc.Store
+	read   chan struct{}
+	resume chan struct{}
+}
+
+func (s *pausedEvidenceStore) StoryEvents(ctx context.Context, id string) ([]domain.StoryEvent, error) {
+	events, err := s.Store.StoryEvents(ctx, id)
+	close(s.read)
+	<-s.resume
+	return events, err
+}
+
+func TestStoryNativeReviewMutationFencesPausedReadyCommand(t *testing.T) {
+	for _, state := range []domain.ReviewRunStatus{domain.ReviewRunRunning, domain.ReviewRunComplete} {
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			db := newTestStore(t)
+			seedProject(t, db, "repo")
+			worker, err := db.CreateSession(ctx, sampleRecord("repo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "in_review", Revision: 1}); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range []domain.StoryEvent{{ID: "impl", StoryID: "s", Kind: "implementation", SenderSessionID: worker.ID, Reference: "sha"}, {ID: "checks", StoryID: "s", Kind: "testing", Reference: "sha", Result: "passed"}} {
+				row, _ := db.GetStory(ctx, "s")
+				if _, _, err = db.ApplyStoryEvent(ctx, row, e, "{}"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now().UTC()
+			if err = db.UpsertReview(ctx, domain.Review{ID: "review", SessionID: worker.ID, ProjectID: "repo", Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			run := domain.ReviewRun{ID: "approved-run", ReviewID: "review", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: "https://github.com/test/repo/pull/1", TargetSHA: "sha", Status: domain.ReviewRunRunning, CreatedAt: now, StoryID: "s"}
+			if err = db.InsertReviewRun(ctx, run); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "Public approval", "", false); err != nil {
+				t.Fatal(err)
+			}
+			row, _ := db.GetStory(ctx, "s")
+			paused := &pausedEvidenceStore{Store: db, read: make(chan struct{}), resume: make(chan struct{})}
+			svc := &storysvc.Service{Store: paused}
+			done := make(chan error, 1)
+			go func() {
+				_, err := svc.Apply(ctx, storysvc.Command{ID: "ready", StoryID: "s", Revision: row.Revision, Kind: "ready_for_approval", Text: "Ready"})
+				done <- err
+			}()
+			select {
+			case <-paused.read:
+			case err := <-done:
+				t.Fatalf("Ready returned before evidence snapshot: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Ready did not reach evidence snapshot")
+			}
+			run.ID = "new-run"
+			run.Status = domain.ReviewRunRunning
+			if err = db.InsertReviewRun(ctx, run); err != nil {
+				close(paused.resume)
+				t.Fatal(err)
+			}
+			if state == domain.ReviewRunComplete {
+				if _, err = db.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, domain.VerdictChangesRequested, "Public changes requested", "", false); err != nil {
+					close(paused.resume)
+					t.Fatal(err)
+				}
+			}
+			close(paused.resume)
+			if err = <-done; err == nil {
+				t.Fatal("stale Ready committed after native evidence mutation")
+			}
+			after, _ := db.GetStory(ctx, "s")
+			if after.Status != "in_review" || after.Revision <= row.Revision || (state == domain.ReviewRunComplete && after.Revision < row.Revision+2) {
+				t.Fatalf("native mutation did not fence Ready: %+v", after)
+			}
+		})
+	}
+}
+
+func TestStoryQueuedAnswerSettlesForBoardAndWorkflowAfterReopen(t *testing.T) {
+	for _, readPath := range []string{"board", "workflow"} {
+		t.Run(readPath, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			db, err := sqlite.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedProject(t, db, "repo")
+			rec := sampleRecord("repo")
+			rec.Mode = domain.SessionModeChat
+			rec.Metadata.ControllerGeneration = "gen"
+			worker, err := db.CreateSession(ctx, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewer, err := db.CreateSession(ctx, sampleRecord("repo"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv, err := db.CreateConversation(ctx, "conv", domain.ConversationScopeSession, "repo", worker.ID, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.AppendUserMessage(ctx, conv.ID, worker.ID, "gen", domain.ConversationMessage{ID: "answer-message", Text: "Blue", Origin: domain.MessageOriginHuman}, "answer-turn", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "ready_for_approval", Revision: 1, Assignments: []domain.StoryAssignment{{SessionID: worker.ID, Role: "worker"}, {SessionID: reviewer.ID, Role: "reviewer"}}}); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range []domain.StoryEvent{{ID: "impl", StoryID: "s", Kind: "implementation", SenderSessionID: worker.ID, Reference: "sha"}, {ID: "checks", StoryID: "s", Kind: "testing", Reference: "sha", Result: "passed"}, {ID: "review", StoryID: "s", Kind: "review_passed", SenderSessionID: reviewer.ID, Reference: "sha"}} {
+				row, _ := db.GetStory(ctx, "s")
+				if _, _, err = db.ApplyStoryEvent(ctx, row, e, "{}"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := &controlledStoryMessenger{result: chatsvc.SteerOrSendResult{Turn: domain.ConversationTurn{ID: "answer-turn", State: domain.TurnStateQueued}}}
+			svc := &storysvc.Service{Store: db, Messenger: m}
+			row, _ := db.GetStory(ctx, "s")
+			if _, err = svc.Apply(ctx, storysvc.Command{ID: "question", StoryID: "s", Revision: row.Revision, Kind: "question", SenderSessionID: worker.ID, Text: "Color?"}); err != nil {
+				t.Fatal(err)
+			}
+			row, _ = db.GetStory(ctx, "s")
+			if _, err = svc.Apply(ctx, storysvc.Command{ID: "answer", StoryID: "s", Revision: row.Revision, Kind: "answer", Text: "Blue"}); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.SettleTurnByID(ctx, "answer-turn", domain.TurnStateCompleted, "", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = sqlite.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc = &storysvc.Service{Store: db}
+			if readPath == "board" {
+				rows, err := svc.List(ctx)
+				if err != nil || len(rows) != 1 || rows[0].Question != "" {
+					t.Fatalf("board failed to settle durable answer: %+v %v", rows, err)
+				}
+			}
+			row, _ = db.GetStory(ctx, "s")
+			cmd := storysvc.Command{ID: "complete", StoryID: "s", Revision: row.Revision, Kind: "done", Text: "Explicit scope complete", Reference: "sha"}
+			_, err = svc.Apply(ctx, cmd)
+			if readPath == "workflow" {
+				if err == nil {
+					t.Fatal("workflow should fence the revision changed by receipt settlement")
+				}
+				row, _ = db.GetStory(ctx, "s")
+				if row.Question != "" {
+					t.Fatal("workflow did not settle answer")
+				}
+				cmd.Revision = row.Revision
+				_, err = svc.Apply(ctx, cmd)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = sqlite.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			row, _ = db.GetStory(ctx, "s")
+			if row.Question != "" || row.Status != "done" {
+				t.Fatalf("settlement/completion lost on reopen: %+v", row)
+			}
+			if len(m.keys) != 1 {
+				t.Fatal("read reconciliation redelivered answer")
+			}
+		})
 	}
 }

@@ -1,3 +1,4 @@
+import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
 import { useQueryClient } from "@tanstack/react-query";
 import { paidPlanBadge, useCloudBilling } from "../hooks/useCloudBilling";
 import { useTranslation } from "react-i18next";
@@ -544,6 +545,8 @@ function useSelection() {
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
+		isWorkspace: pathname === "/workspace",
+		isTeam: pathname === "/team",
 		isAutomations: pathname === "/automations",
 		isArtifacts: pathname === "/artifacts",
 		activeRemoteHostId: params.hostId,
@@ -619,6 +622,7 @@ export function Sidebar({
 	const { t } = useTranslation();
 	const remoteNavigate = useNavigate();
 	const selection = useSelection();
+	const coordination = useCoordinationQuery();
 	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	// List behavior (force-open sections, lifted Show more caps) belongs to the
@@ -795,8 +799,8 @@ export function Sidebar({
 	// gets its own Scratchpad section below the project list rather than a
 	// project row appended to the end of it.
 	const projectWorkspaces = useMemo(
-		() => orderedWorkspaces.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND),
-		[orderedWorkspaces],
+		() => orderedWorkspaces.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND && workspace.id !== coordination.data?.coordinatorProjectId),
+		[orderedWorkspaces, coordination.data?.coordinatorProjectId],
 	);
 	const standaloneWorkspace = useMemo(
 		() => workspaces.find((workspace) => workspace.kind === STANDALONE_PROJECT_KIND),
@@ -1016,6 +1020,8 @@ export function Sidebar({
 					</SidebarGroup>
 				) : null}
 				<SidebarMenu className="mb-3 gap-0.5 group-data-[collapsible=icon]:gap-1">
+					<SidebarMenuItem><SidebarTopNavRow active={selection.isWorkspace} icon={<FolderOpen aria-hidden="true" />} label={t("workspace.home")} onClick={() => void remoteNavigate({ to: "/workspace" })} tooltip={isCollapsed ? t("workspace.home") : undefined} /></SidebarMenuItem>
+					<SidebarMenuItem><SidebarTopNavRow active={selection.isTeam} icon={<User aria-hidden="true" />} label={t("workspace.team")} onClick={() => void remoteNavigate({ to: "/team" })} tooltip={isCollapsed ? t("workspace.team") : undefined} /></SidebarMenuItem>
 					<SidebarMenuItem>
 						<SidebarTopNavRow
 							active={selection.isAutomations}

@@ -142,7 +142,7 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 	if !validID(c.ID) || !validID(c.StoryID) || len(c.Text) > 10000 || len(c.Reference) > 2000 {
 		return domain.StoryEvent{}, invalid("Valid command and story ids are required")
 	}
-	story, err := s.Store.GetStory(ctx, c.StoryID)
+	story, err := s.Read(ctx, c.StoryID)
 	if err != nil {
 		return domain.StoryEvent{}, err
 	}
@@ -366,7 +366,7 @@ func (s *Service) deliver(ctx context.Context, e domain.StoryEvent, recoverOnly 
 	if err != nil {
 		priorResult := e.Result
 		e.Result = "uncertain"
-		if (priorResult == "pending" && e.Reference == "") && (errors.Is(err, chatsvc.ErrNotChatMode) || errors.Is(err, chatsvc.ErrNoController) || errors.Is(err, ports.ErrSessionNotFound) || errors.Is(err, chatsvc.ErrSteerUnsupported) || errors.Is(err, chatsvc.ErrSteerContentUnsupported) || errors.Is(err, chatsvc.ErrTurnNotSteerable) || errors.Is(err, chatsvc.ErrSteerIdempotencyConflict) || errors.Is(err, domain.ErrClientMessageConflict)) {
+		if !errors.Is(err, chatsvc.ErrSteerDeliveryUncertain) && (errors.Is(err, chatsvc.ErrProviderRefused) || errors.Is(err, chatsvc.ErrControllerHandoff) || errors.Is(err, chatsvc.ErrSteerUnsupported) || errors.Is(err, chatsvc.ErrSteerContentUnsupported) || errors.Is(err, chatsvc.ErrTurnNotSteerable) || errors.Is(err, chatsvc.ErrSteerIdempotencyConflict) || errors.Is(err, domain.ErrClientMessageConflict) || (priorResult == "pending" && e.Reference == "" && (errors.Is(err, chatsvc.ErrNotChatMode) || errors.Is(err, chatsvc.ErrNoController) || errors.Is(err, ports.ErrSessionNotFound)))) {
 			e.Result = "failed"
 		}
 		_ = s.Store.FinishStoryDelivery(context.WithoutCancel(ctx), e)
@@ -439,4 +439,38 @@ func (s *Service) Events(ctx context.Context, id string) ([]domain.StoryEvent, e
 		events[i] = e
 	}
 	return events, nil
+}
+
+// List reconciles durable answer receipts before exposing board state.
+func (s *Service) List(ctx context.Context) ([]domain.Story, error) {
+	stories, err := s.Store.ListStories(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i, row := range stories {
+		if row.Question == "" {
+			continue
+		}
+		if _, err := s.Events(ctx, row.ID); err != nil {
+			return nil, err
+		}
+		current, err := s.Store.GetStory(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		stories[i] = current
+	}
+	return stories, nil
+}
+
+// Read settles answer receipts before a workflow command evaluates unresolved questions.
+func (s *Service) Read(ctx context.Context, id string) (domain.Story, error) {
+	row, err := s.Store.GetStory(ctx, id)
+	if err != nil || row.Question == "" {
+		return row, err
+	}
+	if _, err := s.Events(ctx, id); err != nil {
+		return row, err
+	}
+	return s.Store.GetStory(ctx, id)
 }

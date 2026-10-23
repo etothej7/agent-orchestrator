@@ -556,6 +556,18 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
+	it("puts Workspace and Team before secondary repository access without changing legacy routes", async () => {
+		renderSidebar();
+		const workspaceEntry = screen.getByRole("button", { name: "Workspace" });
+		const teamEntry = screen.getByRole("button", { name: "Team" });
+		const repositories = screen.getByRole("button", { name: "Repositories" });
+		expect(workspaceEntry.compareDocumentPosition(teamEntry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(teamEntry.compareDocumentPosition(repositories) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		await userEvent.click(workspaceEntry);
+		expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" });
+		await userEvent.click(teamEntry);
+		expect(navigateMock).toHaveBeenLastCalledWith({ to: "/team" });
+	});
 	it("creates local or remote projects from the header button", async () => {
 		const user = userEvent.setup();
 		renderSidebar({
@@ -767,7 +779,7 @@ describe("Sidebar", () => {
 		const content = document.querySelector('[data-sidebar="content"]');
 		expect(content).toHaveClass("overflow-y-auto", "scrollbar-none");
 		expect(content).not.toHaveClass("project-sidebar-scrollbar");
-		expect(content).not.toContainElement(screen.getByText("Projects"));
+		expect(content).not.toContainElement(screen.getByText("Repositories"));
 	});
 
 	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
@@ -2391,18 +2403,18 @@ describe("Sidebar", () => {
 
 		expect(screen.getByText("Project 10")).toBeInTheDocument();
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 4 more repositories" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Show 4 more projects" }));
+		await user.click(screen.getByRole("button", { name: "Show 4 more repositories" }));
 
 		expect(screen.getByText("Project 11")).toBeInTheDocument();
 		expect(screen.getByText("Project 14")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show fewer projects" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show fewer repositories" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Show fewer projects" }));
+		await user.click(screen.getByRole("button", { name: "Show fewer repositories" }));
 
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 4 more repositories" })).toBeInTheDocument();
 	});
 
 	it("keeps the active project row at the top of the scroller", () => {
@@ -2527,7 +2539,7 @@ describe("Sidebar", () => {
 		expect(scroller).toHaveClass("min-h-0", "flex-1");
 
 		// Show more stays directly beneath the project list and reveals the remainder.
-		const showMore = screen.getByRole("button", { name: "Show 4 more projects" });
+		const showMore = screen.getByRole("button", { name: "Show 4 more repositories" });
 		expect(showMore.parentElement).toBe(scroller.parentElement?.parentElement);
 		await user.click(showMore);
 		expect(scroller.style.maxHeight).toBe("");
@@ -2538,16 +2550,16 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		renderSidebar();
 
-		await user.click(screen.getByRole("button", { name: "Projects" }));
-		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Repositories" }));
+		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
 		expect(screen.queryByTestId("sidebar-projects-scroller")).not.toBeInTheDocument();
 		expect(screen.queryByText("Project One")).not.toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Projects" }));
-		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+		await user.click(screen.getByRole("button", { name: "Repositories" }));
+		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByText("Project One")).toBeInTheDocument();
 		expect(screen.getByTestId("sidebar-projects-scroller")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /Show (more|fewer) projects/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Show (more|fewer) repositories/ })).not.toBeInTheDocument();
 	});
 
 	it("keeps the project list capped behind Show more while the sidebar is toggled off", () => {
@@ -2562,15 +2574,15 @@ describe("Sidebar", () => {
 		// The sidebar slides away (offcanvas); it has no icon rail, so its lists
 		// must not lift their caps just because it is collapsed.
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { hidden: true, name: /more projects/ })).toBeInTheDocument();
+		expect(screen.getByRole("button", { hidden: true, name: /more repositories/ })).toBeInTheDocument();
 	});
 
 	it("does not reopen a closed Projects section when the sidebar is toggled off and on", async () => {
 		const user = userEvent.setup();
 		renderSidebar();
 
-		await user.click(screen.getByRole("button", { name: "Projects" }));
-		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Repositories" }));
+		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
 		await waitFor(() => expect(screen.queryByText(workspace.name)).not.toBeInTheDocument());
 
 		await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
@@ -2578,7 +2590,7 @@ describe("Sidebar", () => {
 		expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
 		await user.click(screen.getAllByRole("button", { hidden: true, name: "Expand sidebar" })[0]);
 
-		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
 		expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
 	});
 
@@ -3616,12 +3628,12 @@ describe("Sidebar active-session reveal", () => {
 	it("reopens a closed Projects section to reveal the active session", async () => {
 		const user = userEvent.setup();
 		const { go } = mount([workspace.id]);
-		await user.click(screen.getByRole("button", { name: "Projects" }));
-		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Repositories" }));
+		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
 
 		go(session.id);
 
-		await waitFor(() => expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true"));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "true"));
 		expect(await screen.findByLabelText("Open fix login")).toHaveAttribute("aria-current", "page");
 	});
 
