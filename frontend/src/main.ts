@@ -295,7 +295,7 @@ const ANALYTICS_OPT_OUT_CHANGED_CHANNEL = "telemetry:analyticsOptOutChanged";
 const telemetryIdentity = new TelemetryIdentityController(
 	desktopDataDir,
 	() => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null),
-	(url, init) => net.fetch(url, init),
+	(url, init) => globalThis.fetch(url, init),
 	(optedOut) => {
 		for (const shellContents of trustedShellWebContents.values()) if (!shellContents.isDestroyed()) shellContents.send(ANALYTICS_OPT_OUT_CHANGED_CHANNEL, optedOut);
 	},
@@ -360,7 +360,7 @@ let daemonStartEpoch = 0;
 let daemonStatus: DaemonStatus = { state: "stopped" };
 const awakeDownloads = createAwakeDownloadBridge({
  baseURL: () => daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null,
- request: (url, init) => net.fetch(url, init),
+ request: (url, init) => globalThis.fetch(url, init),
 });
 app.once("will-quit", () => awakeDownloads.dispose());
 
@@ -1221,6 +1221,8 @@ function editorStateDir(): string {
 const workspaceCheckUnavailable = (message: string) =>
 	Object.assign(new Error(message), { code: "SERVICE_UNAVAILABLE" });
 
+// Main-process loopback requests use Node fetch. Electron net.fetch adds browser
+// request metadata that the daemon correctly rejects without a renderer Origin.
 // Reads one absolute session path from the loopback-only desktop routes.
 async function fetchDesktopSessionPath(
 	sessionId: string,
@@ -1234,7 +1236,7 @@ async function fetchDesktopSessionPath(
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), DAEMON_PROBE_TIMEOUT_MS);
 	try {
-		const response = await net.fetch(
+		const response = await globalThis.fetch(
 			`http://127.0.0.1:${daemonStatus.port}/api/v1/desktop/sessions/${encodeURIComponent(sessionId)}/${route}`,
 			{ signal: controller.signal },
 		).catch((error: unknown) => {
@@ -1556,7 +1558,7 @@ async function readDaemonProbe(port: number, endpoint: "healthz" | "readyz"): Pr
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), DAEMON_PROBE_TIMEOUT_MS);
 	try {
-		const response = await net.fetch(`http://127.0.0.1:${port}/${endpoint}`, { signal: controller.signal });
+		const response = await globalThis.fetch(`http://127.0.0.1:${port}/${endpoint}`, { signal: controller.signal });
 		if (!response.ok) return null;
 		return parseDaemonProbe(endpoint, await response.json());
 	} catch {
