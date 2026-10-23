@@ -116,6 +116,9 @@ type ReportRecord struct {
 	ID        string
 	SessionID SessionID
 	ProjectID ProjectID
+	// RecipientProjectID is set only for manager-to-coordinator reports. Empty
+	// preserves worker-to-project routing. ProjectID always identifies the source.
+	RecipientProjectID ProjectID
 	// SessionDisplayName is resolved at delivery time for presentation. It is
 	// intentionally not persisted with the durable report row.
 	SessionDisplayName string
@@ -134,6 +137,14 @@ type ReportRecord struct {
 	AcknowledgedAt     time.Time
 	LastError          string
 	DeliveryBatchID    string
+}
+
+// DeliveryProjectID keeps source attribution separate from the durable destination.
+func (r ReportRecord) DeliveryProjectID() ProjectID {
+	if r.RecipientProjectID != "" {
+		return r.RecipientProjectID
+	}
+	return r.ProjectID
 }
 
 // ErrInvalidReport reports an invalid report or delivery transition input.

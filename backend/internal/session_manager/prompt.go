@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 type sessionPromptRole string
@@ -40,6 +42,7 @@ type systemPromptConfig struct {
 	ProjectRules          string
 	OrchestratorRules     string
 	AdditionalSections    []string
+	Coordination          domain.CoordinationConfig
 }
 
 type projectRulesConfig struct {
@@ -75,7 +78,14 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 	sections := make([]string, 0, 6)
 	switch cfg.Role {
 	case sessionPromptRoleOrchestrator:
-		sections = append(sections, orchestratorSystemPrompt(cfg.Project))
+		if cfg.Coordination.CoordinatorProjectID != "" && string(cfg.Coordination.CoordinatorProjectID) == cfg.Project.ID {
+			sections = append(sections, overallCoordinatorPrompt(cfg.Coordination))
+		} else {
+			sections = append(sections, orchestratorSystemPrompt(cfg.Project))
+			if cfg.Coordination.Manages(domain.ProjectID(cfg.Project.ID)) {
+				sections = append(sections, repoManagerCoordinationPrompt(cfg.Coordination))
+			}
+		}
 		if rules := strings.TrimSpace(cfg.OrchestratorRules); rules != "" {
 			sections = append(sections, "## Project-Specific Orchestrator Rules\n"+rules)
 		}

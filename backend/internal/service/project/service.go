@@ -25,6 +25,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
 )
 
 // Manager is the controller-facing contract for the /api/v1/projects surface.
@@ -814,6 +815,19 @@ func resolveDefaultBranch(ctx context.Context, path string) string {
 // archives the project registration. The original repository path and durable
 // session/history rows are preserved.
 func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error) {
+	ctx, releaseCoordination := coordination.ReadLock(ctx, m.store)
+	defer releaseCoordination()
+	if reader, ok := m.store.(interface {
+		GetCoordination(context.Context) (domain.CoordinationConfig, error)
+	}); ok {
+		cfg, err := reader.GetCoordination(ctx)
+		if err != nil {
+			return RemoveResult{}, err
+		}
+		if cfg.CoordinatorProjectID == id || cfg.Manages(id) {
+			return RemoveResult{}, apierr.Conflict("PROJECT_ASSIGNED_TO_COORDINATOR", "Remove this project's coordinator assignment before removing the project", nil)
+		}
+	}
 	if err := validateProjectID(id); err != nil {
 		return RemoveResult{}, err
 	}

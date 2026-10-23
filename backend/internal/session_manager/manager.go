@@ -26,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
@@ -906,6 +907,8 @@ func New(d Deps) *Manager {
 // materialization fails the still-seed row is deleted outright; a later failure
 // parks the row as terminated and rolls back what was built.
 func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	ctx, releaseCoordination := coordination.ReadLock(ctx, m.store)
+	defer releaseCoordination()
 	if cfg.RequestedOutput == domain.RequestedOutputArtifact && m.artifactDir("") == "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrArtifactOutputUnavailable)
 	}
@@ -2881,6 +2884,8 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 // runs before any durable session write, so a failure never resurrects the row
 // or destroys the worktree (it may hold the agent's prior work).
 func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+	ctx, releaseCoordination := coordination.ReadLock(ctx, m.store)
+	defer releaseCoordination()
 	if err := m.beginAgentOperation(ctx, id, agentOperationRestore); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -3183,6 +3188,8 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
 func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
+	ctx, releaseCoordination := coordination.ReadLock(ctx, m.store)
+	defer releaseCoordination()
 	if err := m.beginAgentResume(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
@@ -3420,6 +3427,8 @@ func (m *Manager) relaunchSessionWithPolicy(
 }
 
 func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string) (RestoreResult, error) {
+	ctx, releaseCoordination := coordination.ReadLock(ctx, m.store)
+	defer releaseCoordination()
 	// Relaunch dispatches from the currently committed persisted mode, never from
 	// a caller hint. The interface-transition coordinator changes that fact only
 	// after stopping the old controller, then reuses this ordinary restore path.
@@ -5089,6 +5098,13 @@ func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionI
 	if rec.Harness != domain.HarnessCopilot || rec.Kind != domain.KindOrchestrator {
 		return message, nil
 	}
+	coordination, err := m.coordinationConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	if rec.ProjectID != "" && rec.ProjectID == coordination.CoordinatorProjectID {
+		return overallCoordinatorPrompt(coordination) + "\n\nUSER MESSAGE:\n" + message, nil
+	}
 	return copilotOrchestratorMessage(rec.ProjectID, message), nil
 }
 
@@ -5819,6 +5835,12 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 		Role:       promptRoleForKind(kind),
 		Standalone: projectID == "",
 		Project:    promptProjectContext(projectID, project),
+	}
+	if kind == domain.KindOrchestrator {
+		cfg.Coordination, err = m.coordinationConfig(ctx)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	switch kind {

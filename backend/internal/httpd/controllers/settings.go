@@ -31,12 +31,16 @@ type SettingsService interface {
 // and the CLI all resolve the same value, so a preference held in one client would
 // disagree with the others.
 type SettingsController struct {
-	Svc SettingsService
+	Svc          SettingsService
+	Coordination CoordinationService
 }
 
 // Register mounts the settings routes.
 func (c *SettingsController) Register(r chi.Router) {
 	r.Get("/settings", c.get)
+	r.Get("/settings/coordination", c.getCoordination)
+	r.Put("/settings/coordination", c.setCoordination)
+	r.Post("/settings/coordination/project", c.createCoordinatorProject)
 	r.Patch("/settings/session-interface", c.setSessionInterface)
 	r.Patch("/settings/cloud-offering", c.setCloudOffering)
 	r.Patch("/settings/chat-hibernation", c.setChatHibernation)

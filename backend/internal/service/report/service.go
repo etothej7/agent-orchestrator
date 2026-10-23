@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
 )
 
 // Store is the report service's persistence and ownership boundary.
@@ -35,20 +36,22 @@ type ArtifactRecorder interface {
 
 // Service validates and creates durable worker reports.
 type Service struct {
-	store     Store
-	now       func() time.Time
-	newID     func() string
-	onCreated func(domain.ReportRecord)
-	artifacts ArtifactRecorder
+	store        Store
+	now          func() time.Time
+	newID        func() string
+	onCreated    func(domain.ReportRecord)
+	artifacts    ArtifactRecorder
+	coordination func(context.Context) (domain.CoordinationConfig, error)
 }
 
 // Deps configures a Service. Artifacts is optional.
 type Deps struct {
-	Store     Store
-	Now       func() time.Time
-	NewID     func() string
-	OnCreated func(domain.ReportRecord)
-	Artifacts ArtifactRecorder
+	Store        Store
+	Now          func() time.Time
+	NewID        func() string
+	OnCreated    func(domain.ReportRecord)
+	Artifacts    ArtifactRecorder
+	Coordination func(context.Context) (domain.CoordinationConfig, error)
 }
 
 // New constructs a report Service.
@@ -59,7 +62,7 @@ func New(d Deps) *Service {
 	if d.NewID == nil {
 		d.NewID = func() string { return "rpt_" + uuid.NewString() }
 	}
-	return &Service{store: d.Store, now: d.Now, newID: d.NewID, onCreated: d.OnCreated, artifacts: d.Artifacts}
+	return &Service{store: d.Store, now: d.Now, newID: d.NewID, onCreated: d.OnCreated, artifacts: d.Artifacts, coordination: d.Coordination}
 }
 
 // ListProject returns persisted report facts ordered by created_at then id,
@@ -97,6 +100,8 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 	if s == nil || s.store == nil {
 		return domain.ReportRecord{}, errors.New("report: store is required")
 	}
+	ctx, releaseCoordination := coordination.ReadLock(ctx, s.store)
+	defer releaseCoordination()
 	if input.SessionID == "" {
 		return domain.ReportRecord{}, apierr.Invalid("INVALID_REPORT_SESSION", "Worker session id is required", nil)
 	}
@@ -110,8 +115,34 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 	if !ok {
 		return domain.ReportRecord{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
+	var recipient domain.ProjectID
 	if session.Kind != domain.KindWorker {
-		return domain.ReportRecord{}, apierr.Invalid("REPORT_WORKER_REQUIRED", "Reports can only be created by worker sessions", nil)
+		if session.Kind != domain.KindOrchestrator || s.coordination == nil || session.IsTerminated || session.Activity.State == domain.ActivityExited {
+			return domain.ReportRecord{}, apierr.Invalid("REPORT_WORKER_REQUIRED", "Reports require a worker or an assigned, active repo manager", nil)
+		}
+		cfg, err := s.coordination(ctx)
+		if err != nil {
+			return domain.ReportRecord{}, err
+		}
+		if !cfg.Manages(session.ProjectID) {
+			return domain.ReportRecord{}, apierr.Invalid("REPORT_MANAGER_UNASSIGNED", "This orchestrator is not assigned to an overall coordinator", nil)
+		}
+		reader, ok := s.store.(interface {
+			ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
+		})
+		if !ok {
+			return domain.ReportRecord{}, errors.New("report: manager session reader is required")
+		}
+		sessions, err := reader.ListSessions(ctx, session.ProjectID)
+		if err != nil {
+			return domain.ReportRecord{}, err
+		}
+		for _, other := range sessions {
+			if other.Kind == domain.KindOrchestrator && !other.IsTerminated && other.Activity.State != domain.ActivityExited && other.CreatedAt.After(session.CreatedAt) {
+				return domain.ReportRecord{}, apierr.Invalid("REPORT_MANAGER_REPLACED", "The current repo manager must submit this report", nil)
+			}
+		}
+		recipient = cfg.CoordinatorProjectID
 	}
 
 	now := s.now().UTC()
@@ -128,9 +159,15 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 	}
 	rec := domain.ReportRecord{
 		ID: s.newID(), SessionID: session.ID, ProjectID: session.ProjectID,
-		State: input.State, Note: input.Note, Message: input.Message, Outputs: input.Outputs,
+		RecipientProjectID: recipient,
+		State:              input.State, Note: input.Note, Message: input.Message, Outputs: input.Outputs,
 		CreatedAt: now, DeliveryState: domain.ReportPending, AvailableAt: availableAt,
 		SettlementDeadline: settlementDeadline, RepeatCount: 1,
+	}
+	// Manager summaries and suggestions should reach the human-facing
+	// coordinator promptly, rather than waiting for worker settlement windows.
+	if recipient != "" {
+		rec.AvailableAt = now
 	}
 	created, err := s.store.CreateReport(ctx, rec)
 	if err != nil {
