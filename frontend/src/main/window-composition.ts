@@ -3,6 +3,7 @@ import type { BaseWindow, WebContents, WebContentsView } from "electron";
 type MainWindowHost = Pick<BaseWindow, "contentView" | "getContentBounds" | "isDestroyed" | "on" | "removeListener">;
 
 const windowResizeEvents = ["resize", "show", "restore", "enter-full-screen", "leave-full-screen"] as const;
+const windowRefreshEvents = ["show", "restore", "focus"] as const;
 
 export type WebContentsViewConstructor = new (options: {
 	webPreferences: Electron.WebPreferences;
@@ -47,6 +48,7 @@ export function createWindowComposition(options: {
 	let overlayOpen = false;
 	let disposed = false;
 	let surfaceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let surfaceRefreshRequest: ReturnType<typeof setTimeout> | undefined;
 	const resize = (): void => {
 		if (disposed || options.mainWindow.isDestroyed?.()) return;
 		const bounds = options.mainWindow.getContentBounds();
@@ -75,12 +77,22 @@ export function createWindowComposition(options: {
 			shellView.setBounds({ x: 0, y: 0, width: current.width, height: current.height });
 		}, 0);
 	};
-	// Initial navigation and reload can leave the same stale macOS surface as
-	// restacking, even though the renderer's DOM has loaded correctly. Refresh
-	// each completed load so recovery does not depend on opening an overlay or
-	// manually resizing the window.
+	const requestSurfaceRefresh = (): void => {
+		if (disposed || options.mainWindow.isDestroyed?.()) return;
+		clearTimeout(surfaceRefreshRequest);
+		surfaceRefreshRequest = setTimeout(() => {
+			surfaceRefreshRequest = undefined;
+			forceSurfaceRefresh();
+		}, 0);
+	};
+	// Our load listener runs before showWhenRendererLoaded shows the window.
+	// Defer the nudge until after that show (and its resize callbacks), otherwise
+	// the hidden surface is refreshed and the show immediately undoes the nudge.
+	// Refresh on activation too: macOS can replace the surface when a background
+	// launch is first focused or a minimized window is restored.
 	if (options.platform === "darwin") {
-		shellView.webContents.on("did-finish-load", forceSurfaceRefresh);
+		shellView.webContents.on("did-finish-load", requestSurfaceRefresh);
+		for (const event of windowRefreshEvents) options.mainWindow.on(event, requestSurfaceRefresh);
 	}
 
 	const placeShell = (open: boolean): void => {
@@ -129,7 +141,9 @@ export function createWindowComposition(options: {
 			if (disposed) return;
 			disposed = true;
 			clearTimeout(surfaceRefreshTimer);
-			shellView.webContents.removeListener("did-finish-load", forceSurfaceRefresh);
+			clearTimeout(surfaceRefreshRequest);
+			shellView.webContents.removeListener("did-finish-load", requestSurfaceRefresh);
+			for (const event of windowRefreshEvents) options.mainWindow.removeListener(event, requestSurfaceRefresh);
 			for (const event of windowResizeEvents) options.mainWindow.removeListener(event, resize);
 			try {
 				// Reading `contentView` on an already-destroyed BaseWindow throws

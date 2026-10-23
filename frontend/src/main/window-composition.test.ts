@@ -119,6 +119,7 @@ describe("createWindowComposition", () => {
 			view.setVisible.mockClear();
 			for (let load = 0; load < 2; load++) {
 				view.webContents.emit("did-finish-load");
+				vi.advanceTimersToNextTimer();
 				if (platform === "darwin") {
 					expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 639 });
 				}
@@ -141,11 +142,41 @@ describe("createWindowComposition", () => {
 		}
 	});
 
-	it("cancels a pending surface refresh and removes its load listener on disposal", () => {
+	it("refreshes after load-triggered show and again after restore or focus", () => {
+		vi.useFakeTimers();
+		try {
+			const { composition, mainWindow, view } = setup("darwin");
+			// main.ts registers showWhenRendererLoaded after creating composition.
+			view.webContents.once("did-finish-load", () => mainWindow.emit("show"));
+			view.setBounds.mockClear();
+			view.webContents.emit("did-finish-load");
+			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
+			vi.advanceTimersToNextTimer();
+			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 639 });
+			vi.runAllTimers();
+			expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
+			for (const event of ["restore", "focus"]) {
+				mainWindow.emit(event);
+				vi.advanceTimersToNextTimer();
+				expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 639 });
+				vi.runAllTimers();
+				expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
+			}
+			composition.dispose();
+			expect(mainWindow.listenerCount("show")).toBe(0);
+			expect(mainWindow.listenerCount("restore")).toBe(0);
+			expect(mainWindow.listenerCount("focus")).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([false, true])("cancels a pending surface refresh and removes its load listener on disposal (nudged=%s)", (nudged) => {
 		vi.useFakeTimers();
 		try {
 			const { composition, view } = setup("darwin");
 			view.webContents.emit("did-finish-load");
+			if (nudged) vi.advanceTimersToNextTimer();
 			composition.dispose();
 			view.setBounds.mockClear();
 			view.webContents.emit("did-finish-load");
