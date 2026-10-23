@@ -27,11 +27,13 @@ import (
 // loopback API, it is not cryptographic proof of worker authorship. Reports do
 // not mutate or derive authoritative session status.
 type CreateReportRequest struct {
-	SessionID string                `json:"sessionId"`
-	State     string                `json:"state,omitempty" enum:"checkpoint,needs_input,stuck,done"`
-	Note      string                `json:"note,omitempty" maxLength:"1000"`
-	Message   string                `json:"message,omitempty" maxLength:"1000"`
-	Outputs   []ReportOutputRequest `json:"outputs,omitempty"`
+	StoryID        string                `json:"storyId,omitempty"`
+	ClientReportID string                `json:"clientReportId,omitempty"`
+	SessionID      string                `json:"sessionId"`
+	State          string                `json:"state,omitempty" enum:"checkpoint,needs_input,stuck,done"`
+	Note           string                `json:"note,omitempty" maxLength:"1000"`
+	Message        string                `json:"message,omitempty" maxLength:"1000"`
+	Outputs        []ReportOutputRequest `json:"outputs,omitempty"`
 }
 
 // ReportOutputRequest is one ordered structured output reference.
@@ -56,6 +58,7 @@ type ReportOutputResponse struct {
 
 // ReportResponse is one persisted worker claim, independent of delivery state.
 type ReportResponse struct {
+	StoryID     string                 `json:"storyId,omitempty"`
 	ID          string                 `json:"id"`
 	SessionID   string                 `json:"sessionId"`
 	ProjectID   string                 `json:"projectId"`
@@ -3570,6 +3573,7 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
+	StoryID       string                       `json:"storyId,omitempty"`
 	Harness       domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig   domain.AgentConfig           `json:"agentConfig,omitempty"`
 	InterfaceMode domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
@@ -3834,4 +3838,51 @@ type SwitchSessionAgentAccountRequest struct {
 	// StopTurn cancels a turn in progress, for an agent stuck waiting on the old
 	// account's limit. Otherwise the move waits for the turn to finish.
 	StopTurn bool `json:"stopTurn,omitempty"`
+}
+
+// WorkspaceResponse is the integrated epic/story board projection.
+type WorkspaceResponse struct {
+	Epics   []domain.Epic  `json:"epics"`
+	Stories []domain.Story `json:"stories"`
+}
+
+// CreateEpicRequest creates a durable grouping.
+type CreateEpicRequest struct {
+	Epic domain.Epic `json:"epic"`
+}
+
+// CreateStoryRequest creates the scope and repository links.
+type CreateStoryRequest struct {
+	Story domain.Story `json:"story"`
+}
+
+// StoryDetailResponse contains public events, never provider payloads.
+type StoryDetailResponse struct {
+	Reports []ReportResponse    `json:"reports"`
+	Story   domain.Story        `json:"story"`
+	Events  []domain.StoryEvent `json:"events"`
+}
+
+// StoryIDParam selects one durable story.
+type StoryIDParam struct {
+	StoryID string `path:"storyId"`
+}
+
+// StoryCommandRequest is one explicit idempotent public action.
+type StoryCommandRequest struct {
+	Outcome            string           `json:"outcome"`
+	ID                 string           `json:"id"`
+	StoryID            string           `json:"storyId"`
+	Revision           int64            `json:"revision"`
+	Kind               string           `json:"kind"`
+	SenderSessionID    domain.SessionID `json:"senderSessionId"`
+	RecipientSessionID domain.SessionID `json:"recipientSessionId"`
+	Text               string           `json:"text"`
+	Reference          string           `json:"reference"`
+	Role               string           `json:"role"`
+}
+
+// StoryEventResponse returns the persisted decision or delivery receipt.
+type StoryEventResponse struct {
+	Event domain.StoryEvent `json:"event"`
 }

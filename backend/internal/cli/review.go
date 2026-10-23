@@ -65,6 +65,7 @@ type triggerReviewResponse struct {
 
 // triggerReviewRequest mirrors controllers.TriggerReviewRequest.
 type triggerReviewRequest struct {
+	StoryID            string             `json:"storyId,omitempty"`
 	Harness            string             `json:"harness,omitempty"`
 	AgentConfig        *reviewAgentConfig `json:"agentConfig,omitempty"`
 	PRURL              string             `json:"prUrl,omitempty"`
@@ -119,6 +120,7 @@ type reviewSessionOptions struct {
 }
 
 type reviewTriggerOptions struct {
+	story    string
 	session  string
 	prURL    string
 	harness  string
@@ -385,6 +387,7 @@ approval and does not authorize merging.`,
 		return pflag.NormalizedName(name)
 	})
 	f.StringVar(&opts.session, "session", "", "Worker session id (or pass it positionally; default: this AO session)")
+	f.StringVar(&opts.story, "story", "", "Explicit story context for this review run")
 	f.StringVar(&opts.prURL, "pr", "", "Review only this pull request URL, attaching it to the session if AO does not track it yet (default: every eligible PR on the session)")
 	f.StringVar(&opts.harness, "harness", "", "Reviewer agent / --agent for this pass only (e.g. claude-code, codex)")
 	f.StringVar(&opts.model, "model", "", "Reviewer model for this pass only")
@@ -403,6 +406,7 @@ func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts r
 		return usageError{errors.New("usage: worker session id is required (positional or --session) outside an AO session")}
 	}
 	req := triggerReviewRequest{
+		StoryID:            opts.story,
 		Harness:            strings.TrimSpace(opts.harness),
 		PRURL:              strings.TrimSpace(opts.prURL),
 		RejectReviewedHead: !opts.rerun,

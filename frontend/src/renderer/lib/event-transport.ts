@@ -357,13 +357,18 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 								? (decoded.payload as {
 										conversationId?: unknown;
 										reviewId?: unknown;
-										interfaceTransitionId?: unknown;
+										workspaceChanged?: unknown;
+ interfaceTransitionId?: unknown;
 										kind?: unknown;
 										agentId?: unknown;
 										projectId?: unknown;
 								  })
 								: undefined;
-						// A review run can start or finish without this window asking for
+						if (typeof payload?.workspaceChanged === "string") {
+ invalidate(["story-workspace"]);
+ invalidate(["story-detail"]);
+ }
+ // A review run can start or finish without this window asking for
 						// it: an agent ran `ao review trigger`, auto-review fired, or a
 						// reviewer submitted. Refresh that session's reviews so the
 						// inspector shows it instead of a stale verdict.

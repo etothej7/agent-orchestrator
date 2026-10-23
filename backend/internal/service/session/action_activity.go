@@ -348,3 +348,9 @@ func capActionText(value string) string {
 func itoa(value int64) string {
 	return strconv.FormatInt(value, 10)
 }
+
+// RecordStoryAction projects a confirmed public story decision into the author's
+// existing chat. The durable story event remains the source of truth.
+func (s *Service) RecordStoryAction(ctx context.Context, author domain.SessionID, event domain.StoryEvent) {
+	s.recordAction(ctx, author, actionDetail{Action: "story.updated", OperationID: event.ID, DisplayName: event.StoryID + ": " + event.Kind, TargetSessionID: string(event.RecipientSessionID)}, domain.ActivityStatusCompleted)
+}

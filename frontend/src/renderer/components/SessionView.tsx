@@ -1,3 +1,4 @@
+import { CoordinatorWorkspace } from "./CoordinatorWorkspace";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe2, Loader2, PanelRight, Plus } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
@@ -1965,7 +1966,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 								/>
 							) : showChatSurface ? (
-								<>
+								<CoordinatorWorkspace session={session} enabled={!hostId && !reviewerChatId && !session?.cloud}>
 								<SessionChatSurface
 									sideChatContainer={sideChatContainer}
 									key={uiSessionId}
@@ -2023,7 +2024,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 										<ReviewerChatSurface hideHeader hostId={hostId} workerSessionId={sessionId} reviewId={reviewerChatId} />
 									</div>
 								) : null}
-								</>
+								</CoordinatorWorkspace>
 							) : (
 								<CenterPane
 									hostId={hostId}

@@ -12758,6 +12758,215 @@ paths:
       summary: List resident memory of each live session's runtime process tree
       tags:
       - usage
+  /api/v1/workspace:
+    get:
+      operationId: getWorkspace
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: getWorkspace
+      tags:
+      - workspace
+  /api/v1/workspace/commands:
+    post:
+      operationId: applyStoryCommand
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoryCommandRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoryEventResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: applyStoryCommand
+      tags:
+      - workspace
+  /api/v1/workspace/epics:
+    post:
+      operationId: createEpic
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEpicRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateEpicRequest'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: createEpic
+      tags:
+      - workspace
+  /api/v1/workspace/stories:
+    post:
+      operationId: createStory
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStoryRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateStoryRequest'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: createStory
+      tags:
+      - workspace
+  /api/v1/workspace/stories/{storyId}:
+    get:
+      operationId: getStory
+      parameters:
+      - in: path
+        name: storyId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoryDetailResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: getStory
+      tags:
+      - workspace
 components:
   schemas:
     APIError:
@@ -16233,8 +16442,17 @@ components:
       required:
       - projectId
       type: object
+    CreateEpicRequest:
+      properties:
+        epic:
+          $ref: '#/components/schemas/Epic'
+      required:
+      - epic
+      type: object
     CreateReportRequest:
       properties:
+        clientReportId:
+          type: string
         message:
           maxLength: 1000
           type: string
@@ -16254,6 +16472,8 @@ components:
           - stuck
           - done
           type: string
+        storyId:
+          type: string
       required:
       - sessionId
       type: object
@@ -16263,6 +16483,13 @@ components:
           type: string
       required:
       - id
+      type: object
+    CreateStoryRequest:
+      properties:
+        story:
+          $ref: '#/components/schemas/Story'
+      required:
+      - story
       type: object
     CueDefinitionRequest:
       properties:
@@ -16669,6 +16896,16 @@ components:
           type: boolean
         includeUsage:
           type: boolean
+      type: object
+    Epic:
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
       type: object
     EstimatedCostResponse:
       properties:
@@ -18487,6 +18724,8 @@ components:
           type: string
         state:
           type: string
+        storyId:
+          type: string
       required:
       - id
       - sessionId
@@ -18643,6 +18882,8 @@ components:
         sessionId:
           type: string
         status:
+          type: string
+        storyId:
           type: string
         targetSha:
           type: string
@@ -20722,6 +20963,146 @@ components:
       - outcome
       - duplicate
       type: object
+    Story:
+      properties:
+        assignments:
+          items:
+            $ref: '#/components/schemas/StoryAssignment'
+          type: array
+        blockedReason:
+          type: string
+        epicId:
+          type: string
+        id:
+          type: string
+        projectIds:
+          items:
+            type: string
+          type: array
+        question:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        scope:
+          type: string
+        status:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - epicId
+      - title
+      - scope
+      - projectIds
+      - assignments
+      - status
+      - blockedReason
+      - question
+      - revision
+      type: object
+    StoryAssignment:
+      properties:
+        role:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - role
+      type: object
+    StoryCommandRequest:
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        outcome:
+          type: string
+        recipientSessionId:
+          type: string
+        reference:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        role:
+          type: string
+        senderSessionId:
+          type: string
+        storyId:
+          type: string
+        text:
+          type: string
+      required:
+      - outcome
+      - id
+      - storyId
+      - revision
+      - kind
+      - senderSessionId
+      - recipientSessionId
+      - text
+      - reference
+      - role
+      type: object
+    StoryDetailResponse:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/StoryEvent'
+          type: array
+        reports:
+          items:
+            $ref: '#/components/schemas/ReportResponse'
+          type: array
+        story:
+          $ref: '#/components/schemas/Story'
+      required:
+      - reports
+      - story
+      - events
+      type: object
+    StoryEvent:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        kind:
+          type: string
+        recipientSessionId:
+          type: string
+        reference:
+          type: string
+        result:
+          type: string
+        senderSessionId:
+          type: string
+        storyId:
+          type: string
+        text:
+          type: string
+      required:
+      - id
+      - storyId
+      - kind
+      - senderSessionId
+      - recipientSessionId
+      - text
+      - reference
+      - result
+      - createdAt
+      type: object
+    StoryEventResponse:
+      properties:
+        event:
+          $ref: '#/components/schemas/StoryEvent'
+      required:
+      - event
+      type: object
     SubmitReviewInput:
       properties:
         body:
@@ -20966,6 +21347,8 @@ components:
           enum:
           - manual
           - agent
+          type: string
+        storyId:
           type: string
       type: object
     TriggerReviewResponse:
@@ -21925,6 +22308,20 @@ components:
       - name
       - relativePath
       - repo
+      type: object
+    WorkspaceResponse:
+      properties:
+        epics:
+          items:
+            $ref: '#/components/schemas/Epic'
+          type: array
+        stories:
+          items:
+            $ref: '#/components/schemas/Story'
+          type: array
+      required:
+      - epics
+      - stories
       type: object
     WorkspaceSummary:
       properties:

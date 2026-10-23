@@ -58,7 +58,8 @@ func (c *ReportsController) list(w http.ResponseWriter, r *http.Request) {
 			outputs[j] = ReportOutputResponse{Kind: string(output.Kind), Reference: output.Reference, Label: output.Label}
 		}
 		response.Reports[i] = ReportResponse{
-			ID: record.ID, SessionID: string(record.SessionID), ProjectID: string(record.ProjectID),
+			StoryID: record.StoryID,
+			ID:      record.ID, SessionID: string(record.SessionID), ProjectID: string(record.ProjectID),
 			State: string(record.State), Note: record.Note, Message: record.Message,
 			Outputs: outputs, CreatedAt: record.CreatedAt, RepeatCount: record.RepeatCount,
 		}
@@ -83,6 +84,7 @@ func (c *ReportsController) create(w http.ResponseWriter, r *http.Request) {
 		outputs[i] = domain.ReportOutput{Kind: domain.ReportOutputKind(output.Kind), Reference: output.Reference, Label: output.Label}
 	}
 	rec, err := c.Svc.Create(r.Context(), reportsvc.CreateInput{
+		StoryID: req.StoryID, ClientReportID: req.ClientReportID,
 		SessionID: domain.SessionID(req.SessionID), State: domain.ReportState(req.State),
 		Note: req.Note, Message: req.Message, Outputs: outputs,
 	})

@@ -73,6 +73,7 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
+	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
@@ -994,6 +995,7 @@ func Run(buildVersion string) error {
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,
 		Coordination:       coordinationsvc.New(store, cfg.DataDir),
+		Stories:            &storysvc.Service{Store: store, Messenger: chatSvc, Actions: sessionSvc},
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           hookActivity,

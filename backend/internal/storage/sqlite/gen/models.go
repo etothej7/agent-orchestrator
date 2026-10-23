@@ -601,6 +601,8 @@ type Report struct {
 	LastError          string
 	DeliveryBatchID    string
 	RecipientProjectID sql.NullString
+	StoryID            sql.NullString
+	ClientReportID     sql.NullString
 }
 
 type ReportOutput struct {
@@ -651,6 +653,7 @@ type ReviewRun struct {
 	BatchID          string
 	AutoInjectReview bool
 	TriggerSource    domain.ReviewTriggerSource
+	StoryID          sql.NullString
 }
 
 type Session struct {
@@ -900,6 +903,11 @@ type UsageSource struct {
 	UpdatedAt       time.Time
 }
 
+type WorkspaceEpic struct {
+	ID    string
+	Title string
+}
+
 type WorkspaceRepo struct {
 	ProjectID     domain.ProjectID
 	Name          string
@@ -908,4 +916,18 @@ type WorkspaceRepo struct {
 	RegisteredAt  time.Time
 	DefaultBranch string
 	GitStatus     string
+}
+
+type WorkspaceStory struct {
+	ID       string
+	EpicID   string
+	Record   string
+	Revision int64
+}
+
+type WorkspaceStoryEvent struct {
+	ID      string
+	StoryID string
+	Record  string
+	Request string
 }

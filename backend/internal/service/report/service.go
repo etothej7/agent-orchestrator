@@ -21,11 +21,13 @@ type Store interface {
 
 // CreateInput is the validated caller payload before AO-derived ownership and deadlines.
 type CreateInput struct {
-	SessionID domain.SessionID
-	State     domain.ReportState
-	Note      string
-	Message   string
-	Outputs   []domain.ReportOutput
+	StoryID        string
+	ClientReportID string
+	SessionID      domain.SessionID
+	State          domain.ReportState
+	Note           string
+	Message        string
+	Outputs        []domain.ReportOutput
 }
 
 // ArtifactRecorder shows a reported artifact in the worker's chat thread. It
@@ -158,6 +160,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 		availableAt = now.Add(domain.ReportBatchFallback)
 	}
 	rec := domain.ReportRecord{
+		StoryID: input.StoryID, ClientReportID: input.ClientReportID,
 		ID: s.newID(), SessionID: session.ID, ProjectID: session.ProjectID,
 		RecipientProjectID: recipient,
 		State:              input.State, Note: input.Note, Message: input.Message, Outputs: input.Outputs,

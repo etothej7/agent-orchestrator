@@ -330,6 +330,9 @@ func (b PreparedBatch) Render() string {
 		if report.RepeatCount > 1 {
 			fmt.Fprintf(&out, " (repeated %d times)", report.RepeatCount)
 		}
+		if report.StoryID != "" {
+			fmt.Fprintf(&out, " [story %s]", report.StoryID)
+		}
 		text := report.Note
 		if text == "" {
 			text = report.Message
@@ -401,6 +404,7 @@ func coalesceReports(in []domain.ReportRecord) []domain.ReportRecord {
 func reportKey(report domain.ReportRecord) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%s", report.SessionID, report.State, report.Note, report.Message)
+	fmt.Fprintf(&b, "\x00%s", report.StoryID)
 	for _, output := range report.Outputs {
 		fmt.Fprintf(&b, "\x00%s\x00%s\x00%s", output.Kind, output.Reference, output.Label)
 	}

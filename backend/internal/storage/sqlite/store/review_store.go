@@ -239,6 +239,7 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		r.TriggerSource = domain.ReviewTriggerManual
 	}
 	err := s.qw.InsertReviewRun(ctx, gen.InsertReviewRunParams{
+		StoryID:          sql.NullString{String: r.StoryID, Valid: r.StoryID != ""},
 		ID:               r.ID,
 		ReviewID:         r.ReviewID,
 		SessionID:        r.SessionID,
@@ -490,6 +491,7 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		deliveredAt = &t
 	}
 	return domain.ReviewRun{
+		StoryID:          r.StoryID.String,
 		ID:               r.ID,
 		ReviewID:         r.ReviewID,
 		SessionID:        r.SessionID,

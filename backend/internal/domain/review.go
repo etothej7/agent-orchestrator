@@ -67,6 +67,7 @@ type ReviewerSurface struct {
 
 // ReviewRun is one review pass against a worker's PR.
 type ReviewRun struct {
+	StoryID   string    `json:"storyId,omitempty"`
 	ID        string    `json:"id"`
 	ReviewID  string    `json:"reviewId"`
 	SessionID SessionID `json:"sessionId"`

@@ -58,3 +58,12 @@ ao report "The focused tests pass; I am checking the generated diff."
 ao report --done --note "Ready for review." \
   --pr-created https://github.com/owner/repo/pull/88
 ```
+
+## Story context
+
+Pass `--story <id>` and `--client-report-id <stable-key>` together for story
+reports. Keep the key and payload identical when retrying. AO checks that the
+reporting session is explicitly assigned to that story and persists the report
+and story reference atomically. Never infer identity from a manager session:
+it may handle several stories at once. `--needs-input` records the question;
+`--stuck` records its blocker. `--done` does not complete a story.

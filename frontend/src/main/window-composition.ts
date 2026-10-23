@@ -59,7 +59,7 @@ export function createWindowComposition(options: {
 	// A native fullscreen/restore transition can miss the View notification or
 	// leave its bounds stale. Use the window's content dimensions and events so
 	// both rendering and hit testing follow the actual window size.
-	for (const event of windowResizeEvents) options.mainWindow.on(event, resize);
+	for (const event of windowResizeEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).on(event, resize);
 
 	// Force Chromium to rebuild the shell surface after reordering it. Identical
 	// bounds are ignored, so nudge by one pixel and restore on the next tick.
@@ -92,7 +92,7 @@ export function createWindowComposition(options: {
 	// launch is first focused or a minimized window is restored.
 	if (options.platform === "darwin") {
 		shellView.webContents.on("did-finish-load", requestSurfaceRefresh);
-		for (const event of windowRefreshEvents) options.mainWindow.on(event, requestSurfaceRefresh);
+		for (const event of windowRefreshEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).on(event, requestSurfaceRefresh);
 	}
 
 	const placeShell = (open: boolean): void => {
@@ -143,8 +143,8 @@ export function createWindowComposition(options: {
 			clearTimeout(surfaceRefreshTimer);
 			clearTimeout(surfaceRefreshRequest);
 			shellView.webContents.removeListener("did-finish-load", requestSurfaceRefresh);
-			for (const event of windowRefreshEvents) options.mainWindow.removeListener(event, requestSurfaceRefresh);
-			for (const event of windowResizeEvents) options.mainWindow.removeListener(event, resize);
+			for (const event of windowRefreshEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).removeListener(event, requestSurfaceRefresh);
+			for (const event of windowResizeEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).removeListener(event, resize);
 			try {
 				// Reading `contentView` on an already-destroyed BaseWindow throws
 				// "Object has been destroyed". On window close the `closed` event
