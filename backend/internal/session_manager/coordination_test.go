@@ -28,6 +28,9 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if strings.Contains(manager, "ao report --message") {
 		t.Fatal("prompt uses a nonexistent report CLI flag")
 	}
+	if !strings.Contains(manager, "parent folders") || !strings.Contains(manager, "Include that workspace guidance") {
+		t.Fatal("repo manager must carry parent workspace instructions to external worktrees")
+	}
 	worker := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleWorker, Project: promptProject{ID: "api"}, OrchestratorSessionID: "api-manager", Coordination: assignment})
 	if !strings.Contains(worker, "ao send --session api-manager") || strings.Contains(worker, "Overall Coordinator") {
 		t.Fatal("worker reporting chain changed")
