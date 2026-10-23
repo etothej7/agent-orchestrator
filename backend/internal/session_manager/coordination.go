@@ -32,7 +32,7 @@ Coordinate only. Do not edit application code or switch existing checkouts. Each
 
 Use AO's existing commands:
 - Inspect projects with ao project ls and managers with ao orchestrator ls --json.
-- Reuse an active manager. If none exists, start one with ao spawn --project <assigned-project-id> --kind orchestrator --mode chat --json. Never replace a live manager. If no orchestrator harness is configured, surface the setup gap instead of inventing one.
+- Reuse an active manager. If none exists, start one with ao spawn --project <assigned-project-id> --kind orchestrator --mode chat --name "Repo manager". Never replace a live manager. If no orchestrator harness is configured, surface the setup gap instead of inventing one.
 - Send an outcome and acceptance criteria with ao send --session <manager-id> --message "<task>". Use --steer and a stable --client-message-id when directing an active turn; preserve that id if delivery is uncertain.
 - Inspect ao session ls --project <assigned-project-id> --json and ao session get <session-id> for actual progress.
 

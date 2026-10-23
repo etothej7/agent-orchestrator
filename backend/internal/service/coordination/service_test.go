@@ -274,3 +274,20 @@ func TestAssignedProjectsCannotBeRemovedBeforeTeardown(t *testing.T) {
 		t.Fatalf("ordinary removal failed: %v", err)
 	}
 }
+
+func TestDedicatedCoordinatorCanBeRecreatedAfterRemoval(t *testing.T) {
+	s, svc, cfg, _ := setup(t)
+	if _, err := svc.Set(context.Background(), domain.CoordinationConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.New(s).Remove(context.Background(), cfg.CoordinatorProjectID); err != nil {
+		t.Fatal(err)
+	}
+	id, err := svc.CreateProject(context.Background(), domain.HarnessCodex)
+	if err != nil || id != cfg.CoordinatorProjectID {
+		t.Fatalf("recreate = %s, %v", id, err)
+	}
+	if _, err := svc.Set(context.Background(), cfg); err != nil {
+		t.Fatalf("recreated coordinator is unavailable: %v", err)
+	}
+}
