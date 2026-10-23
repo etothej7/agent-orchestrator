@@ -18,6 +18,9 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if strings.Contains(overall, "spawn a freeform worker") {
 		t.Fatal("overall coordinator received repo manager delegation instructions")
 	}
+	if !strings.Contains(overall, `ao spawn --project <assigned-project-id> --kind orchestrator --mode chat --name "Repo manager"`) {
+		t.Fatal("manager launch must include the CLI-required name and supported flags")
+	}
 	manager := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleOrchestrator, Project: promptProject{ID: "api"}, Coordination: assignment})
 	if !strings.Contains(manager, "Repo Manager Reporting Chain") || !strings.Contains(manager, `ao report "<summary or suggestion>"`) {
 		t.Fatal("repo manager cannot report upward")

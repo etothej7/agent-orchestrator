@@ -50,12 +50,22 @@ func (s *Service) CreateProject(ctx context.Context, harness domain.AgentHarness
 		return "", err
 	}
 	if found {
-		if existing.Kind != domain.ProjectKindScratch || existing.Path != path || !existing.ArchivedAt.IsZero() {
+		if existing.Kind != domain.ProjectKindScratch || existing.Path != path {
 			return "", apierr.Conflict("COORDINATOR_PROJECT_EXISTS", "The coordinator project name is already in use", nil)
+		}
+		if !existing.ArchivedAt.IsZero() {
+			if err := os.MkdirAll(path, 0o700); err != nil {
+				return "", err
+			}
+			existing.ArchivedAt = time.Time{}
+			existing.Config.Orchestrator.Harness = harness
+			if err := s.store.UpsertProject(ctx, existing); err != nil {
+				return "", err
+			}
 		}
 		return id, nil
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", err
 	}
 	err = s.store.UpsertProject(ctx, domain.ProjectRecord{
