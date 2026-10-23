@@ -310,3 +310,19 @@ func (s *coordinatorStore) SetReportBatchRecipient(_ context.Context, project do
 	}
 	return nil
 }
+
+func TestCoalesceInterleavedStoriesPreservesIdentity(t *testing.T) {
+	first := domain.ReportRecord{ID: "report-a", SessionID: "shared-manager", ProjectID: "repo", StoryID: "story-a", State: domain.ReportStuck, Note: "Same blocker", RepeatCount: 1, Outputs: []domain.ReportOutput{{Kind: domain.ReportOutputArtifact, Reference: "same-result"}}}
+	second := first
+	second.ID, second.StoryID = "report-b", "story-b"
+	repeat := first
+	repeat.ID = "report-a-repeat"
+	got := coalesceReports([]domain.ReportRecord{first, second, repeat})
+	if len(got) != 2 || got[0].ID != first.ID || got[0].StoryID != first.StoryID || got[0].RepeatCount != 2 || got[1].ID != second.ID || got[1].StoryID != second.StoryID || got[1].RepeatCount != 1 {
+		t.Fatalf("interleaved story identity lost: %+v", got)
+	}
+	rendered := (PreparedBatch{Reports: []domain.ReportRecord{first, second, repeat}}).Render()
+	if strings.Count(rendered, "[story story-a]") != 1 || strings.Count(rendered, "[story story-b]") != 1 || strings.Count(rendered, "Same blocker") != 2 {
+		t.Fatalf("delivery omitted a story: %s", rendered)
+	}
+}

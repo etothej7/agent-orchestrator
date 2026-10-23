@@ -148,11 +148,39 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 	// A worker's done report remains a claim and does not complete its other story.
 	now := time.Now().UTC()
 	report := domain.ReportRecord{ID: "rpt_story", SessionID: worker.ID, ProjectID: "repo", StoryID: "two", ClientReportID: "report-key", State: domain.ReportDone, Note: "Completed worker scope", CreatedAt: now, DeliveryState: domain.ReportPending, AvailableAt: now.Add(domain.ReportSettlementWindow), SettlementDeadline: now.Add(domain.ReportSettlementWindow), RepeatCount: 1}
+	report.Outputs = []domain.ReportOutput{{Kind: domain.ReportOutputArtifact, Reference: "story-two-result"}}
 	if _, err := db.CreateReport(ctx, report); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateReport(ctx, report); err != nil {
+	other := report
+	other.ID, other.StoryID, other.ClientReportID = "rpt_other", "one", "other-key"
+	other.Outputs = []domain.ReportOutput{{Kind: domain.ReportOutputArtifact, Reference: "story-one-result"}}
+	if _, err := db.CreateReport(ctx, other); err != nil {
 		t.Fatal(err)
+	}
+	retry := report
+	retry.ID = "unused-retry-id"
+	returned, err := db.CreateReport(ctx, retry)
+	if err != nil || returned.ID != report.ID || returned.StoryID != "two" || len(returned.Outputs) != 1 || returned.Outputs[0].Reference != "story-two-result" {
+		t.Fatalf("retry returned another story's report: %+v %v", returned, err)
+	}
+	for storyID, reportID := range map[string]string{"one": other.ID, "two": report.ID} {
+		events, err := db.StoryEvents(ctx, storyID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, event := range events {
+			if event.Kind == "report" {
+				if event.Reference != reportID || event.StoryID != storyID {
+					t.Fatalf("misattributed report reference: %+v", event)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing report event for %s", storyID)
+		}
 	}
 	report.StoryID = "one"
 	if _, err := db.CreateReport(ctx, report); err == nil {
