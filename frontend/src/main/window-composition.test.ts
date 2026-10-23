@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { createWindowComposition } from "./window-composition";
 
@@ -9,12 +10,12 @@ function setup(platform: NodeJS.Platform = "win32") {
 	const removeListener = vi.fn();
 	const close = vi.fn();
 	const view = {
-		webContents: { close },
+		webContents: Object.assign(new EventEmitter(), { close }),
 		setBackgroundColor: vi.fn(),
 		setBounds: vi.fn(),
 		setVisible: vi.fn(),
 	};
-	const mainWindow = {
+	const mainWindow = Object.assign(new EventEmitter(), {
 		contentView: {
 			addChildView,
 			getBounds: () => bounds,
@@ -24,8 +25,9 @@ function setup(platform: NodeJS.Platform = "win32") {
 			removeChildView,
 			removeListener,
 		},
+		getContentBounds: () => bounds,
 		isDestroyed: () => false,
-	};
+	});
 	function FakeWebContentsView() {
 		return view;
 	}
@@ -109,6 +111,68 @@ describe("createWindowComposition", () => {
 		}
 	});
 
+	it.each(["darwin", "win32", "linux"] as const)("refreshes initial and reloaded shell surfaces only on macOS (%s)", (platform) => {
+		vi.useFakeTimers();
+		try {
+			const { composition, view, setBounds } = setup(platform);
+			view.setBounds.mockClear();
+			view.setVisible.mockClear();
+			for (let load = 0; load < 2; load++) {
+				view.webContents.emit("did-finish-load");
+				if (platform === "darwin") {
+					expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 639 });
+				}
+				vi.runAllTimers();
+			}
+			if (platform === "darwin") {
+				expect(view.setBounds).toHaveBeenCalledTimes(4);
+				expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 900, height: 640 });
+				view.webContents.emit("did-finish-load");
+				setBounds({ x: 0, y: 0, width: 1000, height: 700 });
+				vi.runAllTimers();
+				expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1000, height: 700 });
+			} else {
+				expect(view.setBounds).not.toHaveBeenCalled();
+			}
+			expect(view.setVisible).not.toHaveBeenCalled();
+			composition.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("cancels a pending surface refresh and removes its load listener on disposal", () => {
+		vi.useFakeTimers();
+		try {
+			const { composition, view } = setup("darwin");
+			view.webContents.emit("did-finish-load");
+			composition.dispose();
+			view.setBounds.mockClear();
+			view.webContents.emit("did-finish-load");
+			vi.runAllTimers();
+			expect(view.webContents.listenerCount("did-finish-load")).toBe(0);
+			expect(view.setBounds).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("tracks native window transitions even when contentView bounds stay stale", () => {
+		const { composition, mainWindow, view } = setup("darwin");
+		const getContentBounds = vi.spyOn(mainWindow, "getContentBounds");
+		for (const event of ["resize", "show", "restore", "enter-full-screen", "leave-full-screen"]) {
+			getContentBounds.mockReturnValue({ x: 50, y: 60, width: 1320, height: 860 });
+			view.setBounds.mockClear();
+			mainWindow.emit(event);
+			expect(view.setBounds).toHaveBeenCalledExactlyOnceWith({ x: 0, y: 0, width: 1320, height: 860 });
+		}
+		composition.dispose();
+		view.setBounds.mockClear();
+		mainWindow.emit("resize");
+		expect(mainWindow.listenerCount("resize")).toBe(0);
+		expect(view.setBounds).not.toHaveBeenCalled();
+	});
+
 	it("resizes and disposes the explicit shell without recreating it", () => {
 		const { bounds, close, composition, emitBoundsChanged, removeChildView, removeListener, setBounds, view } = setup();
 
@@ -127,7 +191,7 @@ describe("createWindowComposition", () => {
 	it("still closes the shell WebContents when the BaseWindow is already destroyed", () => {
 		const close = vi.fn();
 		const view = {
-			webContents: { close },
+			webContents: Object.assign(new EventEmitter(), { close }),
 			setBackgroundColor: vi.fn(),
 			setBounds: vi.fn(),
 			setVisible: vi.fn(),
@@ -149,7 +213,10 @@ describe("createWindowComposition", () => {
 				if (destroyed) throw new TypeError("Object has been destroyed");
 				return contentView;
 			},
+			getContentBounds: contentView.getBounds,
 			isDestroyed: () => destroyed,
+			on: vi.fn(),
+			removeListener: vi.fn(),
 		};
 		const composition = createWindowComposition({
 			mainWindow: mainWindow as never,

@@ -1,6 +1,8 @@
 import type { BaseWindow, WebContents, WebContentsView } from "electron";
 
-type MainWindowHost = Pick<BaseWindow, "contentView" | "isDestroyed">;
+type MainWindowHost = Pick<BaseWindow, "contentView" | "getContentBounds" | "isDestroyed" | "on" | "removeListener">;
+
+const windowResizeEvents = ["resize", "show", "restore", "enter-full-screen", "leave-full-screen"] as const;
 
 export type WebContentsViewConstructor = new (options: {
 	webPreferences: Electron.WebPreferences;
@@ -43,28 +45,43 @@ export function createWindowComposition(options: {
 	options.mainWindow.contentView.addChildView(shellView, 0);
 
 	let overlayOpen = false;
+	let disposed = false;
+	let surfaceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 	const resize = (): void => {
-		if (options.mainWindow.isDestroyed?.()) return;
-		const bounds = options.mainWindow.contentView.getBounds();
+		if (disposed || options.mainWindow.isDestroyed?.()) return;
+		const bounds = options.mainWindow.getContentBounds();
 		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
 		shellView.setVisible(true);
 	};
 	options.mainWindow.contentView.on("bounds-changed", resize);
+	// A native fullscreen/restore transition can miss the View notification or
+	// leave its bounds stale. Use the window's content dimensions and events so
+	// both rendering and hit testing follow the actual window size.
+	for (const event of windowResizeEvents) options.mainWindow.on(event, resize);
 
 	// Force Chromium to rebuild the shell surface after reordering it. Identical
 	// bounds are ignored, so nudge by one pixel and restore on the next tick.
 	// The shell stays visible throughout; hiding either native view causes a flash.
 	const forceSurfaceRefresh = (): void => {
-		if (options.mainWindow.isDestroyed?.()) return;
-		const bounds = options.mainWindow.contentView.getBounds();
+		if (disposed || options.mainWindow.isDestroyed?.()) return;
+		const bounds = options.mainWindow.getContentBounds();
 		if (bounds.width <= 0 || bounds.height <= 0) return;
+		clearTimeout(surfaceRefreshTimer);
 		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: Math.max(1, bounds.height - 1) });
-		setTimeout(() => {
-			if (options.mainWindow.isDestroyed?.()) return;
-			const current = options.mainWindow.contentView.getBounds();
+		surfaceRefreshTimer = setTimeout(() => {
+			surfaceRefreshTimer = undefined;
+			if (disposed || options.mainWindow.isDestroyed?.()) return;
+			const current = options.mainWindow.getContentBounds();
 			shellView.setBounds({ x: 0, y: 0, width: current.width, height: current.height });
 		}, 0);
 	};
+	// Initial navigation and reload can leave the same stale macOS surface as
+	// restacking, even though the renderer's DOM has loaded correctly. Refresh
+	// each completed load so recovery does not depend on opening an overlay or
+	// manually resizing the window.
+	if (options.platform === "darwin") {
+		shellView.webContents.on("did-finish-load", forceSurfaceRefresh);
+	}
 
 	const placeShell = (open: boolean): void => {
 		if (open) {
@@ -109,6 +126,11 @@ export function createWindowComposition(options: {
 		restackShell,
 		resize,
 		dispose: () => {
+			if (disposed) return;
+			disposed = true;
+			clearTimeout(surfaceRefreshTimer);
+			shellView.webContents.removeListener("did-finish-load", forceSurfaceRefresh);
+			for (const event of windowResizeEvents) options.mainWindow.removeListener(event, resize);
 			try {
 				// Reading `contentView` on an already-destroyed BaseWindow throws
 				// "Object has been destroyed". On window close the `closed` event
