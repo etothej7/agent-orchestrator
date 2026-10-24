@@ -205,6 +205,16 @@ WITH exchanges AS (
             WHERE d.conversation_id = t.conversation_id AND d.state <> 'rejected'
               AND (d.state = 'reserved' OR d.provider_turn_id = t.provider_turn_id)
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_activities a
+            WHERE a.conversation_id = t.conversation_id AND a.turn_id = t.id
+              AND a.kind = 'system' AND json_extract(a.detail_json, '$.event') = 'steer'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turns source
+            WHERE source.conversation_id = t.conversation_id
+              AND (source.promoted_to_turn_id = t.id OR source.promotion_started_at IS NOT NULL)
+          )
           THEN 'turn' ELSE 'unavailable' END AS attribution
  FROM workspace_story_events e
  LEFT JOIN conversation_turns t
@@ -244,7 +254,8 @@ type ListWorkspaceReplyMessagesRow struct {
 }
 
 // Only the exact outbound turn; never session-wide history or activity payloads.
-// Any accepted steer or unresolved reservation makes reply attribution ambiguous.
+// Receipts, legacy steer activities, and promotions all carry shared-turn facts.
+// An unresolved promotion has no durable target, so withhold conversation-wide.
 func (q *Queries) ListWorkspaceReplyMessages(ctx context.Context, storyID string) ([]ListWorkspaceReplyMessagesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listWorkspaceReplyMessages, storyID)
 	if err != nil {

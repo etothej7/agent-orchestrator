@@ -23,7 +23,8 @@ SELECT * FROM reports WHERE session_id = ? AND client_report_id = ?;
 
 -- name: ListWorkspaceReplyMessages :many
 -- Only the exact outbound turn; never session-wide history or activity payloads.
--- Any accepted steer or unresolved reservation makes reply attribution ambiguous.
+-- Receipts, legacy steer activities, and promotions all carry shared-turn facts.
+-- An unresolved promotion has no durable target, so withhold conversation-wide.
 WITH exchanges AS (
  SELECT e.id, CAST(json_extract(e.record, '$.createdAt') AS TEXT) AS position, e.record,
         t.id AS turn_id, t.conversation_id,
@@ -38,6 +39,16 @@ WITH exchanges AS (
             SELECT 1 FROM conversation_steer_deliveries d
             WHERE d.conversation_id = t.conversation_id AND d.state <> 'rejected'
               AND (d.state = 'reserved' OR d.provider_turn_id = t.provider_turn_id)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_activities a
+            WHERE a.conversation_id = t.conversation_id AND a.turn_id = t.id
+              AND a.kind = 'system' AND json_extract(a.detail_json, '$.event') = 'steer'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turns source
+            WHERE source.conversation_id = t.conversation_id
+              AND (source.promoted_to_turn_id = t.id OR source.promotion_started_at IS NOT NULL)
           )
           THEN 'turn' ELSE 'unavailable' END AS attribution
  FROM workspace_story_events e
