@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "質問に回答 — {{requester}}",
+	"workspace.use_existing_answer": "この配信済みメッセージを回答として使用",
+	"workspace.confirm_existing_answer": "既存の回答を確認",
+	"workspace.original_message": "元のメッセージ",
+	"workspace.recorded_reply": "記録済みの公開返信",
+	"workspace.confirm_answer_explanation": "この配信済みメッセージと公開返信を質問に関連付けます。再送信は行いません。",
+	"workspace.confirm_answer_without_resending": "再送信せずに回答を確認",
+	"workspace.cancel_confirmation": "確認をキャンセル",
+	"workspace.confirmation_sources": "質問: {{question}} · 公開返信: {{reply}}",
 	"workspace.worker": "実装担当",
 	"workspace.reviewer": "レビュー担当",
 	"workspace.agent_replies": "エージェントの返信",

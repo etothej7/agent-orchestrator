@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "Répondre à la question — {{requester}}",
+	"workspace.use_existing_answer": "Utiliser ce message remis comme réponse",
+	"workspace.confirm_existing_answer": "Confirmer la réponse existante",
+	"workspace.original_message": "Message original",
+	"workspace.recorded_reply": "Réponse publique enregistrée",
+	"workspace.confirm_answer_explanation": "Associer ce message remis et la réponse publique à cette question. Rien ne sera renvoyé.",
+	"workspace.confirm_answer_without_resending": "Confirmer sans renvoyer",
+	"workspace.cancel_confirmation": "Annuler la confirmation",
+	"workspace.confirmation_sources": "Question : {{question}} · Réponse publique : {{reply}}",
 	"workspace.worker": "Agent exécutant",
 	"workspace.reviewer": "Réviseur",
 	"workspace.agent_replies": "Réponses de l’agent",

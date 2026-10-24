@@ -3877,6 +3877,8 @@ type StoryIDParam struct {
 
 // StoryCommandRequest is one explicit idempotent public action.
 type StoryCommandRequest struct {
+	QuestionEventID    string           `json:"questionEventId,omitempty"`
+	ReplyMessageID     string           `json:"replyMessageId,omitempty"`
 	Outcome            string           `json:"outcome"`
 	ID                 string           `json:"id"`
 	StoryID            string           `json:"storyId"`

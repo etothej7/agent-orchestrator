@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "Answer question — {{requester}}",
+	"workspace.use_existing_answer": "Use this delivered message as answer",
+	"workspace.confirm_existing_answer": "Confirm existing answer",
+	"workspace.original_message": "Original message",
+	"workspace.recorded_reply": "Recorded public reply",
+	"workspace.confirm_answer_explanation": "Link this delivered message and public reply to this question. Nothing will be sent again.",
+	"workspace.confirm_answer_without_resending": "Confirm answer without resending",
+	"workspace.cancel_confirmation": "Cancel confirmation",
+	"workspace.confirmation_sources": "Question: {{question}} · Public reply: {{reply}}",
 	"workspace.worker": "Worker",
 	"workspace.reviewer": "Reviewer",
 	"workspace.agent_replies": "Agent replies",

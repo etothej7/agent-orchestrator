@@ -158,3 +158,76 @@ it.each([
  expect(Boolean(within(activity).queryByRole("button", { name: label }))).toBe(linked);
  if (_case === "terminated") expect(within(screen.getByLabelText("Responsible agent")).queryByRole("option", { name: label })).not.toBeInTheDocument();
 });
+
+it("offers an explicit named Answer question action without changing ordinary message semantics", async () => {
+ const post = vi.spyOn(apiClient, "POST").mockResolvedValue({ data: {} } as never);
+ mount(); await userEvent.click(await screen.findByText("TEST first story"));
+ expect(await screen.findByLabelText("Story action")).toHaveValue("message");
+ await userEvent.click(screen.getByRole("button", { name: "Answer question — Alex Shared Manager · Manager (manager)" }));
+ expect(screen.getByLabelText("Story message")).toHaveFocus();
+ expect(screen.getByLabelText("Story action")).toHaveValue("answer");
+ expect(screen.queryByLabelText("Responsible agent")).not.toBeInTheDocument();
+ await userEvent.type(screen.getByLabelText("Story message"), "Blue");
+ await userEvent.click(screen.getByRole("button", { name: "Send to agent" }));
+ await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+ expect(post.mock.calls[0]?.[1]).toMatchObject({ body: { kind: "answer", questionEventId: "question", storyId: "one", senderSessionId: "", text: "Blue" } });
+});
+
+function existingAnswerFixture(mode = "delivered") {
+ let resolved = false;
+ vi.mocked(apiClient.GET).mockImplementation(async path => {
+  const story = { ...one, blockedReason: "", question: resolved ? "" : one.question, questionEventId: resolved ? "" : "question", questionRequesterSessionId: resolved ? "" : "manager" };
+  if (path === "/api/v1/workspace") return { data: { epics: [], stories: [story] } } as never;
+  return { data: { story, events: [
+   { id: "question", kind: "question", storyId: "one", senderSessionId: "manager", text: "Which fixture?", createdAt: "2026-10-24T21:34:49Z" },
+   { id: "original-blue", kind: "message", storyId: "one", senderSessionId: "", recipientSessionId: mode === "other-requester" ? "other" : "manager", text: "blue", result: mode === "queued" || mode === "failed" || mode === "uncertain" ? mode : "delivered", deliveryKind: "turn", createdAt: "2026-10-24T21:53:41Z" },
+  ], replyThreads: [{ exchangeId: "original-blue", attribution: mode === "shared" ? "unavailable" : "turn", messages: mode === "no-reply" ? [] : [{ id: "original-ack", conversationId: "conversation", turnId: "original-turn", senderSessionId: "manager", recipientSessionId: "", text: "Blue acknowledged", streaming: mode === "streaming", createdAt: "2026-10-24T21:53:50Z", updatedAt: "2026-10-24T21:53:50Z" }] }] } } as never;
+ });
+ return () => { resolved = true; };
+}
+
+it("requires explicit confirmation of original delivered message and reply, then refreshes and reopens settled", async () => {
+ const resolve = existingAnswerFixture();
+ const post = vi.spyOn(apiClient, "POST").mockImplementation(async () => { resolve(); return { data: {} } as never; });
+ mount(); await userEvent.click(await screen.findByText("TEST first story"));
+ await userEvent.click(await screen.findByRole("button", { name: "Use this delivered message as answer" }));
+ expect(post).not.toHaveBeenCalled();
+ const confirmation = screen.getByRole("region", { name: "Confirm existing answer" });
+ expect(confirmation).toHaveTextContent("Alex Shared Manager · Manager (manager)");
+ expect(confirmation).toHaveTextContent("original-blue");
+ expect(confirmation).toHaveTextContent("original-ack");
+ expect(confirmation).toHaveTextContent("Blue acknowledged");
+ await userEvent.click(within(confirmation).getByRole("button", { name: "Confirm answer without resending" }));
+ await waitFor(() => expect(screen.queryByText("Needs Ed: Which fixture?")).not.toBeInTheDocument());
+ expect(post).toHaveBeenCalledTimes(1);
+ expect(post.mock.calls[0]?.[1]).toMatchObject({ body: { kind: "answer_confirmation", questionEventId: "question", reference: "original-blue", replyMessageId: "original-ack", senderSessionId: "", storyId: "one" } });
+ await userEvent.click(screen.getByRole("button", { name: "Back to stories" }));
+ expect(await screen.findByText("TEST first story")).toBeVisible();
+ expect(screen.queryByText(/Needs Ed/)).not.toBeInTheDocument();
+ await userEvent.click(screen.getByText("TEST first story"));
+ expect(await screen.findByText("Blue acknowledged")).toBeVisible();
+ expect(screen.queryByRole("button", { name: /Answer question/ })).not.toBeInTheDocument();
+ expect(screen.getByText("In progress")).toBeVisible();
+});
+
+it.each(["queued", "failed", "uncertain", "other-requester", "shared", "streaming", "no-reply"])("does not offer reconciliation for %s evidence", async mode => {
+ existingAnswerFixture(mode);
+ mount(); await userEvent.click(await screen.findByText("TEST first story"));
+ await screen.findByText("Needs Ed: Which fixture?");
+ expect(screen.queryByRole("button", { name: "Use this delivered message as answer" })).not.toBeInTheDocument();
+});
+
+it("keeps the original confirmation handle after a lost response and does not locally resolve the question", async () => {
+ existingAnswerFixture();
+ const post = vi.spyOn(apiClient, "POST").mockRejectedValueOnce(new Error("response lost")).mockResolvedValue({ data: {} } as never);
+ mount(); await userEvent.click(await screen.findByText("TEST first story"));
+ await userEvent.click(await screen.findByRole("button", { name: "Use this delivered message as answer" }));
+ await userEvent.click(screen.getByRole("button", { name: "Confirm answer without resending" }));
+ await screen.findByRole("alert");
+ expect(screen.getAllByText("Needs Ed: Which fixture?").length).toBeGreaterThan(0);
+ const original = post.mock.calls[0]?.[1];
+ await userEvent.click(screen.getByRole("button", { name: "Retry same request" }));
+ await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+ expect(post.mock.calls[1]?.[1]).toEqual(original);
+ expect(screen.getAllByText("Needs Ed: Which fixture?").length).toBeGreaterThan(0);
+});

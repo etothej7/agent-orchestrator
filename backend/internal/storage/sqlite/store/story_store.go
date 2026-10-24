@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -129,6 +130,11 @@ func (s *Store) ApplyStoryEvent(ctx context.Context, story domain.Story, e domai
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if e.Kind == "answer_confirmation" {
+			if err := validateStoryAnswerConfirmation(ctx, q, story.ID, e); err != nil {
+				return err
+			}
+		}
 		revision := story.Revision
 		story.Revision++
 		count, err := q.UpdateWorkspaceStory(ctx, gen.UpdateWorkspaceStoryParams{ID: story.ID, Record: storyJSON(story), Revision: revision})
@@ -141,6 +147,67 @@ func (s *Store) ApplyStoryEvent(ctx context.Context, story domain.Story, e domai
 		return q.CreateWorkspaceEvent(ctx, gen.CreateWorkspaceEventParams{ID: e.ID, StoryID: e.StoryID, Record: storyJSON(e), Request: request})
 	})
 	return e, duplicate, err
+}
+
+// validateStoryAnswerConfirmation runs inside the same transaction as the
+// revision-fenced question update. It reads only existing durable/public facts.
+func validateStoryAnswerConfirmation(ctx context.Context, q *gen.Queries, storyID string, e domain.StoryEvent) error {
+	invalid := func() error {
+		return apierr.Invalid("INVALID_STORY", "Existing message and final public reply must match this question and requester", nil)
+	}
+	row, err := q.GetWorkspaceStory(ctx, storyID)
+	if err != nil {
+		return err
+	}
+	var current domain.Story
+	if err := json.Unmarshal([]byte(row.Record), &current); err != nil {
+		return err
+	}
+	if current.Question == "" || current.QuestionEventID != e.RelatedEventID || current.QuestionRequesterSessionID != e.RecipientSessionID || e.SenderSessionID != "" {
+		return invalid()
+	}
+	events, err := q.ListWorkspaceEvents(ctx, storyID)
+	if err != nil {
+		return err
+	}
+	var source domain.StoryEvent
+	questionSeen := false
+	for _, record := range events {
+		var event domain.StoryEvent
+		if err := json.Unmarshal([]byte(record.Record), &event); err != nil {
+			return err
+		}
+		if event.ID == e.RelatedEventID && event.Kind == "question" && event.SenderSessionID == e.RecipientSessionID {
+			questionSeen = true
+		}
+		if event.ID == e.Reference && questionSeen {
+			source = event
+			break
+		}
+	}
+	if source.ID == "" || source.Kind != "message" || source.SenderSessionID != "" || source.RecipientSessionID != e.RecipientSessionID || source.Result != "delivered" || source.DeliveryKind != "turn" {
+		return invalid()
+	}
+	turn, err := q.SelectConversationTurnByID(ctx, source.Reference)
+	if errors.Is(err, sql.ErrNoRows) {
+		return invalid()
+	}
+	if err != nil {
+		return err
+	}
+	if turn.State != domain.TurnStateCompleted || turn.HandledBySessionID != e.RecipientSessionID {
+		return invalid()
+	}
+	replies, err := q.ListWorkspaceReplyMessages(ctx, storyID)
+	if err != nil {
+		return err
+	}
+	for _, reply := range replies {
+		if reply.ExchangeID == source.ID && reply.Attribution == "turn" && reply.ID.Valid && reply.ID.String == e.ReplyMessageID && reply.Streaming.Valid && reply.Streaming.Int64 == 0 && strings.TrimSpace(reply.Text.String) != "" {
+			return nil
+		}
+	}
+	return invalid()
 }
 
 // FinishStoryDelivery updates a receipt without changing the story's workflow status.

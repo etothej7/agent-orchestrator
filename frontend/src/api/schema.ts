@@ -7454,8 +7454,10 @@ export interface components {
             id: string;
             kind: string;
             outcome: string;
+            questionEventId?: string;
             recipientSessionId: string;
             reference: string;
+            replyMessageId?: string;
             /** Format: int64 */
             revision: number;
             role: string;
@@ -7478,6 +7480,7 @@ export interface components {
             recipientSessionId: string;
             reference: string;
             relatedEventId?: string;
+            replyMessageId?: string;
             result: string;
             reviewId?: string;
             reviewRunId?: string;

@@ -32,6 +32,7 @@ type Story struct {
 
 // StoryEvent is an explicit public exchange or decision, not a provider transcript.
 type StoryEvent struct {
+	ReplyMessageID     string    `json:"replyMessageId,omitempty"`
 	RelatedEventID     string    `json:"relatedEventId,omitempty"`
 	ReviewID           string    `json:"reviewId,omitempty"`
 	ReviewRunID        string    `json:"reviewRunId,omitempty"`

@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "Frage beantworten — {{requester}}",
+	"workspace.use_existing_answer": "Diese zugestellte Nachricht als Antwort verwenden",
+	"workspace.confirm_existing_answer": "Vorhandene Antwort bestätigen",
+	"workspace.original_message": "Ursprüngliche Nachricht",
+	"workspace.recorded_reply": "Gespeicherte öffentliche Antwort",
+	"workspace.confirm_answer_explanation": "Diese zugestellte Nachricht und öffentliche Antwort mit dieser Frage verknüpfen. Es wird nichts erneut gesendet.",
+	"workspace.confirm_answer_without_resending": "Antwort ohne erneutes Senden bestätigen",
+	"workspace.cancel_confirmation": "Bestätigung abbrechen",
+	"workspace.confirmation_sources": "Frage: {{question}} · Öffentliche Antwort: {{reply}}",
 	"workspace.worker": "Ausführender Agent",
 	"workspace.reviewer": "Prüfer",
 	"workspace.agent_replies": "Agentenantworten",

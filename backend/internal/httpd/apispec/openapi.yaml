@@ -21040,9 +21040,13 @@ components:
           type: string
         outcome:
           type: string
+        questionEventId:
+          type: string
         recipientSessionId:
           type: string
         reference:
+          type: string
+        replyMessageId:
           type: string
         revision:
           format: int64
@@ -21105,6 +21109,8 @@ components:
         reference:
           type: string
         relatedEventId:
+          type: string
+        replyMessageId:
           type: string
         result:
           type: string

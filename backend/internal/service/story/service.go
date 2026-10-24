@@ -51,6 +51,8 @@ type Service struct {
 
 // Command is an explicit, retryable story operation. Revision prevents lost updates.
 type Command struct {
+	QuestionEventID    string           `json:"questionEventId,omitempty"`
+	ReplyMessageID     string           `json:"replyMessageId,omitempty"`
 	Outcome            string           `json:"outcome"`
 	ID                 string           `json:"id"`
 	StoryID            string           `json:"storyId"`
@@ -127,8 +129,14 @@ func validID(id string) bool {
 
 // Apply records explicit decisions before delivery. A retry always retains its original payload.
 func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, error) {
-	if c.Kind == "answer" {
+	if c.Kind == "answer" || c.Kind == "answer_confirmation" {
 		c.RecipientSessionID = ""
+	}
+	if c.Kind != "answer" && c.Kind != "answer_confirmation" {
+		c.QuestionEventID = ""
+	}
+	if c.Kind != "answer_confirmation" {
+		c.ReplyMessageID = ""
 	}
 	if c.Kind != "assignment" {
 		c.Role = ""
@@ -215,7 +223,24 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 		story.Question = c.Text
 		story.QuestionEventID = c.ID
 		story.QuestionRequesterSessionID = c.SenderSessionID
+	case "answer_confirmation":
+		if c.SenderSessionID != "" || story.Question == "" || c.QuestionEventID == "" || c.QuestionEventID != story.QuestionEventID || story.QuestionRequesterSessionID == "" || !validID(c.Reference) || !validID(c.ReplyMessageID) {
+			return e, invalid("Confirm an existing delivered message for this exact unresolved question")
+		}
+		e.RelatedEventID = c.QuestionEventID
+		e.RecipientSessionID = story.QuestionRequesterSessionID
+		e.ReplyMessageID = c.ReplyMessageID
+		e.Text = "Confirmed an existing delivered message as the answer; nothing resent."
+		e.Result = "confirmed"
+		// The store validates original delivery and public reply proof atomically
+		// with this decision; neither a receipt nor arbitrary text resolves it.
+		story.Question = ""
+		story.QuestionEventID = ""
+		story.QuestionRequesterSessionID = ""
 	case "answer":
+		if c.QuestionEventID != "" && c.QuestionEventID != story.QuestionEventID {
+			return e, invalid("Question changed; choose the current question before answering")
+		}
 		if strings.TrimSpace(c.Text) == "" || story.Question == "" {
 			return e, invalid("Answer an unresolved question")
 		}
@@ -345,6 +370,9 @@ func ready(es []domain.StoryEvent) bool {
 	return impl != "" && author != "" && impl == test && impl == review && (native || (reviewer != "" && reviewer != author))
 }
 func (s *Service) retry(ctx context.Context, c Command, e domain.StoryEvent) (domain.StoryEvent, error) {
+	if c.Kind == "answer" && c.QuestionEventID != "" && c.QuestionEventID != e.RelatedEventID {
+		return e, apierr.Conflict("STORY_KEY_REUSED", "Answer retry belongs to a different question", nil)
+	}
 	story, err := s.Store.GetStory(ctx, c.StoryID)
 	if err != nil {
 		return e, err
@@ -391,7 +419,15 @@ func (s *Service) deliver(ctx context.Context, e domain.StoryEvent, recoverOnly 
 	return e, nil
 }
 
-func commandIdentity(c Command) string { c.Revision = 0; return encode(c) }
+func commandIdentity(c Command) string {
+	c.Revision = 0
+	// Answer events already bind their exact question in RelatedEventID. Keep
+	// legacy retry identities stable; retry validates any explicit question pin.
+	if c.Kind == "answer" {
+		c.QuestionEventID = ""
+	}
+	return encode(c)
+}
 
 func (s *Service) coordinator(ctx context.Context, id domain.SessionID) bool {
 	cfg, err := s.Store.GetCoordination(ctx)

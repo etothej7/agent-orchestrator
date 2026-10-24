@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "回答问题 — {{requester}}",
+	"workspace.use_existing_answer": "将这条已送达消息用作回答",
+	"workspace.confirm_existing_answer": "确认现有回答",
+	"workspace.original_message": "原始消息",
+	"workspace.recorded_reply": "已记录的公开回复",
+	"workspace.confirm_answer_explanation": "将这条已送达消息及公开回复关联到此问题。不会再次发送。",
+	"workspace.confirm_answer_without_resending": "确认回答且不重发",
+	"workspace.cancel_confirmation": "取消确认",
+	"workspace.confirmation_sources": "问题：{{question}} · 公开回复：{{reply}}",
 	"workspace.worker": "执行代理",
 	"workspace.reviewer": "审核代理",
 	"workspace.agent_replies": "代理回复",

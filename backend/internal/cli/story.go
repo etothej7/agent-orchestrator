@@ -10,6 +10,8 @@ import (
 )
 
 type storyCommandAPIRequest struct {
+	QuestionEventID    string `json:"questionEventId,omitempty"`
+	ReplyMessageID     string `json:"replyMessageId,omitempty"`
 	Outcome            string `json:"outcome"`
 	ID                 string `json:"id"`
 	StoryID            string `json:"storyId"`
@@ -41,10 +43,12 @@ func newStoryCommand(c *commandContext) *cobra.Command {
 		return c.postJSON(cmd.Context(), "workspace/commands", req, nil)
 	}}
 	f := cmd.Flags()
+	f.StringVar(&req.QuestionEventID, "question-event", "", "Exact unresolved question event (required for answer confirmation)")
+	f.StringVar(&req.ReplyMessageID, "reply-message", "", "Existing public reply proving receipt; confirmation never resends")
 	f.StringVar(&req.Outcome, "outcome", "", "Testing result: passed or failed")
 	f.StringVar(&req.StoryID, "story", "", "Explicit story id")
 	f.StringVar(&req.ID, "id", "", "Stable operation id; retain for retries")
-	f.StringVar(&req.Kind, "kind", "", "assignment, message, handoff, blocked, unblocked, question, answer, implementation, testing, review_passed, review_failed, in_progress, in_review, ready_for_approval, done, installation, release")
+	f.StringVar(&req.Kind, "kind", "", "assignment, message, handoff, blocked, unblocked, question, answer, answer_confirmation, implementation, testing, review_passed, review_failed, in_progress, in_review, ready_for_approval, done, installation, release")
 	f.StringVar(&req.RecipientSessionID, "session", "", "Recipient session for assignment or delivery")
 	f.StringVar(&req.Role, "role", "", "Assignment role: manager, worker, reviewer")
 	f.StringVar(&req.Text, "text", "", "Public message or decision explanation")

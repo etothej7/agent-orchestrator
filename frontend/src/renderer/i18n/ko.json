@@ -1,4 +1,13 @@
 {
+	"workspace.answer_question": "질문에 답변 — {{requester}}",
+	"workspace.use_existing_answer": "전달된 메시지를 답변으로 사용",
+	"workspace.confirm_existing_answer": "기존 답변 확인",
+	"workspace.original_message": "원본 메시지",
+	"workspace.recorded_reply": "기록된 공개 응답",
+	"workspace.confirm_answer_explanation": "전달된 메시지와 공개 응답을 이 질문에 연결합니다. 다시 전송하지 않습니다.",
+	"workspace.confirm_answer_without_resending": "재전송 없이 답변 확인",
+	"workspace.cancel_confirmation": "확인 취소",
+	"workspace.confirmation_sources": "질문: {{question}} · 공개 응답: {{reply}}",
 	"workspace.worker": "작업 에이전트",
 	"workspace.reviewer": "검토자",
 	"workspace.agent_replies": "에이전트 답변",
