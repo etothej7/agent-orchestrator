@@ -206,6 +206,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"DomainStory":                                          "Story",
 	"DomainStoryAssignment":                                "StoryAssignment",
 	"DomainStoryEvent":                                     "StoryEvent",
+	"DomainStoryReplyThread":                               "StoryReplyThread",
+	"DomainStoryReply":                                     "StoryReply",
 	"ControllersCoordinationResponse":                      "CoordinationResponse",
 	"ControllersCreateCoordinatorProjectRequest":           "CreateCoordinatorProjectRequest",
 	"ControllersCreateCoordinatorProjectResponse":          "CreateCoordinatorProjectResponse",

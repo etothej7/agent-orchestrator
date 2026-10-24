@@ -189,6 +189,97 @@ func (q *Queries) ListWorkspaceEvents(ctx context.Context, storyID string) ([]Wo
 	return items, nil
 }
 
+const listWorkspaceReplyMessages = `-- name: ListWorkspaceReplyMessages :many
+WITH exchanges AS (
+ SELECT e.id, CAST(json_extract(e.record, '$.createdAt') AS TEXT) AS position, e.record,
+        t.id AS turn_id, t.conversation_id,
+        CASE WHEN json_extract(e.record, '$.deliveryKind') = 'turn'
+          AND t.id IS NOT NULL AND u.id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_messages other
+            WHERE other.conversation_id = t.conversation_id AND other.turn_id = t.id
+              AND other.role = 'user' AND other.id <> u.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_steer_deliveries d
+            WHERE d.conversation_id = t.conversation_id AND d.state <> 'rejected'
+              AND (d.state = 'reserved' OR d.provider_turn_id = t.provider_turn_id)
+          )
+          THEN 'turn' ELSE 'unavailable' END AS attribution
+ FROM workspace_story_events e
+ LEFT JOIN conversation_turns t
+   ON json_extract(e.record, '$.deliveryKind') = 'turn'
+   AND t.id = json_extract(e.record, '$.reference')
+   AND t.handled_by_session_id = json_extract(e.record, '$.recipientSessionId')
+ LEFT JOIN conversation_messages u
+   ON u.conversation_id = t.conversation_id AND u.turn_id = t.id AND u.role = 'user'
+   AND u.client_message_id = 'story-' || e.id
+   AND u.sender_session_id = json_extract(e.record, '$.senderSessionId')
+ WHERE e.story_id = ? AND json_extract(e.record, '$.result') = 'delivered'
+   AND json_extract(e.record, '$.deliveryKind') IN ('turn', 'steer')
+)
+SELECT e.id AS exchange_id, e.attribution,
+       CAST(json_extract(e.record, '$.recipientSessionId') AS TEXT) AS sender_session_id,
+       CAST(json_extract(e.record, '$.senderSessionId') AS TEXT) AS recipient_session_id,
+       m.id, m.conversation_id, m.turn_id, m.text, m.streaming, m.created_at, m.updated_at
+FROM exchanges e
+LEFT JOIN conversation_messages m ON e.attribution = 'turn'
+ AND m.conversation_id = e.conversation_id AND m.turn_id = e.turn_id
+ AND m.role = 'assistant' AND m.origin = 'provider'
+ORDER BY e.position, e.id, m.sequence
+`
+
+type ListWorkspaceReplyMessagesRow struct {
+	ExchangeID         string
+	Attribution        string
+	SenderSessionID    string
+	RecipientSessionID string
+	ID                 sql.NullString
+	ConversationID     sql.NullString
+	TurnID             sql.NullString
+	Text               sql.NullString
+	Streaming          sql.NullInt64
+	CreatedAt          sql.NullTime
+	UpdatedAt          sql.NullTime
+}
+
+// Only the exact outbound turn; never session-wide history or activity payloads.
+// Any accepted steer or unresolved reservation makes reply attribution ambiguous.
+func (q *Queries) ListWorkspaceReplyMessages(ctx context.Context, storyID string) ([]ListWorkspaceReplyMessagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkspaceReplyMessages, storyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceReplyMessagesRow{}
+	for rows.Next() {
+		var i ListWorkspaceReplyMessagesRow
+		if err := rows.Scan(
+			&i.ExchangeID,
+			&i.Attribution,
+			&i.SenderSessionID,
+			&i.RecipientSessionID,
+			&i.ID,
+			&i.ConversationID,
+			&i.TurnID,
+			&i.Text,
+			&i.Streaming,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceStories = `-- name: ListWorkspaceStories :many
 SELECT id, epic_id, record, revision FROM workspace_stories ORDER BY rowid
 `

@@ -1,4 +1,10 @@
 {
+	"workspace.agent_replies": "エージェントの返信",
+	"workspace.reply_attribution_unavailable": "この共有または未検証のターンの返信は、このストーリーに確実に関連付けられません。明示的なストーリーレポートは引き続き上に表示されます。",
+	"workspace.reply_streaming": "返信中",
+	"workspace.reply_source": "返信元",
+	"workspace.reply_message_id": "メッセージ: {{id}}",
+	"workspace.reply_turn_id": "ターン: {{id}}",
 	"awake.stopReason.low_battery": "バッテリー残量が設定された安全基準に達したため停止しました。Mac を充電してから、Stay Awake をオフにして再度オンにしてください。",
 	"awake.stopReason.critical_heat": "Mac の冷却が必要なため停止しました。冷却後、Stay Awake をオフにして再度オンにしてください。",
 	"awake.stopReason.battery_unknown": "バッテリーの状態を読み取れなかったため停止しました。Stay Awake をオフにして再度オンにすると再試行できます。",

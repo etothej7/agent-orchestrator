@@ -16,6 +16,7 @@ import (
 
 // Store is the durable story boundary.
 type Store interface {
+	StoryReplies(context.Context, string) ([]domain.StoryReplyThread, error)
 	TurnByID(context.Context, string) (domain.ConversationTurn, error)
 	GetReport(context.Context, string) (domain.ReportRecord, bool, error)
 	ListEpics(context.Context) ([]domain.Epic, error)

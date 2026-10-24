@@ -3864,9 +3864,10 @@ type CreateStoryRequest struct {
 
 // StoryDetailResponse contains public events, never provider payloads.
 type StoryDetailResponse struct {
-	Reports []ReportResponse    `json:"reports"`
-	Story   domain.Story        `json:"story"`
-	Events  []domain.StoryEvent `json:"events"`
+	ReplyThreads []domain.StoryReplyThread `json:"replyThreads"`
+	Reports      []ReportResponse          `json:"reports"`
+	Story        domain.Story              `json:"story"`
+	Events       []domain.StoryEvent       `json:"events"`
 }
 
 // StoryIDParam selects one durable story.

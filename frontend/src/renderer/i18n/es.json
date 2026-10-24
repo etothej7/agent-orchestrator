@@ -1,4 +1,10 @@
 {
+	"workspace.agent_replies": "Respuestas del agente",
+	"workspace.reply_attribution_unavailable": "Las respuestas de este turno compartido o no verificado no pueden atribuirse de forma segura a esta historia. Los informes explícitos de la historia siguen visibles arriba.",
+	"workspace.reply_streaming": "Respuesta en curso",
+	"workspace.reply_source": "Origen de la respuesta",
+	"workspace.reply_message_id": "Mensaje: {{id}}",
+	"workspace.reply_turn_id": "Turno: {{id}}",
 	"awake.stopReason.low_battery": "Se detuvo porque la batería alcanzó el límite de seguridad configurado. Carga tu Mac y desactiva y vuelve a activar Stay Awake para reiniciarlo.",
 	"awake.stopReason.critical_heat": "Se detuvo porque el Mac necesita enfriarse. Cuando se enfríe, desactiva y vuelve a activar Stay Awake para reiniciarlo.",
 	"awake.stopReason.battery_unknown": "Se detuvo porque no se pudo leer el estado de la batería. Desactiva y vuelve a activar Stay Awake para reintentarlo.",

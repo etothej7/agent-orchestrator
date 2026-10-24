@@ -1,4 +1,10 @@
 {
+	"workspace.agent_replies": "에이전트 답변",
+	"workspace.reply_attribution_unavailable": "공유되거나 확인되지 않은 이 턴의 답변을 이 스토리에 확실하게 연결할 수 없습니다. 명시적인 스토리 보고서는 위에 계속 표시됩니다.",
+	"workspace.reply_streaming": "답변 중",
+	"workspace.reply_source": "답변 출처",
+	"workspace.reply_message_id": "메시지: {{id}}",
+	"workspace.reply_turn_id": "턴: {{id}}",
 	"awake.stopReason.low_battery": "배터리가 설정된 안전 한계에 도달하여 중지되었습니다. Mac을 충전한 다음 Stay Awake를 껐다가 다시 켜서 재시작하세요.",
 	"awake.stopReason.critical_heat": "Mac을 식혀야 하므로 중지되었습니다. 식은 후 Stay Awake를 껐다가 다시 켜서 재시작하세요.",
 	"awake.stopReason.battery_unknown": "배터리 상태를 읽을 수 없어 중지되었습니다. Stay Awake를 껐다가 다시 켜서 재시도하세요.",

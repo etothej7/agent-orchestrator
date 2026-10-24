@@ -17,6 +17,10 @@ import (
 
 type privacyStoryStore struct{ storysvc.Store }
 
+func (*privacyStoryStore) StoryReplies(context.Context, string) ([]domain.StoryReplyThread, error) {
+	return []domain.StoryReplyThread{}, nil
+}
+
 func (*privacyStoryStore) GetStory(context.Context, string) (domain.Story, error) {
 	return domain.Story{ID: "s", Title: "Public scope", Status: "backlog"}, nil
 }

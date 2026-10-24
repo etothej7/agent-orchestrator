@@ -21073,6 +21073,10 @@ components:
           items:
             $ref: '#/components/schemas/StoryEvent'
           type: array
+        replyThreads:
+          items:
+            $ref: '#/components/schemas/StoryReplyThread'
+          type: array
         reports:
           items:
             $ref: '#/components/schemas/ReportResponse'
@@ -21080,6 +21084,7 @@ components:
         story:
           $ref: '#/components/schemas/Story'
       required:
+      - replyThreads
       - reports
       - story
       - events
@@ -21130,6 +21135,54 @@ components:
           $ref: '#/components/schemas/StoryEvent'
       required:
       - event
+      type: object
+    StoryReply:
+      properties:
+        conversationId:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        recipientSessionId:
+          type: string
+        senderSessionId:
+          type: string
+        streaming:
+          type: boolean
+        text:
+          type: string
+        turnId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - conversationId
+      - turnId
+      - senderSessionId
+      - recipientSessionId
+      - text
+      - streaming
+      - createdAt
+      - updatedAt
+      type: object
+    StoryReplyThread:
+      properties:
+        attribution:
+          type: string
+        exchangeId:
+          type: string
+        messages:
+          items:
+            $ref: '#/components/schemas/StoryReply'
+          type: array
+      required:
+      - exchangeId
+      - attribution
+      - messages
       type: object
     SubmitReviewInput:
       properties:

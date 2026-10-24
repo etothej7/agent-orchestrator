@@ -183,3 +183,28 @@ func (s *Store) FinishStoryDelivery(ctx context.Context, e domain.StoryEvent) er
 		return nil
 	})
 }
+
+// StoryReplies projects an allowlist from the original message/turn linkage.
+// It never copies replies into workflow events or interprets replies as evidence.
+func (s *Store) StoryReplies(ctx context.Context, id string) ([]domain.StoryReplyThread, error) {
+	rows, err := s.qr.ListWorkspaceReplyMessages(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := []domain.StoryReplyThread{}
+	for _, row := range rows {
+		if len(out) == 0 || out[len(out)-1].ExchangeID != row.ExchangeID {
+			out = append(out, domain.StoryReplyThread{ExchangeID: row.ExchangeID, Attribution: row.Attribution, Messages: []domain.StoryReply{}})
+		}
+		if !row.ID.Valid {
+			continue
+		}
+		thread := &out[len(out)-1]
+		thread.Messages = append(thread.Messages, domain.StoryReply{
+			ID: row.ID.String, ConversationID: row.ConversationID.String, TurnID: row.TurnID.String,
+			SenderSessionID: domain.SessionID(row.SenderSessionID), RecipientSessionID: domain.SessionID(row.RecipientSessionID),
+			Text: row.Text.String, Streaming: row.Streaming.Int64 != 0, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time,
+		})
+	}
+	return out, nil
+}

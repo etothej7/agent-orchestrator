@@ -7465,6 +7465,7 @@ export interface components {
         };
         StoryDetailResponse: {
             events: components["schemas"]["StoryEvent"][];
+            replyThreads: components["schemas"]["StoryReplyThread"][];
             reports: components["schemas"]["ReportResponse"][];
             story: components["schemas"]["Story"];
         };
@@ -7486,6 +7487,24 @@ export interface components {
         };
         StoryEventResponse: {
             event: components["schemas"]["StoryEvent"];
+        };
+        StoryReply: {
+            conversationId: string;
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            recipientSessionId: string;
+            senderSessionId: string;
+            streaming: boolean;
+            text: string;
+            turnId: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        StoryReplyThread: {
+            attribution: string;
+            exchangeId: string;
+            messages: components["schemas"]["StoryReply"][];
         };
         SubmitReviewInput: {
             /** @description Review body recorded by AO. Required for changes_requested. */

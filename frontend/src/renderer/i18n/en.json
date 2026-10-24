@@ -1,4 +1,10 @@
 {
+	"workspace.agent_replies": "Agent replies",
+	"workspace.reply_attribution_unavailable": "Replies on this shared or unverified turn cannot be attributed safely to this story. Explicit story reports remain visible above.",
+	"workspace.reply_streaming": "Reply in progress",
+	"workspace.reply_source": "Reply source",
+	"workspace.reply_message_id": "Message: {{id}}",
+	"workspace.reply_turn_id": "Turn: {{id}}",
 	"awake.stopReason.low_battery": "Stopped because the battery reached the configured safety limit. Charge your Mac, then turn Stay Awake off and on to restart.",
 	"awake.stopReason.critical_heat": "Stopped because the Mac needs to cool down. After it cools, turn Stay Awake off and on to restart.",
 	"awake.stopReason.battery_unknown": "Stopped because battery state could not be read. Turn Stay Awake off and on to retry.",

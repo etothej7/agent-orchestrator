@@ -63,3 +63,41 @@ it("sends an Ed answer without requiring a manually selected destination", async
  await waitFor(()=>expect(post).toHaveBeenCalledTimes(1));
  expect(post.mock.calls[0]?.[1]).toMatchObject({body:{kind:"answer",storyId:"one",text:"Use the blue fixture"}});
 });
+
+it("polls the original public reply, updates it in place, and preserves its source after reopening", async () => {
+ let stage = 0;
+ const reply = {id:"ede99368-5e6f-44f2-906b-1373d98f4264",conversationId:"conversation",turnId:"b6cc2933-8a75-45ff-950b-1789fa14daf3",senderSessionId:"manager",recipientSessionId:"",text:"Test reply",streaming:true,createdAt:"2026-10-24T20:25:34Z",updatedAt:"2026-10-24T20:25:34Z"};
+ const get = vi.mocked(apiClient.GET).mockImplementation(async path => {
+  if (path === "/api/v1/workspace") return {data:{epics:[],stories:[one]}} as never;
+  return {data:{story:one,events:[{id:"original-exchange",storyId:one.id,kind:"message",senderSessionId:"",recipientSessionId:"manager",text:"Harmless workflow test",result:"delivered",createdAt:"2026-10-24T20:25:31Z"}],replyThreads:[{exchangeId:"original-exchange",attribution:"turn",messages:stage===0?[]:[{...reply,text:stage===1?"Test reply":"Test reply received",streaming:stage===1}]}]}} as never;
+ });
+ const post=vi.spyOn(apiClient,"POST");
+ mount();await userEvent.click(await screen.findByText("TEST first story"));
+ await screen.findByText("Harmless workflow test");
+ expect(screen.queryByText("Test reply received")).not.toBeInTheDocument();
+ stage=1;
+ await screen.findByText("Test reply",{}, {timeout:3500});
+ expect(screen.getByText(/Reply in progress/)).toBeInTheDocument();
+ stage=2;
+ await screen.findByText("Test reply received",{}, {timeout:3500});
+ expect(screen.queryByText(/Reply in progress/)).not.toBeInTheDocument();
+ expect(document.querySelectorAll(`[data-message-id="${reply.id}"]`)).toHaveLength(1);
+ expect(screen.getByText(`Message: ${reply.id}`)).toBeInTheDocument();
+ expect(screen.getByText(`Turn: ${reply.turnId}`)).toBeInTheDocument();
+ expect(screen.getByText("In progress")).toBeInTheDocument();
+ await userEvent.click(screen.getByRole("button",{name:"Back to stories"}));
+ await userEvent.click(await screen.findByText("TEST first story"));
+ expect(await screen.findByText("Test reply received")).toBeInTheDocument();
+ expect(get.mock.calls.filter(call=>call[0]==="/api/v1/workspace/stories/{storyId}").length).toBeGreaterThanOrEqual(3);
+ expect(post).not.toHaveBeenCalled();
+},10000);
+
+it("explains shared-turn attribution limits without presenting a reply", async () => {
+ vi.mocked(apiClient.GET).mockImplementation(async path => {
+  if(path==="/api/v1/workspace") return {data:{epics:[],stories:[one]}} as never;
+  return {data:{story:one,events:[{id:"steer",storyId:one.id,kind:"message",senderSessionId:"",recipientSessionId:"manager",text:"Shared turn request",result:"delivered",createdAt:"2026-10-24T20:25:31Z"}],replyThreads:[{exchangeId:"steer",attribution:"unavailable",messages:[]}]}} as never;
+ });
+ mount();await userEvent.click(await screen.findByText("TEST first story"));
+ expect(await screen.findByText(/cannot be attributed safely to this story/)).toBeInTheDocument();
+ expect(screen.queryByText("Reply source")).not.toBeInTheDocument();
+});

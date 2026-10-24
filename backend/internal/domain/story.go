@@ -46,3 +46,24 @@ type StoryEvent struct {
 	Result             string    `json:"result"`
 	CreatedAt          time.Time `json:"createdAt"`
 }
+
+// StoryReplyThread is a read projection of an exchange's public replies. Shared
+// provider turns cannot identify which story a reply addresses, so are withheld.
+type StoryReplyThread struct {
+	ExchangeID  string       `json:"exchangeId"`
+	Attribution string       `json:"attribution"`
+	Messages    []StoryReply `json:"messages"`
+}
+
+// StoryReply deliberately excludes provider IDs, payloads and activity/reasoning.
+type StoryReply struct {
+	ID                 string    `json:"id"`
+	ConversationID     string    `json:"conversationId"`
+	TurnID             string    `json:"turnId"`
+	SenderSessionID    SessionID `json:"senderSessionId"`
+	RecipientSessionID SessionID `json:"recipientSessionId"`
+	Text               string    `json:"text"`
+	Streaming          bool      `json:"streaming"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}

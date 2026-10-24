@@ -123,7 +123,12 @@ func (c *StoriesController) detail(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, StoryDetailResponse{Story: story, Events: events, Reports: reports})
+	replies, err := c.Svc.Store.StoryReplies(r.Context(), id)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, StoryDetailResponse{Story: story, Events: events, Reports: reports, ReplyThreads: replies})
 }
 func (c *StoriesController) command(w http.ResponseWriter, r *http.Request) {
 	if !c.available(w, r) {
