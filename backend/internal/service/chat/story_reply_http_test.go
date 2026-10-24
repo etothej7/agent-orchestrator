@@ -113,10 +113,11 @@ func TestStoryHTTPWithholdsRepliesAfterUnreceiptedSteering(t *testing.T) {
 			if got := read(); got.Attribution != "turn" || len(got.Messages) != 1 {
 				t.Fatalf("unambiguous baseline: %+v", got)
 			}
-			if mode == "legacy-activity" {
+			switch mode {
+			case "legacy-activity":
 				// Historical keyless records predate receipts; exercise their actual store path.
 				must(h.st.UpsertActivity(ctx, h.ctrl.ConversationID(), "provider-turn-1", domain.ConversationActivity{ID: "legacy", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Detail: json.RawMessage(`{"event":"steer","text":"PRIVATE_OTHER_STORY"}`)}, h.now()))
-			} else if mode == "inflight-keyless" {
+			case "inflight-keyless":
 				t.Cleanup(func() {
 					select {
 					case <-blocked.release:
@@ -141,7 +142,7 @@ func TestStoryHTTPWithholdsRepliesAfterUnreceiptedSteering(t *testing.T) {
 				if got.Attribution != "unavailable" || len(got.Messages) != 0 {
 					t.Fatalf("in-flight keyless reply leaked: %+v", got)
 				}
-			} else if mode == "no-client-key" || mode == "uncertain-keyless" || mode == "refused-keyless" || mode == "reservation-failure" || mode == "completion-failure" || mode == "rejection-failure" {
+			case "no-client-key", "uncertain-keyless", "refused-keyless", "reservation-failure", "completion-failure", "rejection-failure":
 				if mode == "uncertain-keyless" {
 					provider.failWith(errors.New("transport lost after write"))
 				}
@@ -178,7 +179,7 @@ func TestStoryHTTPWithholdsRepliesAfterUnreceiptedSteering(t *testing.T) {
 						t.Fatal("restart redispatched uncertain guidance")
 					}
 				}
-			} else {
+			default:
 				queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "PRIVATE_OTHER_STORY guidance", ClientMessageID: "story-b-guidance", Origin: domain.MessageOriginHuman})
 				must(err)
 				// An ordinary queued message has not affected the running provider turn.
