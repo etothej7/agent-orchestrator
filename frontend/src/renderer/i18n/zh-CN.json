@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "执行代理",
+	"workspace.reviewer": "审核代理",
 	"workspace.agent_replies": "代理回复",
 	"workspace.reply_attribution_unavailable": "此共享或未经验证的轮次中的回复无法可靠地归属于此故事。明确关联的故事报告仍显示在上方。",
 	"workspace.reply_streaming": "正在回复",

@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "Worker",
+	"workspace.reviewer": "Reviewer",
 	"workspace.agent_replies": "Agent replies",
 	"workspace.reply_attribution_unavailable": "Replies on this shared or unverified turn cannot be attributed safely to this story. Explicit story reports remain visible above.",
 	"workspace.reply_streaming": "Reply in progress",

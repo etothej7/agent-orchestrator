@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "実装担当",
+	"workspace.reviewer": "レビュー担当",
 	"workspace.agent_replies": "エージェントの返信",
 	"workspace.reply_attribution_unavailable": "この共有または未検証のターンの返信は、このストーリーに確実に関連付けられません。明示的なストーリーレポートは引き続き上に表示されます。",
 	"workspace.reply_streaming": "返信中",

@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "Ausführender Agent",
+	"workspace.reviewer": "Prüfer",
 	"workspace.agent_replies": "Agentenantworten",
 	"workspace.reply_attribution_unavailable": "Antworten in diesem geteilten oder ungeprüften Durchlauf können dieser Story nicht sicher zugeordnet werden. Explizite Story-Berichte bleiben oben sichtbar.",
 	"workspace.reply_streaming": "Antwort wird erstellt",

@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "Agente ejecutor",
+	"workspace.reviewer": "Revisor",
 	"workspace.agent_replies": "Respuestas del agente",
 	"workspace.reply_attribution_unavailable": "Las respuestas de este turno compartido o no verificado no pueden atribuirse de forma segura a esta historia. Los informes explícitos de la historia siguen visibles arriba.",
 	"workspace.reply_streaming": "Respuesta en curso",

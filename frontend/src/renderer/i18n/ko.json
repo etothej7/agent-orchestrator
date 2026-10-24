@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "작업 에이전트",
+	"workspace.reviewer": "검토자",
 	"workspace.agent_replies": "에이전트 답변",
 	"workspace.reply_attribution_unavailable": "공유되거나 확인되지 않은 이 턴의 답변을 이 스토리에 확실하게 연결할 수 없습니다. 명시적인 스토리 보고서는 위에 계속 표시됩니다.",
 	"workspace.reply_streaming": "답변 중",

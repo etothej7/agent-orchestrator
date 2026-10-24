@@ -1,4 +1,6 @@
 {
+	"workspace.worker": "Agent exécutant",
+	"workspace.reviewer": "Réviseur",
 	"workspace.agent_replies": "Réponses de l’agent",
 	"workspace.reply_attribution_unavailable": "Les réponses de ce tour partagé ou non vérifié ne peuvent pas être attribuées avec certitude à cette story. Les rapports explicites de la story restent visibles ci-dessus.",
 	"workspace.reply_streaming": "Réponse en cours",
