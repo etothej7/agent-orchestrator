@@ -229,5 +229,57 @@ class ProcessEncodingTests(unittest.TestCase):
         self.assertEqual(set(a.live_owned_processes(processes, {101: processes[101][1]}, 'run')), {101, 102})
 
 
+class FinalEvidenceRegressionTests(unittest.TestCase):
+    def test_two_commits_from_one_fixture_do_not_cover_second_fixture(self):
+        import tempfile, types
+        from pathlib import Path
+        from unittest.mock import patch
+        class GateReached(Exception): pass
+        with tempfile.TemporaryDirectory() as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory)
+            h.profile = h.root / 'unused.sb'
+            h.env = {}
+            h.result = {}
+            h.project_ids = ['labels', 'totals']
+            h.repos = [dict(project=p, path=directory, base='b'*40, function='f', contract='assert f()') for p in h.project_ids]
+            h.git = lambda *args: 'changed'
+            details = [{'story': {'id': sid, 'projectIds': ['labels']}} for sid in ['s1', 's2']]
+            evidence = {sid: {'sha': 'a'*40} for sid in ['s1', 's2']}
+            gates = []
+            def check(name, passed, **metadata):
+                gates.append((name, passed, metadata))
+                raise GateReached()
+            h.check = check
+            with patch.object(a.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)):
+                with self.assertRaises(GateReached): h.verify_code({}, details, evidence)
+            self.assertEqual(len(h.result['commits']), 2)
+            self.assertEqual(gates[0][0], 'actual_code_commits_and_golden_checks')
+            self.assertFalse(gates[0][1])
+            self.assertEqual(gates[0][2]['coveredProjectIds'], ['labels'])
+
+    def test_binary_hash_is_recorded_and_missing_or_dirty_commit_fails(self):
+        import tempfile, types, hashlib
+        from pathlib import Path
+        from unittest.mock import patch
+        class StopBeforeRuntime(Exception): pass
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'ao'
+            binary.write_bytes(b'fixture daemon bytes')
+            for revision, dirty, expected in [('a'*40, 'false', True), ('', 'false', False), ('a'*40, 'true', False)]:
+                with self.subTest(revision=revision, dirty=dirty):
+                    h = a.Harness.__new__(a.Harness)
+                    h.root = Path(directory)
+                    h.args = types.SimpleNamespace(daemon=binary)
+                    h.result = {'assertions': {}}
+                    def stop(): raise StopBeforeRuntime()
+                    h.seed_check = stop
+                    metadata = 'build vcs.revision='+revision+'\nbuild vcs.modified='+dirty+'\n'
+                    with patch.object(a.shutil, 'which', return_value='/fixture/go'), patch.object(a.subprocess, 'check_output', side_effect=['c'*40, metadata]):
+                        with self.assertRaises(StopBeforeRuntime): h.run()
+                    self.assertEqual(h.result['binary']['sha256'], hashlib.sha256(binary.read_bytes()).hexdigest())
+                    self.assertEqual(h.result['assertions']['binary_commit_provenance']['passed'], expected)
+
+
 if __name__ == '__main__':
     unittest.main()
