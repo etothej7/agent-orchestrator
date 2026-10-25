@@ -70,7 +70,7 @@ its original golden assertions against the reported commit's source in the
 scratch sandbox; changing the fixture's test cannot fool that check. Evidence
 also requires actual actor command activity with a failing check followed by a
 passing check, delivered story-specific worker/reviewer turns, matching implementation/check/
-review SHAs, managers and role assignments, and explicit Done. Each story needs check output tied to its repo, actor, story ID and commit; the check script at that commit must match the original. Each reviewer must inspect `git show FINAL_SHA -- feature.py` in the matching repo after a delivered handoff. Unrelated opening turns and other stories’ passing checks cannot satisfy those gates.
+review SHAs, managers and role assignments, and explicit Done. Each story needs check output tied to its repo, actor, story ID and commit; the check script at that commit must match the original. Each reviewer must execute the standalone command `git show FINAL_SHA -- feature.py` (no shell compounds, pipelines or subshells) in the matching repo after a delivered handoff. Unrelated opening turns and other stories’ passing checks cannot satisfy those gates.
 
 The runner kills **only its daemon** once during observation, then restarts it on
 the same DB/runfile. It observes durable recovery rather than replaying intake.
@@ -115,7 +115,7 @@ counts/classifications, actor checks, commit identities, restart/cleanup evidenc
 and timings; no raw transcript or provider log is attached. Private daemon logs
 and retained scratch state stay under the `0700` scratch root for diagnosis.
 
-Cleanup runs in `finally`, including setup errors, timeout, Ctrl-C and SIGTERM.
+Cleanup runs in `finally` with pre-initialized false `processes_gone` and `accounts_purged` gates; exceptions are recorded and cannot produce PASS, including setup errors, timeout, Ctrl-C and SIGTERM.
 It tracks descendants and the unique inherited run marker, including detached
 runtime hosts. PID start-time identity is checked before signals and before using a process as an ancestry root; historical exited PIDs cannot adopt unrelated children after PID reuse. It uses TERM,
 then KILL only for survivors, and records remaining owned PIDs. Scratch data is retained except credential-store directories, which are deleted only after all owned processes have exited. The installed application and live daemon are never stopped.

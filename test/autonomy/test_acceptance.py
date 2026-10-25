@@ -159,5 +159,36 @@ finally:
                 outside.wait(timeout=3)
 
 
+class FinalizationTests(unittest.TestCase):
+    def test_compound_proof_commands_fail_closed(self):
+        sha = 'a' * 40
+        for command in ['false && git show '+sha+' -- feature.py ; true',
+                        'git show '+sha+' -- feature.py || true',
+                        'git show '+sha+' -- feature.py | cat',
+                        '(git show '+sha+' -- feature.py)']:
+            self.assertFalse(a.invokes_git_show(command, sha), command)
+        self.assertFalse(a.invokes_check('false && python3 check.py --story-id s ; true', 's'))
+
+    def test_cleanup_exception_cannot_emit_pass(self):
+        import tempfile, types, json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.args = types.SimpleNamespace(output=Path(directory), mode='mechanics')
+            h.result = {'assertions': {'runtime': {'passed': True}, 'processes_gone': {'passed': True}, 'accounts_purged': {'passed': True}}, 'errors': []}
+            def fail(): raise PermissionError('must not appear in result')
+            h.stop = fail
+            h.purge_accounts = fail
+            h.finalize()
+            result = json.loads((Path(directory)/'result.json').read_text())
+            self.assertFalse(result['passed'])
+            self.assertFalse(result['assertions']['processes_gone']['passed'])
+            self.assertFalse(result['assertions']['accounts_purged']['passed'])
+            self.assertEqual(result['errors'], ['process_teardown:PermissionError', 'credential_teardown:PermissionError'])
+
+    def test_go_sqlite_timestamp_has_timezone_and_fraction(self):
+        self.assertEqual(a.stamp('2026-10-25 21:27:27.994829 +0000 UTC'), a.stamp('2026-10-25T21:27:27.994829Z'))
+
+
 if __name__ == '__main__':
     unittest.main()

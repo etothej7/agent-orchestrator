@@ -39,7 +39,8 @@ def digest(value):
 
 def stamp(value):
     try:
-        return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+        normalized = re.sub(r' ([+-]\d{4}) [A-Z]+$', r'\1', value)
+        return dt.datetime.fromisoformat(normalized.replace('Z', '+00:00')).timestamp()
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -163,20 +164,13 @@ def command_tokens(command):
 
 def invokes_check(command, story_id):
     tokens = command_tokens(command)
-    for i, token in enumerate(tokens):
-        if i and tokens[i - 1] not in ('&&', ';'):
-            continue
-        if not re.fullmatch(r'python(?:3(?:\.\d+)?)?', Path(token).name):
-            continue
-        if len(tokens) >= i + 4 and Path(tokens[i + 1]).name == 'check.py' and tokens[i + 2:i + 4] == ['--story-id', story_id]:
-            return True
-    return False
+    return (len(tokens) == 4 and bool(re.fullmatch(r'python(?:3(?:\.\d+)?)?', Path(tokens[0]).name))
+            and Path(tokens[1]).name == 'check.py' and tokens[2:] == ['--story-id', story_id])
 
 
 def invokes_git_show(command, sha):
     tokens = command_tokens(command)
-    return any((i == 0 or tokens[i - 1] in ('&&', ';')) and Path(token).name == 'git'
-               and tokens[i + 1:i + 5] == ['show', sha, '--', 'feature.py'] for i, token in enumerate(tokens))
+    return len(tokens) == 5 and Path(tokens[0]).name == 'git' and tokens[1:] == ['show', sha, '--', 'feature.py']
 
 
 def before_event(activity, event_at):
@@ -259,7 +253,7 @@ class Harness:
         self.logical_deliveries = collections.defaultdict(set)
         self.answer_ids = set()
         self.result = {'schemaVersion': 1, 'runId': self.token, 'mode': args.mode,
-                       'scratchRoot': str(self.root), 'assertions': {}, 'errors': [],
+                       'scratchRoot': str(self.root), 'assertions': {'processes_gone': {'passed': False}, 'accounts_purged': {'passed': False}}, 'errors': [],
                        'autoAnswerPolicy': args.answers, 'operatorNudges': 0,
                        'deferred': ['native UI acceptance', 'installation approval'],
                        'scope': 'real runtime evidence only; mechanics mode never certifies autonomy'}
@@ -403,6 +397,7 @@ class Harness:
                          if pid in current and current[pid][1] == identity]
             self.result['cleanup'] = {'remainingPids': remaining, 'ownedPidCount': len(self.owned)}
             self.check('cleanup', not remaining)
+            self.check('processes_gone', not remaining)
 
     def start(self, seed=False):
         log = open(self.root / ('seed-daemon.log' if seed else 'daemon.log'), 'ab')
@@ -894,10 +889,22 @@ class Harness:
         self.result['credentialStoresRemoved'] = removed
         self.check('credential_store_permissions', private)
         self.check('credential_store_cleanup', True)
+        self.check('accounts_purged', True)
+
+    def finalize(self):
+        # Reset even if an earlier seed phase cleaned up successfully.
+        self.check('processes_gone', False)
+        self.check('accounts_purged', False)
+        for stage, operation in [('process_teardown', self.stop), ('credential_teardown', self.purge_accounts)]:
+            try:
+                operation()
+            except (Exception, KeyboardInterrupt) as error:
+                self.result['errors'].append(stage + ':' + type(error).__name__)
+        self.emit()
 
     def emit(self):
         assertions = self.result['assertions']
-        self.result['passed'] = bool(assertions) and all(a['passed'] for a in assertions.values()) and not self.result['errors']
+        self.result['passed'] = all(assertions.get(name, {}).get('passed', False) for name in ('processes_gone', 'accounts_purged')) and bool(assertions) and all(a['passed'] for a in assertions.values()) and not self.result['errors']
         output = Path(self.args.output).resolve()
         output.mkdir(parents=True, exist_ok=True)
         output.chmod(0o700)
@@ -957,11 +964,7 @@ def main():
         harness.result['errors'].append(type(e).__name__ + ': ' + str(e) if isinstance(e, RuntimeError) else type(e).__name__)
     finally:
         if harness:
-            try:
-                harness.stop()
-                harness.purge_accounts()
-            finally:
-                harness.emit()
+            harness.finalize()
     return 0 if harness.result['passed'] else 1
 
 
