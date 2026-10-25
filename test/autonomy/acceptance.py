@@ -376,7 +376,7 @@ class Harness:
     def process_rows(self):
         # Match inherited unique run marker as well as ancestry, including detached
         # runtime hosts. Read in memory only: ps environment may contain secrets.
-        output = subprocess.check_output(['/bin/ps', 'eww', '-axo', 'pid=,ppid=,lstart=,command='], text=True)
+        output = subprocess.check_output(['/bin/ps', 'eww', '-axo', 'pid=,ppid=,lstart=,command=']).decode('utf-8', 'surrogateescape')
         result = {}
         for line in output.splitlines():
             parts = line.split(None, 7)
@@ -870,6 +870,11 @@ class Harness:
             last = self.observe()
             state, board, details, continuations = last
             self.evaluate(*last)
+            self.result['providerTurns'] = [{
+                'turnId': t['id'], 'actorId': t.get('handled_by_session_id'), 'state': t.get('state'),
+                'startedAt': t.get('started_at'), 'completedAt': t.get('completed_at'),
+                'providerTurnRecorded': bool(t.get('provider_turn_id'))
+            } for t in state['conversation_turns']]
             self.check('restart_recovery', restarted and self.result['restart']['midFlow'] and
                        set(before_actors) <= {s['id'] for s in state['sessions']} and
                        set(before_message_ids) <= {m['id'] for m in state['conversation_messages']} and

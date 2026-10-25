@@ -218,5 +218,16 @@ with socket.socket() as server:
             self.assertEqual(json.loads(result.stdout), {'privateHostConnected':True,'outsideDenied':True})
 
 
+class ProcessEncodingTests(unittest.TestCase):
+    def test_non_utf8_unrelated_environment_cannot_abort_cleanup(self):
+        from unittest.mock import patch
+        h = a.Harness.__new__(a.Harness)
+        raw = b'101 1 Sun Oct 25 12:00:00 2026 helper ENV=\xff\n102 101 Sun Oct 25 12:00:01 2026 child\n'
+        with patch.object(a.subprocess, 'check_output', return_value=raw):
+            processes = h.process_rows()
+        self.assertEqual(processes[101][:2], (1, 'Sun Oct 25 12:00:00 2026'))
+        self.assertEqual(set(a.live_owned_processes(processes, {101: processes[101][1]}, 'run')), {101, 102})
+
+
 if __name__ == '__main__':
     unittest.main()
