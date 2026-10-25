@@ -349,6 +349,35 @@ class PersistedFormatTests(unittest.TestCase):
 
 
 class DeterministicRemediationTests(unittest.TestCase):
+
+    @unittest.skipUnless(a.sys.platform == 'darwin', 'macOS isolated fixed-source behavior check')
+    def test_verifier_rejects_already_true_gate_and_broken_initial_behavior(self):
+        import tempfile, types, sys
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='ao-fixed-review-', dir='/private/tmp') as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory); h.port = 65530; h.args = types.SimpleNamespace(mode='mechanics')
+            h.profile = h.sandbox_profile(False)
+            h.env = {'PATH':'/usr/bin:/bin','HOME':directory,'TMPDIR':directory,'PYTHONDONTWRITEBYTECODE':'1'}
+            fixture = {'path':directory,'function':'normalize','contract':"assert normalize(' A B ') == 'a-b'\nimport feature\nassert feature.REVIEW_FIX_APPLIED is True"}
+            good = "def normalize(value):\n    return value.strip().lower().replace(' ', '-')\nREVIEW_FIX_APPLIED = True\n"
+            sources = {'a'*40: good.replace('True','False'), 'b'*40:good}
+            h.git_blob = lambda repo, ref: sources[ref.split(':')[0]].encode()
+            chain = {'initialSha':'a'*40,'finalSha':'b'*40}
+            self.assertEqual(len(h.verify_review_fixture(fixture, chain)), 2)
+            # Reviewer's exact false-pass: gate already True, behavior fixed only later.
+            sources['a'*40] = "def normalize(value):\n    return value\nREVIEW_FIX_APPLIED = True\n"
+            self.assertIsNone(h.verify_review_fixture(fixture, chain))
+            # A real False->True transition alone cannot mask broken initial behavior.
+            sources['a'*40] = sources['a'*40].replace('True','False')
+            self.assertIsNone(h.verify_review_fixture(fixture, chain))
+            sources['a'*40] = good
+            self.assertIsNone(h.verify_review_fixture(fixture, chain))
+            sources['a'*40] = good.replace('True','False')
+            sources['b'*40] = good.replace('True','False')
+            self.assertIsNone(h.verify_review_fixture(fixture, chain))
+
+
     def test_real_fixture_stays_failed_until_required_review_change(self):
         import tempfile, subprocess, sys, os
         from pathlib import Path

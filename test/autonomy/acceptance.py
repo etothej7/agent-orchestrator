@@ -5,6 +5,7 @@ Exit 0: all acceptance assertions passed; 1: observed failure/unsupported;
 2: harness setup/error. Never turn a timeout or missing observation into PASS.
 """
 import argparse
+import ast
 import collections
 import datetime as dt
 import hashlib
@@ -105,6 +106,18 @@ def classify_message(message):
         if 'Why your input is needed:' in text and all(part.strip() for part in text.split('Why your input is needed:', 1)):
             return purpose
     return 'non_actionable_or_unclassified'
+
+
+def literal_review_gate(source, expected):
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    writes = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == 'REVIEW_FIX_APPLIED' and isinstance(n.ctx, ast.Store)]
+    declarations = [n for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1
+                    and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'REVIEW_FIX_APPLIED'
+                    and isinstance(n.value, ast.Constant) and n.value.value is expected]
+    return len(writes) == 1 and len(declarations) == 1
 
 
 def review_remediation_chain(events, checks, inspections, worker, reviewer, final_sha, managers, handoff_ids):
@@ -694,6 +707,10 @@ class Harness:
         return subprocess.check_output(['/usr/bin/git', '-C', str(repo), *args], env=self.env,
                                        stderr=subprocess.DEVNULL, text=True).strip()
 
+    def git_blob(self, repo, ref):
+        return subprocess.check_output(['/usr/bin/git', '-C', str(repo), 'show', ref], env=self.env,
+                                       stderr=subprocess.DEVNULL)
+
     def fixtures(self):
         for project, function, broken, contract in [
             ('acceptance-labels', 'normalize', 'return value', "assert normalize('  HeLLo World  ') == 'hello-world'\nassert normalize('') == ''\nimport feature\nassert feature.REVIEW_FIX_APPLIED is True"),
@@ -975,6 +992,33 @@ class Harness:
         self.check('actual_code_commits_and_golden_checks', set(self.project_ids) <= covered and all(c['changed'] and c['goldenCheckExit'] == 0 for c in commits), coveredProjectIds=sorted(covered), requiredProjectIds=self.project_ids)
         self.verify_actor_provenance(state, details, evidence)
 
+    def verify_review_fixture(self, fixture, chain):
+        """Verify exact Git contents and behavior at BOTH reviewed revisions."""
+        gate_assertion = 'assert feature.REVIEW_FIX_APPLIED is True'
+        if fixture['contract'].count(gate_assertion) != 1:
+            return None
+        proof = []
+        try:
+            for stage, sha, expected in [('initial', chain['initialSha'], False), ('final', chain['finalSha'], True)]:
+                source_bytes = self.git_blob(fixture['path'], sha + ':feature.py')
+                source = source_bytes.decode('utf-8')
+                if not literal_review_gate(source, expected):
+                    return None
+                with tempfile.TemporaryDirectory(prefix='review-stage-', dir=self.root) as directory:
+                    target = Path(directory)
+                    (target / 'feature.py').write_bytes(source_bytes)
+                    contract = fixture['contract'].replace(gate_assertion, 'assert feature.REVIEW_FIX_APPLIED is ' + str(expected))
+                    (target / 'check.py').write_text('from feature import ' + fixture['function'] + '\n' + contract + '\n')
+                    run = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(self.profile), sys.executable, str(target / 'check.py')],
+                                         cwd=target, env=self.env, capture_output=True, timeout=20)
+                    if run.returncode != 0:
+                        return None
+                proof.append({'stage': stage, 'sha': sha, 'sourceSha256': hashlib.sha256(source_bytes).hexdigest(),
+                              'expectedGate': expected, 'behaviorCheckExit': run.returncode})
+        except (KeyError, OSError, UnicodeError, subprocess.SubprocessError):
+            return None
+        return proof
+
     def verify_actor_provenance(self, state, details, evidence):
         activities = state['conversation_activities']
         turns = {t['id']: t for t in state['conversation_turns']}
@@ -1049,6 +1093,11 @@ class Harness:
                 if chain:
                     try:
                         self.git(fixture['path'], 'merge-base', '--is-ancestor', chain['initialSha'], chain['finalSha'])
+                        fixed_contents = self.verify_review_fixture(fixture, chain)
+                        if not fixed_contents:
+                            chain = None
+                        else:
+                            chain['fixedGitContents'] = fixed_contents
                     except subprocess.SubprocessError:
                         chain = None
                 review_chains.append({'storyId': story['id'], 'chain': chain})

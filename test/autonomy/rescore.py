@@ -17,6 +17,8 @@ def rescore(source):
     h.env = {'PATH': '/usr/bin:/bin', 'HOME': str(h.root / 'home')}
     h.repos = original['fixtures']
     h.result = {'assertions': {}}
+    # Re-score metadata only; never execute retained project code.
+    h.verify_review_fixture = lambda *_: None
     h.verify_actor_provenance(state, details, original['storyEvidence'])
     workers = {s['id'] for s in state['sessions'] if s.get('kind') == 'worker'}
     samples = []
@@ -38,7 +40,8 @@ def rescore(source):
                      'maxActiveWorkers': max((len(s['workerIds']) for s in samples), default=0),
                      'limits': ['Historical concurrency reconstructed from durable turn start/end times.',
                                 'Report delivery and recipient turn start do not prove a subsequent work dispatch.',
-                                'Original result remains unchanged and NOT ACCEPTED. No daemon, provider or golden check executed.']})
+                                'Original result remains unchanged and NOT ACCEPTED. No daemon, provider or golden check executed.',
+                                'Deterministic fixture behavior is not re-executed offline; that gate cannot gain a new pass.']})
     h.check('parallelism_at_most_four', bool(samples) and h.result['maxActiveWorkers'] <= 4)
     return h.result
 
