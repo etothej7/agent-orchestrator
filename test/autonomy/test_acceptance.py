@@ -494,6 +494,44 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
         self.assertFalse(row['passed'])
         self.assertNotIn('excludedReason',row)
 
+    def test_pending_unclaimed_report_uses_exact_cdc_cursor_and_manager(self):
+        state = self.state()
+        state['reports'][0].update(recipient_session_id=None, delivery_batch_id=None)
+        details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'}]},'events':[
+            dict(id='report-event',storyId='s',kind='report',reference='r',result='done',createdAt='2026-01-01T00:00:00Z')]}]
+        history = {'batch':dict(storyId='s',recipientSessionId='m',phaseReportId='report-event')}
+        row = a.phase_latencies(state,details,history,30)[0]
+        self.assertTrue(row['passed'])
+        self.assertIsNone(row['outboxRecipientSessionId'])
+        self.assertEqual(row['recipientSessionId'],'m')
+        history['batch']['phaseReportId']='unrelated'
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+        history['batch']['phaseReportId']='report-event'
+        history['batch']['recipientSessionId']='unassigned'
+        state['sessions'].append({'id':'unassigned'})
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+
+    def test_done_correlates_next_ready_story_manager_not_completed_owner(self):
+        state = self.state(); state['reports']=[]
+        details = [
+            {'story':{'id':'completed','epicId':'epic','assignments':[{'role':'manager','sessionId':'old'}]},
+             'events':[dict(id='done',storyId='completed',kind='done',createdAt='2026-01-01T00:00:00Z')]},
+            {'story':{'id':'next','epicId':'epic','status':'backlog','assignments':[{'role':'manager','sessionId':'m'}]},'events':[]}]
+        history = {'batch':dict(storyId='next',recipientSessionId='m',phaseStatus='backlog')}
+        row = a.phase_latencies(state,details,history,30,main='coordinator')[0]
+        self.assertTrue(row['passed'])
+        self.assertEqual(row['dispatchedStoryId'],'next')
+        self.assertEqual(row['recipientSessionId'],'m')
+        self.assertEqual(row['correlation'],'next_ready_story_continuation')
+        history['batch']['storyId']='completed'
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+        history['batch']['storyId']='unrelated'
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+        history['batch']['storyId']='next'
+        history['batch']['recipientSessionId']='old'
+        state['sessions'].append({'id':'old'})
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+
     def test_done_excluded_only_without_other_ready_story(self):
         state = self.state();state['reports']=[]
         details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'}]},'events':[dict(id='done',storyId='s',kind='done',createdAt='2026-01-01T00:00:00Z')]}]

@@ -256,6 +256,10 @@ def phase_latencies(state, details, history, bound, main=None):
             for other in details:
                 if other['story']['id'] == signal['storyId']:
                     continue
+                if detail['story'].get('epicId') and other['story'].get('epicId') != detail['story']['epicId']:
+                    continue
+                if other['story'].get('question') or other['story'].get('blockedReason'):
+                    continue
                 changes = [e for e in other.get('events', []) if e.get('kind') in ('in_progress', 'in_review', 'ready_for_approval', 'done', 'backlog') and stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) <= receipt]
                 status = max(changes, key=lambda e: stamp(e['createdAt']))['kind'] if changes else 'backlog'
                 if status == 'backlog':
@@ -264,33 +268,45 @@ def phase_latencies(state, details, history, bound, main=None):
                 results.append(dict(row, required=False, excludedReason='completed_story_no_ready_work'))
                 continue
             row['nextReadyStoryIds'] = ready
-            if main:
-                signal['recipientSessionId'] = main
-                row['recipientSessionId'] = main
         candidates = []
         batch = messages.get(signal.get('batchKey'))
-        if batch and stamp(batch.get('created_at')) is not None and stamp(batch['created_at']) >= receipt:
-            candidates.append((stamp(batch['created_at']), batch, 'exact_report_batch'))
+        if not terminal and signal.get('recipientSessionId') and batch and stamp(batch.get('created_at')) is not None and stamp(batch['created_at']) >= receipt:
+            candidates.append((batch, 'exact_report_batch', signal['recipientSessionId'], signal['storyId']))
+        eligible_stories = set(row.get('nextReadyStoryIds', [signal['storyId']]))
+        registered = {s['id'] for s in state['sessions']}
         for key, continuation in history.items():
             message = messages.get(key)
-            if not message or continuation.get('storyId') != signal['storyId'] or continuation.get('recipientSessionId') != signal['recipientSessionId']:
+            target_story = continuation.get('storyId')
+            recipient = continuation.get('recipientSessionId')
+            if not message or target_story not in eligible_stories or recipient not in registered:
+                continue
+            target_detail = next((d for d in details if d['story']['id'] == target_story), {})
+            managers = {a['sessionId'] for a in target_detail.get('story', {}).get('assignments', []) if a['role'] == 'manager'}
+            if recipient not in managers and not (not managers and recipient == main):
                 continue
             at = stamp(message.get('created_at'))
             target = next((t for t in state['conversation_turns'] if t['id'] == message.get('turn_id')), {})
             started = stamp(target.get('started_at'))
+            assignments = [e for e in target_detail.get('events', []) if e.get('kind') == 'assignment' and e.get('recipientSessionId') == recipient and e.get('result') == 'delivered']
+            if assignments and not any(stamp(e.get('createdAt')) is not None and at is not None and stamp(e['createdAt']) <= at for e in assignments):
+                continue
             linked = (bool(signal.get('eventId')) and continuation.get('phaseReportId') == signal['eventId'] if signal['sourceKind'] == 'report'
                       else continuation.get('phaseStatus') == signal['phase'])
-            # The next same-story turn may already be queued while the owner is busy.
-            # Its actual start, never its old queue receipt, is the acceptance boundary.
+            # An unclaimed report has no outbox recipient. Its exact CDC event
+            # cursor plus the target story's manager validates this independent route.
+            if not terminal and signal['sourceKind'] == 'report' and not signal.get('recipientSessionId') and not linked:
+                continue
             if at is not None and (at >= receipt or started is not None and started >= receipt):
-                candidates.append((at, message, 'phase_continuation' if linked else 'same_story_continuation'))
+                source = 'next_ready_story_continuation' if terminal else ('phase_continuation' if linked else 'same_story_continuation')
+                candidates.append((message, source, recipient, target_story))
         if not candidates:
             results.append(dict(row, failure='no_correlated_phase_turn'))
             continue
         measured = []
-        for _, message, source in candidates:
-            timing = recipient_turn_latency(state, signal['recipientSessionId'], signal['receiptAt'], message.get('turn_id'), bound)
-            measured.append(dict(row, **timing, correlation=source, messageId=message['id']))
+        for message, source, recipient, target_story in candidates:
+            timing = recipient_turn_latency(state, recipient, signal['receiptAt'], message.get('turn_id'), bound)
+            measured.append(dict(row, **timing, correlation=source, messageId=message['id'],
+                                 dispatchedStoryId=target_story, outboxRecipientSessionId=signal.get('recipientSessionId')))
         # A stalled duplicate report route cannot hide a successfully started phase wake.
         results.append(min(measured, key=lambda r: (not r.get('passed'), r.get('seconds', float('inf')))))
     return results
