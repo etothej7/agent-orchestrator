@@ -32,8 +32,7 @@ and the future autonomy daemon.
 ## Real actor run
 
 Use a daemon containing the autonomy implementation after its independent review.
-The provider account must be usable in the isolated HOME. Only explicitly named
-credential files are copied; the user's profile is never symlinked or reused.
+The provider account must be usable in the isolated HOME. Only explicitly named auth files receive read-only symlinks into the isolated HOME; the full user profile is never linked or reused. AO may reconcile auth into its own owner-only scratch account store. The harness never reads or prints credential contents, and it deletes scratch accounts, pending-accounts and switch-staging at teardown.
 Do not point a provider config at a live AO runtime or copy runtime-host sockets.
 
 ```sh
@@ -41,7 +40,7 @@ python3 test/autonomy/acceptance.py \
   --daemon /absolute/path/to/reviewed/ao \
   --mode real --agent codex \
   --agent-bin-dir /absolute/path/to/codex/bin \
-  --credential /explicit/authorized/auth.json=.codex/auth.json \
+  --auth-readonly /explicit/authorized/auth.json=.codex/auth.json \
   --duration 1800 --restart-after 60 --max-dispatch-latency 30 \
   --answers '{"Should punctuation be preserved?":"Yes, preserve punctuation; change spaces only."}' \
   --output /Users/edstockman/.ao/data/artifacts/agent-orchestrator-4/story6-real
@@ -105,12 +104,12 @@ hashed before/after; integrity, foreign keys and history API reads are checked.
 The seed HOME is then parked under `seed-home`; the actor trial starts with a
 fresh DB. This prevents copied active sessions from reconnecting to live actors.
 A seed phase failure fails the result, never silently discards a preservation
-problem. Raw snapshots are private and are not included in the output artifacts.
+problem. Raw snapshots are private and are not included in the output artifacts. All AO-managed scratch credential stores are removed after processes stop, with paths and absence verification recorded.
 
 ## Outputs and teardown
 
 Each invocation emits `result.json` and `summary.md` to `--output` (default: this
-worker's artifact directory). Use distinct output directories to retain trials.
+worker's artifact directory). Use distinct output directories to retain trials. Results record the harness commit/source hash and daemon binary hash plus embedded VCS commit/dirty flag.
 They contain IDs, binary hash, assertion results, mutation hashes, public-message
 counts/classifications, actor checks, commit identities, restart/cleanup evidence
 and timings; no raw transcript or provider log is attached. Private daemon logs
@@ -119,8 +118,7 @@ and retained scratch state stay under the `0700` scratch root for diagnosis.
 Cleanup runs in `finally`, including setup errors, timeout, Ctrl-C and SIGTERM.
 It tracks descendants and the unique inherited run marker, including detached
 runtime hosts. PID start-time identity is checked before signals and before using a process as an ancestry root; historical exited PIDs cannot adopt unrelated children after PID reuse. It uses TERM,
-then KILL only for survivors, and records remaining owned PIDs. Scratch data is
-retained. The installed application and live daemon are never stopped.
+then KILL only for survivors, and records remaining owned PIDs. Scratch data is retained except credential-store directories, which are deleted only after all owned processes have exited. The installed application and live daemon are never stopped.
 
 Exit 0 means **all** runtime assertions passed; exit 1 means failed/not observed;
 argument/initialization failure uses exit 2. Passing the harness's unit tests or

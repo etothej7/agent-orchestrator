@@ -16,6 +16,7 @@ import shutil
 import shlex
 import signal
 import socket
+import stat
 import sqlite3
 import subprocess
 import sys
@@ -120,21 +121,26 @@ def workflow_classification(story, continuation, active, elapsed, stall_seconds)
 def latest_evidence(story, events):
     """Require ordered, same-SHA independent evidence; later failures revoke it."""
     impl = test = review = author = reviewer = ''
+    implementation_at = testing_at = review_at = ''
     for e in sorted(events, key=lambda e: (e.get('createdAt', ''), e.get('id', ''))):
         kind = e.get('kind')
         if kind == 'implementation':
             impl, author = e.get('reference', ''), e.get('senderSessionId', '')
+            implementation_at = e.get('createdAt', '')
             test = review = reviewer = ''
         elif kind == 'testing':
             test = e.get('reference', '') if e.get('result') == 'passed' else ''
+            testing_at = e.get('createdAt', '')
         elif kind == 'review_passed':
             review, reviewer = e.get('reference', ''), e.get('senderSessionId', '')
+            review_at = e.get('createdAt', '')
         elif kind in ('review_failed', 'native_review'):
             # Native PR reviews do not substitute for this local actor review trial.
             review = reviewer = ''
     valid = bool(SHA.fullmatch(impl) and impl == test == review and author and reviewer and author != reviewer)
     valid = valid and not story.get('question') and not story.get('blockedReason')
-    return {'valid': valid, 'sha': impl, 'author': author, 'reviewer': reviewer}
+    return {'valid': valid, 'sha': impl, 'author': author, 'reviewer': reviewer,
+            'implementationAt': implementation_at, 'testingAt': testing_at, 'reviewAt': review_at}
 
 
 def duplicate_dispatches(messages):
@@ -167,18 +173,45 @@ def invokes_check(command, story_id):
     return False
 
 
-def delivered_turns(events, actor, activities):
-    result = set()
-    activity_turn = {a['id']: a.get('turn_id') for a in activities}
+def invokes_git_show(command, sha):
+    tokens = command_tokens(command)
+    return any((i == 0 or tokens[i - 1] in ('&&', ';')) and Path(token).name == 'git'
+               and tokens[i + 1:i + 5] == ['show', sha, '--', 'feature.py'] for i, token in enumerate(tokens))
+
+
+def before_event(activity, event_at):
+    at, event = stamp(activity.get('created_at')), stamp(event_at)
+    return at is not None and event is not None and at <= event
+
+
+def delivered_handoffs(events, story_id, actor, activities):
+    """A shared turn spanning different stories has no unambiguous attribution."""
+    grouped = collections.defaultdict(list)
+    activity_map = {a['id']: a for a in activities}
     for event in events:
         if event.get('kind') not in ('assignment', 'message', 'handoff') or event.get('result') != 'delivered' or event.get('recipientSessionId') != actor:
             continue
         ref = event.get('reference')
-        if event.get('deliveryKind') == 'turn' and ref:
-            result.add(ref)
-        elif event.get('deliveryKind') == 'steer' and activity_turn.get(ref):
-            result.add(activity_turn[ref])
-    return result
+        delivered_at = stamp(event.get('createdAt'))
+        if event.get('deliveryKind') == 'turn':
+            turn = ref
+        else:
+            activity = activity_map.get(ref, {})
+            turn = activity.get('turn_id')
+            steer_at = stamp(activity.get('created_at'))
+            if steer_at is None:
+                continue
+            delivered_at = max(delivered_at or 0, steer_at)
+        if turn and delivered_at is not None:
+            grouped[turn].append({'eventId': event['id'], 'storyId': event.get('storyId'), 'deliveredAt': delivered_at})
+    return {turn: max(receipts, key=lambda r: r['deliveredAt']) for turn, receipts in grouped.items()
+            if {r['storyId'] for r in receipts} == {story_id}}
+
+
+def after_handoff(activity, receipts):
+    receipt = receipts.get(activity.get('turn_id'))
+    at = stamp(activity.get('created_at'))
+    return bool(receipt and at is not None and at >= receipt['deliveredAt'])
 
 
 def live_owned_processes(current, historical, token):
@@ -218,6 +251,7 @@ class Harness:
         self.observed_notifications = {}
         self.actionable_texts = set()
         self.public_errors = set()
+        self.false_done_seen = set()
         self.samples = []
         self.observed_dispatches = {}
         self.report_times = {}
@@ -256,14 +290,13 @@ class Harness:
                 if name not in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'}:
                     raise ValueError('only explicit provider API keys may be forwarded')
                 env[name] = os.environ[name]
-            for item in self.args.credential:
+            for item in self.args.auth_readonly:
                 source, relative = item.split('=', 1)
                 dest = (self.home / relative).resolve()
                 if not dest.is_relative_to(self.home) or dest == self.home:
                     raise ValueError('credential destination must be within isolated HOME')
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(Path(source).resolve(), dest)
-                dest.chmod(0o600)
+                dest.symlink_to(Path(source).resolve())
         return env
 
     def sandbox_profile(self, seed):
@@ -429,12 +462,11 @@ class Harness:
         seed_home = self.root / 'seed-home'
         self.home.rename(seed_home)
         self.data.mkdir(parents=True)
-        for item in self.args.credential:
-            _, relative = item.split('=', 1)
+        for item in self.args.auth_readonly:
+            source, relative = item.split('=', 1)
             dest = self.home / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(seed_home / relative, dest)
-            dest.chmod(0o600)
+            dest.symlink_to(Path(source).resolve())
         self.daemon = None
 
     def git(self, repo, *args):
@@ -510,6 +542,9 @@ class Harness:
         board = self.require('GET', '/api/v1/workspace')
         details = [self.require('GET', '/api/v1/workspace/stories/' + urllib.parse.quote(s['id'], safe=''))
                    for s in board.get('stories', [])]
+        for detail in details:
+            if detail['story']['status'] == 'done' and not latest_evidence(detail['story'], detail.get('events', []))['valid']:
+                self.false_done_seen.add(detail['story']['id'])
         continuations = records(state, 'story_continuations')
         handles = [r.get('deliveryId', '') for r in continuations]
         for c in continuations:
@@ -605,7 +640,7 @@ class Harness:
         evidence = {d['story']['id']: latest_evidence(d['story'], d.get('events', [])) for d in details}
         self.result['storyEvidence'] = evidence
         self.check('explicit_done', len(stories) >= 2 and all(s['status'] == 'done' for s in stories))
-        self.check('no_false_done', all(evidence[s['id']]['valid'] for s in stories if s['status'] == 'done'))
+        self.check('no_false_done', not self.false_done_seen and all(evidence[s['id']]['valid'] for s in stories if s['status'] == 'done'), prematureDoneStoryIds=sorted(self.false_done_seen))
         self.check('independent_review_and_checks', len(stories) >= 2 and all(e['valid'] for e in evidence.values()))
         assignments = [(s['id'], a['role'], a['sessionId']) for s in stories for a in s.get('assignments', [])]
         grouped = collections.defaultdict(set)
@@ -663,11 +698,15 @@ class Harness:
                 prior = [e for e in detail.get('events', []) if stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) <= start]
                 status_events = [e for e in sorted(prior, key=lambda e: e.get('createdAt', '')) if e.get('kind') in ('done', 'in_progress', 'in_review', 'ready_for_approval', 'implementation', 'testing', 'review_failed')]
                 terminal = bool(status_events) and status_events[-1].get('kind') == 'done'
-                questions = {e['id'] for e in prior if e.get('kind') == 'question'}
-                answered = {e.get('relatedEventId') for e in prior if e.get('kind') in ('answer', 'answer_confirmation') and e.get('result') in ('delivered', 'confirmed')}
+                current_question = None
+                for event in sorted(prior, key=lambda e: (e.get('createdAt', ''), e.get('id', ''))):
+                    if event.get('kind') == 'question':
+                        current_question = event['id']
+                    elif event.get('kind') in ('answer', 'answer_confirmation') and event.get('result') in ('delivered', 'confirmed') and event.get('relatedEventId') == current_question:
+                        current_question = None
                 if terminal:
                     row['excludedReason'] = 'explicit_done_before_report'
-                elif questions - answered:
+                elif current_question:
                     row['excludedReason'] = 'unanswered_scope_question_before_report'
                 else:
                     row.update(required=True, matched=False, failure='no_correlated_next_dispatch')
@@ -702,22 +741,24 @@ class Harness:
                     (verify / 'check.py').write_text('from feature import ' + fixture['function'] + '\n' + fixture['contract'] + '\n')
                     run = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(self.profile), sys.executable, str(verify / 'check.py')],
                                          cwd=verify, env=self.env, capture_output=True, timeout=20)
-                    commits.append({'storyId': story['story']['id'], 'sha': e['sha'], 'changed': bool(changed), 'goldenCheckExit': run.returncode})
+                    commits.append({'storyId': story['story']['id'], 'sha': e['sha'], 'projectId': fixture['project'], 'changed': bool(changed), 'goldenCheckExit': run.returncode})
                 except (subprocess.SubprocessError, OSError):
-                    commits.append({'storyId': story['story']['id'], 'sha': e['sha'], 'changed': False, 'goldenCheckExit': -1})
+                    commits.append({'storyId': story['story']['id'], 'sha': e['sha'], 'projectId': fixture['project'], 'changed': False, 'goldenCheckExit': -1})
         self.result['commits'] = commits
-        self.check('actual_code_commits_and_golden_checks', len(commits) >= 2 and all(c['changed'] and c['goldenCheckExit'] == 0 for c in commits))
+        covered = {c['projectId'] for c in commits if c['changed'] and c['goldenCheckExit'] == 0}
+        self.check('actual_code_commits_and_golden_checks', set(self.project_ids) <= covered and all(c['changed'] and c['goldenCheckExit'] == 0 for c in commits), coveredProjectIds=sorted(covered), requiredProjectIds=self.project_ids)
         activities = state['conversation_activities']
         turns = {t['id']: t for t in state['conversation_turns']}
         sessions = {r['id']: r for r in state['sessions']}
         provenance = []
+        all_events = [event for detail in details for event in detail.get('events', [])]
         for detail in details:
             story = detail['story']
             proof = evidence[story['id']]
             events = detail.get('events', [])
             worker, reviewer = proof['author'], proof['reviewer']
-            worker_turns = delivered_turns(events, worker, activities)
-            reviewer_turns = delivered_turns(events, reviewer, activities)
+            worker_turns = delivered_handoffs(all_events, story['id'], worker, activities)
+            reviewer_turns = delivered_handoffs(all_events, story['id'], reviewer, activities)
             fixture = next((f for f in self.repos if f['project'] == sessions.get(worker, {}).get('project_id') and f['project'] in story.get('projectIds', [])), None)
             checks, inspections = [], []
             for activity in activities:
@@ -737,9 +778,9 @@ class Harness:
                     continue
                 text = command.get('rawCommand', command.get('command', ''))
                 tokens = command_tokens(text)
-                if actor == reviewer and activity['turn_id'] in reviewer_turns and proof['sha'] in tokens and 'show' in tokens and any(Path(t).name == 'git' for t in tokens) and command.get('exitCode') == 0:
+                if actor == reviewer and after_handoff(activity, reviewer_turns) and invokes_git_show(text, proof['sha']) and command.get('exitCode') == 0 and before_event(activity, proof['reviewAt']) and stamp(activity.get('created_at')) >= (stamp(proof['implementationAt']) or float('inf')):
                     inspections.append({'activityId': activity['id'], 'turnId': activity['turn_id'], 'sha': proof['sha'], 'actorId': actor})
-                if actor != worker or activity['turn_id'] not in worker_turns or not invokes_check(text, story['id']):
+                if actor != worker or not after_handoff(activity, worker_turns) or not invokes_check(text, story['id']):
                     continue
                 output = activity.get('command_output', '') or command.get('output', '')
                 for line in output.splitlines():
@@ -747,6 +788,8 @@ class Harness:
                         continue
                     try:
                         record = json.loads(line.removeprefix('AO_ACCEPTANCE_CHECK '))
+                        if not before_event(activity, proof['testingAt']):
+                            continue
                         if record.get('storyId') != story['id'] or record.get('repo') != fixture['project'] or record.get('actorId') != actor or not SHA.fullmatch(record.get('sha', '')) or record.get('exitCode') != command.get('exitCode'):
                             continue
                         original_check = self.git(fixture['path'], 'show', record['sha'] + ':check.py') + '\n'
@@ -760,7 +803,7 @@ class Harness:
             failed = [c for c in checks if c['exitCode'] != 0]
             passed = [c for c in checks if c['exitCode'] == 0 and c['sha'] == proof['sha']]
             remediation = any(stamp(p['at']) is not None and stamp(f['at']) is not None and stamp(p['at']) > stamp(f['at']) for p in passed for f in failed)
-            provenance.append({'storyId': story['id'], 'workerTurns': sorted(worker_turns), 'reviewerTurns': sorted(reviewer_turns),
+            provenance.append({'storyId': story['id'], 'workerHandoffs': worker_turns, 'reviewerHandoffs': reviewer_turns,
                                'actorChecks': checks, 'reviewInspections': inspections, 'remediation': remediation,
                                'valid': bool(proof['valid'] and remediation and inspections and worker != reviewer)})
         self.result['actorProvenance'] = provenance
@@ -769,7 +812,15 @@ class Harness:
 
     def run(self):
         self.result['harnessSha'] = subprocess.check_output(['/usr/bin/git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'], text=True).strip()
+        self.result['harnessSourceSha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         self.result['binary'] = {'path': str(self.args.daemon), 'sha256': hashlib.sha256(self.args.daemon.read_bytes()).hexdigest()}
+        go = shutil.which('go')
+        if go:
+            metadata = subprocess.check_output([go, 'version', '-m', str(self.args.daemon)], text=True, cwd=self.root)
+            for key in ('vcs.revision', 'vcs.modified'):
+                match = re.search(r'\b' + re.escape(key) + r'=(\S+)', metadata)
+                self.result['binary'][key] = match.group(1) if match else None
+        self.check('binary_commit_provenance', bool(SHA.fullmatch(self.result['binary'].get('vcs.revision') or '')) and self.result['binary'].get('vcs.modified') == 'false')
         self.seed_check()
         self.fixtures()
         self.start()
@@ -813,6 +864,37 @@ class Harness:
         self.result['mutationAudit'] = self.mutations
         self.result['observationSamples'] = self.samples
 
+    def purge_accounts(self):
+        current = self.track()
+        if any(pid in current and current[pid][1] == identity for pid, identity in self.owned.items()):
+            self.check('credential_store_cleanup', False, reason='owned processes still alive')
+            return
+        removed, private = [], True
+        for harnesses in self.root.rglob('harnesses'):
+            if not harnesses.is_dir() or not harnesses.resolve().is_relative_to(self.root):
+                continue
+            for harness in harnesses.iterdir():
+                if not harness.is_dir() or harness.is_symlink():
+                    continue
+                for name in ('accounts', 'pending-accounts', 'switch-staging'):
+                    target = harness / name
+                    if not target.exists() and not target.is_symlink():
+                        continue
+                    if target.is_symlink():
+                        private = False
+                        target.unlink()
+                    else:
+                        for path in [target, *target.rglob('*')]:
+                            mode = path.lstat()
+                            private = private and mode.st_uid == os.getuid() and not (stat.S_IMODE(mode.st_mode) & 0o077)
+                        shutil.rmtree(target)
+                    if target.exists() or target.is_symlink():
+                        raise RuntimeError('scratch credential store removal failed')
+                    removed.append(str(target))
+        self.result['credentialStoresRemoved'] = removed
+        self.check('credential_store_permissions', private)
+        self.check('credential_store_cleanup', True)
+
     def emit(self):
         assertions = self.result['assertions']
         self.result['passed'] = bool(assertions) and all(a['passed'] for a in assertions.values()) and not self.result['errors']
@@ -843,7 +925,7 @@ def main():
     parser.add_argument('--agent', default='codex')
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--pass-env', action='append', default=[])
-    parser.add_argument('--credential', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
+    parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST', help='Read-only source link; only AO may create its private scratch account store')
     parser.add_argument('--seed-db', type=Path, help='Optional read-only source for a separately confined migration/history check')
     parser.add_argument('--answers', type=json.loads, default={}, help='JSON exact question -> answer allowlist; unmatched questions remain unanswered')
     parser.add_argument('--duration', type=float, default=1800)
@@ -861,7 +943,7 @@ def main():
         parser.error('require 0 < restart-after < duration and poll >= .2')
     if not isinstance(args.answers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in args.answers.items()):
         parser.error('answers must map exact question strings to answer strings')
-    if args.mode == 'mechanics' and (args.pass_env or args.credential or args.agent_bin_dir):
+    if args.mode == 'mechanics' and (args.pass_env or args.auth_readonly or args.agent_bin_dir):
         parser.error('provider inputs require explicit --mode real')
     harness = None
     try:
@@ -877,6 +959,7 @@ def main():
         if harness:
             try:
                 harness.stop()
+                harness.purge_accounts()
             finally:
                 harness.emit()
     return 0 if harness.result['passed'] else 1

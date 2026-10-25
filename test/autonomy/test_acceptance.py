@@ -91,13 +91,19 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertFalse(a.invokes_check('echo python3 check.py --story-id story-a', 'story-a'))
         self.assertFalse(a.invokes_check('python3 check.py --story-id story-b', 'story-a'))
         self.assertFalse(a.invokes_check('cat check.py', 'story-a'))
+        self.assertFalse(a.invokes_git_show('echo git show ' + 'a'*40, 'a'*40))
+        self.assertTrue(a.invokes_git_show('git show ' + 'a'*40 + ' -- feature.py', 'a'*40))
 
-    def test_opening_turn_or_uncertain_handoff_is_not_review_provenance(self):
-        event = dict(kind='handoff', result='uncertain', recipientSessionId='reviewer', reference='opening', deliveryKind='turn')
-        self.assertEqual(a.delivered_turns([event], 'reviewer', []), set())
-        event.update(result='delivered', reference='review-turn')
-        self.assertEqual(a.delivered_turns([event], 'reviewer', []), {'review-turn'})
-        self.assertEqual(a.delivered_turns([event], 'worker', []), set())
+    def test_opening_prehandoff_and_shared_turns_are_not_provenance(self):
+        event = dict(id='h', storyId='story-a', kind='handoff', result='uncertain', recipientSessionId='reviewer',
+                     reference='turn', deliveryKind='turn', createdAt='2026-01-01T00:00:10Z')
+        self.assertEqual(a.delivered_handoffs([event], 'story-a', 'reviewer', []), {})
+        event['result'] = 'delivered'
+        receipts = a.delivered_handoffs([event], 'story-a', 'reviewer', [])
+        self.assertFalse(a.after_handoff({'turn_id': 'turn', 'created_at': '2026-01-01T00:00:09Z'}, receipts))
+        self.assertTrue(a.after_handoff({'turn_id': 'turn', 'created_at': '2026-01-01T00:00:11Z'}, receipts))
+        self.assertEqual(a.delivered_handoffs([event, dict(event, id='other', storyId='story-b')], 'story-a', 'reviewer', []), {})
+        self.assertFalse(a.invokes_git_show('git show ' + 'a'*40 + ' -- wrong.py', 'a'*40))
 
     def test_missing_dispatch_is_retained_and_terminal_report_is_excluded(self):
         h = a.Harness.__new__(a.Harness)
@@ -110,6 +116,16 @@ class ReviewRegressionTests(unittest.TestCase):
         result = h.latencies([detail])
         self.assertFalse(result[0]['required'])
         self.assertEqual(result[0]['excludedReason'], 'explicit_done_before_report')
+
+    def test_superseded_question_cannot_hide_a_missing_dispatch(self):
+        h = a.Harness.__new__(a.Harness)
+        h.report_times = {'r': {'id': 'r', 'story_id': 's', 'created_at': '2026-01-01T00:00:10Z'}}
+        h.continuation_history = {}; h.observed_dispatches = {}
+        events = [dict(id='q1', kind='question', createdAt='2026-01-01T00:00:01Z'),
+                  dict(id='q2', kind='question', createdAt='2026-01-01T00:00:02Z'),
+                  dict(id='a2', kind='answer', relatedEventId='q2', result='delivered', createdAt='2026-01-01T00:00:03Z')]
+        row = h.latencies([{'story': {'id': 's'}, 'events': events}])[0]
+        self.assertTrue(row['required']); self.assertFalse(row['matched'])
 
     @unittest.skipUnless(a.sys.platform == 'darwin', 'macOS sandbox policy test')
     def test_actor_sandbox_cannot_signal_outside_fixture(self):
