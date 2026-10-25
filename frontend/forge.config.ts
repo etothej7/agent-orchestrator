@@ -117,6 +117,12 @@ function parseReleaseRepo(value: string | undefined): { owner: string; name: str
 	return { owner, name };
 }
 
+// Apple's "-" identity is local ad-hoc signing, not a keychain certificate.
+const localAdHocSign = process.env.APPLE_SIGNING_IDENTITY === "-";
+if (localAdHocSign && (process.env.AO_NOTARY_PROFILE || process.env.APPLE_API_KEY || process.env.CSC_LINK)) {
+	throw new Error("Local ad-hoc signing cannot use certificate or notarization credentials");
+}
+
 const config: ForgeConfig = {
 	packagerConfig: {
 		asar: true,
@@ -126,6 +132,8 @@ const config: ForgeConfig = {
 		// the .node binary outside app.asar.
 		ignore: ignoreFromVitePackage,
 		appBundleId: "dev.agent-orchestrator.desktop",
+		// Packager merges this before signing, never mutate the sealed bundle.
+		extendInfo: { LSEnvironment: { AO_DISABLE_GPU: "1", MallocNanoZone: "0" } },
 		name: "Agent Orchestrator",
 		executableName: EXECUTABLE_NAME,
 		protocols: [AUTH_PROTOCOL],
@@ -145,6 +153,12 @@ const config: ForgeConfig = {
 		osxSign: process.env.APPLE_SIGNING_IDENTITY
 			? {
 					identity: process.env.APPLE_SIGNING_IDENTITY,
+					...(localAdHocSign ? {
+						identityValidation: false,
+						preAutoEntitlements: false,
+						preEmbedProvisioningProfile: false,
+						timestamp: "none",
+					} : {}),
 					optionsForFile: macSignOptionsForFile,
 				}
 			: process.env.CSC_LINK

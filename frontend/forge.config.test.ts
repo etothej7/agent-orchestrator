@@ -157,6 +157,29 @@ afterEach(() => {
 	isSigningConfigured.mockReset();
 });
 
+describe("local macOS package identity", () => {
+ it("sets software rendering environment in Packager before the signature step", () => {
+  expect(config.packagerConfig?.extendInfo).toMatchObject({ LSEnvironment: { AO_DISABLE_GPU: "1", MallocNanoZone: "0" } });
+ });
+ it("uses the supported ad-hoc identity without weakening strict seal verification", async () => {
+  const options = await loadMacSignOptions({ APPLE_SIGNING_IDENTITY: "-" });
+  expect(options).toMatchObject({ identity: "-", identityValidation: false, preAutoEntitlements: false, preEmbedProvisioningProfile: false, timestamp: "none", optionsForFile: expect.any(Function) });
+  expect(options).not.toHaveProperty("strictVerify", false);
+  expect(options).not.toHaveProperty("continueOnError", true);
+ });
+ it("retains certificate validation for a real signing identity", async () => {
+  const options = await loadMacSignOptions({ APPLE_SIGNING_IDENTITY: "Developer ID Application: Test" });
+  expect(options).not.toHaveProperty("identityValidation", false);
+  expect(options).not.toHaveProperty("preAutoEntitlements", false);
+ });
+ it.each(["AO_NOTARY_PROFILE", "APPLE_API_KEY", "CSC_LINK"])("rejects %s with local ad-hoc signing", async key => {
+  vi.stubEnv("APPLE_SIGNING_IDENTITY", "-");
+  vi.stubEnv(key, "not-used");
+  vi.resetModules();
+  await expect(import("./forge.config")).rejects.toThrow("Local ad-hoc signing cannot use certificate or notarization credentials");
+ });
+});
+
 describe("macOS signing", () => {
 	const NODE_ENTITLEMENTS = [
 		"com.apple.security.cs.allow-jit",
