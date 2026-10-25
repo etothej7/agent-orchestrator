@@ -249,6 +249,21 @@ class ProcessEncodingTests(unittest.TestCase):
 
 
 class FinalEvidenceRegressionTests(unittest.TestCase):
+
+    def test_real_restart_waits_for_two_stories_and_running_known_actor(self):
+        details = [{'story': {'id': sid, 'status': 'in_progress'}} for sid in ['s1', 's2']]
+        state = {'sessions': [{'id': 'main'}, {'id': 'worker'}],
+                 'conversation_turns': [{'handled_by_session_id': 'worker', 'state': 'running'}]}
+        self.assertEqual(a.midflow_actor_ids(state, details, 'main'), ['worker'])
+        self.assertEqual(a.midflow_actor_ids(state, details[:1], 'main'), [])
+        self.assertEqual(a.midflow_actor_ids(state, [], 'main'), [])
+        for actor, status in [('worker', 'queued'), ('worker', 'completed'), ('main', 'running'), ('unknown', 'running'), (None, 'running')]:
+            state['conversation_turns'] = [{'handled_by_session_id': actor, 'state': status}]
+            self.assertEqual(a.midflow_actor_ids(state, details, 'main'), [])
+        state['conversation_turns'] = [{'handled_by_session_id': 'worker', 'state': 'running'}]
+        for detail in details: detail['story']['status'] = 'done'
+        self.assertEqual(a.midflow_actor_ids(state, details, 'main'), [])
+
     def test_two_commits_from_one_fixture_do_not_cover_second_fixture(self):
         import tempfile, types
         from pathlib import Path

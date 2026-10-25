@@ -107,6 +107,14 @@ def classify_message(message):
     return 'non_actionable_or_unclassified'
 
 
+def midflow_actor_ids(state, details, main):
+    if len(details) < 2 or not any(d['story']['status'] != 'done' for d in details):
+        return []
+    actors = {s['id'] for s in state['sessions']} - {main}
+    return sorted({t.get('handled_by_session_id') for t in state['conversation_turns']
+                   if t.get('state') == 'running' and t.get('handled_by_session_id') in actors})
+
+
 def workflow_classification(story, continuation, active, elapsed, stall_seconds):
     if story.get('status') == 'done':
         return 'completed_no_ready_work'  # evidence validity checked separately
@@ -856,14 +864,18 @@ class Harness:
         while time.monotonic() - start < self.args.duration:
             last = self.observe()
             state, board, details, _ = last
-            if not restarted and time.monotonic() - start >= self.args.restart_after:
+            working_actors = midflow_actor_ids(state, details, self.main)
+            if not restarted and time.monotonic() - start >= self.args.restart_after and (self.args.mode == 'mechanics' or working_actors):
                 before_actors = sorted(s['id'] for s in state['sessions'])
                 before_message_ids = sorted(m['id'] for m in state['conversation_messages'])
-                mid_flow = bool(details) and any(d['story']['status'] != 'done' for d in details)
+                mid_flow = bool(working_actors)
+                observed_at = time.time()
                 self.stop(daemon_only=True, force=True)
                 self.start()
                 restarted = True
-                self.result['restart'] = {'performed': True, 'midFlow': mid_flow, 'beforeActorIds': before_actors}
+                self.result['restart'] = {'performed': True, 'midFlow': mid_flow, 'beforeActorIds': before_actors,
+                                          'workingActorIds': working_actors, 'observedAt': observed_at,
+                                          'storyIds': sorted(d['story']['id'] for d in details)}
             if restarted and len(details) >= 2 and all(d['story']['status'] == 'done' for d in details):
                 break
             time.sleep(self.args.poll)

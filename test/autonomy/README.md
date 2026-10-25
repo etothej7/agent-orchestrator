@@ -71,13 +71,11 @@ also requires actual actor command activity with a failing check followed by a
 passing check, delivered story-specific worker/reviewer turns, matching implementation/check/
 review SHAs, managers and role assignments, and explicit Done. Each story needs check output tied to its repo, actor, story ID and commit; the check script at that commit must match the original. Each reviewer must execute the standalone command `git show FINAL_SHA -- feature.py` (no shell compounds, pipelines or subshells) in the matching repo after a delivered handoff. Unrelated opening turns and other stories’ passing checks cannot satisfy those gates.
 
-The runner kills **only its daemon** once during observation, then restarts it on
+In real mode, `--restart-after` is a minimum delay: the runner waits until at least two stories exist, one is unfinished, and a registered actor other than the main coordinator has a running turn. Queued turns do not qualify. Mechanics mode retains the timed restart without those autonomy prerequisites. The runner records the working actor and story IDs, kills **only its daemon** once during observation, then restarts it on
 the same DB/runfile. It observes durable recovery rather than replaying intake.
 Actor IDs and message IDs must survive; a completed workflow, no duplicate actors,
 stable logical delivery identities and no duplicate provider turns are required.
-If the timer fires before any in-progress story exists, restart mechanics can
-pass but mid-flow recovery cannot. Adjust `--restart-after` for the actual runtime;
-do not call a mechanics restart an autonomy-recovery pass.
+If real work never starts before the deadline, no restart is injected and recovery acceptance fails. Do not call a mechanics restart an autonomy-recovery pass.
 
 Report-to-next-dispatch latency uses a report's timestamp and the next durable
 message correlated through that story's continuation delivery key. Unrelated
