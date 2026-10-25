@@ -540,9 +540,11 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = chatFixtureLongHistory(8);
 		const view = render(<ChatWorkspace snapshot={snapshot} />);
 		const log = screen.getByRole("log");
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1000 });
-		// Reading older turns: the upward wheel holds the follow, and the scroll it causes releases it.
+		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1100 });
+		// Wheel intent precedes the browser's scroll. Move afterward so cancellation
+		// of an in-flight follow cannot mistake the reader's new position for its own.
 		fireEvent.wheel(log, { deltaY: -120 });
+		log.scrollTop = 1000;
 		fireEvent.scroll(log);
 		expect(screen.getByRole("button", { name: "Jump to latest" })).toBeInTheDocument();
 
