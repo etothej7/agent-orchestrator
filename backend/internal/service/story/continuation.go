@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -21,6 +22,7 @@ type ContinuationStore interface {
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
 	GetStoryContinuation(context.Context, string) (domain.StoryContinuation, bool, error)
 	SaveStoryContinuation(context.Context, domain.StoryContinuation) (bool, error)
+	ClaimStoryContinuation(context.Context, domain.StoryContinuation, int64) (bool, error)
 }
 
 // ContinuationSender uses normal idempotent chat delivery.
@@ -123,13 +125,6 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		return err
 	}
 	checkpoint := continuationCheckpoint(s, events)
-	// Do not discard an uncertain in-flight delivery, even when progress changed.
-	if rec.State != "sending" && rec.Checkpoint != checkpoint {
-		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
-	}
-	if rec.NextAt.After(now) {
-		return nil
-	}
 	if rec.State == "waiting" {
 		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
 		if err != nil {
@@ -141,7 +136,7 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		case domain.TurnStateInterrupted, domain.TurnStateCancelled:
 			return c.block(ctx, rec, "The manager turn was stopped or cancelled. Confirm whether this story should resume; automation will not override that stop.")
 		case domain.TurnStateCompleted, domain.TurnStateFailed, domain.TurnStateRecovered:
-			if rec.ProgressAttempts >= continuationLimit {
+			if checkpoint == rec.Checkpoint && rec.ProgressAttempts >= continuationLimit {
 				return c.block(ctx, rec, "The manager completed three continuation turns without advancing this story. Decide whether to clarify scope, change the responsible agent, or stop the work.")
 			}
 			rec.State = "ready"
@@ -152,6 +147,13 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		default:
 			return c.deferOrBlock(ctx, rec, now, "The manager turn state is unknown. Inspect its controller before deciding whether to retry.")
 		}
+	}
+	// Do not discard an uncertain in-flight delivery, even when progress changed.
+	if rec.State != "sending" && rec.Checkpoint != checkpoint {
+		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
+	}
+	if rec.NextAt.After(now) {
+		return nil
 	}
 	if rec.State != "sending" {
 		target, busy, err := c.owner(ctx, s)
@@ -171,11 +173,11 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		rec.State = "sending"
 	}
 	if rec.DeliveryAttempts >= continuationLimit {
-		return c.block(ctx, rec, "Delivery could not be confirmed after three attempts. Recover the retained delivery handle before retrying or changing the recipient: "+rec.DeliveryID)
+		return c.block(ctx, rec, "Delivery could not be confirmed after three attempts. Inspect the retained delivery before confirming a bounded retry; do not change the recipient while its outcome is uncertain.")
 	}
 	rec.DeliveryAttempts++
 	rec.LeaseUntil = now.Add(30 * time.Second)
-	saved, err := c.Store.SaveStoryContinuation(ctx, rec)
+	saved, err := c.Store.ClaimStoryContinuation(ctx, rec, s.Revision)
 	if err != nil || !saved {
 		return err
 	}
@@ -327,7 +329,7 @@ func (c *Continuations) Status(ctx context.Context, id string) (domain.StoryCont
 	if err != nil {
 		return domain.StoryContinuationStatus{}, err
 	}
-	status := domain.StoryContinuationStatus{StoryID: id, Revision: rec.Revision, State: rec.State, Checkpoint: rec.Checkpoint, RecipientSessionID: rec.RecipientSessionID, Reason: rec.Reason}
+	status := domain.StoryContinuationStatus{StoryID: id, Revision: rec.Revision, State: rec.State, Checkpoint: rec.Checkpoint, RecipientSessionID: rec.RecipientSessionID, Reason: publicContinuationReason(rec)}
 	if !story.Autonomous {
 		status.State = "manual"
 	} else if story.Status == "done" {
@@ -361,6 +363,7 @@ func (c *Continuations) Resume(ctx context.Context, storyID, recoveryID string, 
 		return domain.StoryContinuationStatus{}, invalid("Refresh the story and resolve its question before retrying blocked automation")
 	}
 	rec.RecoveryID = recoveryID
+	rec.Generation++ // New dispatches must never reuse a completed generation after recovery.
 	rec.Reason = ""
 	rec.LeaseUntil = time.Time{}
 	rec.NextAt = time.Time{}
@@ -416,6 +419,15 @@ func (c *Continuations) notifyBlocked(ctx context.Context, s domain.Story, rec d
 	if coordinator.ID == "" {
 		return nil
 	} // The same actionable reason remains on the board.
-	_, err = recorder.RecordHumanDecision(ctx, coordinator.ID, chatsvc.HumanDecision{ID: fmt.Sprintf("story-blocked-%x-%d", sha256.Sum256([]byte(s.ID)), rec.Revision), Purpose: "blocking_decision", Question: "How should “" + s.Title + "” continue? Resolve the blocker, then confirm a bounded retry in the story, or change its scope/assignment.", WhyBlocked: rec.Reason})
+	_, err = recorder.RecordHumanDecision(ctx, coordinator.ID, chatsvc.HumanDecision{StoryID: s.ID, ID: fmt.Sprintf("story-blocked-%x-%d", sha256.Sum256([]byte(s.ID)), rec.Revision), Purpose: "blocking_decision", Question: "How should “" + s.Title + "” continue? Resolve the blocker, then confirm a bounded retry in the story, or change its scope/assignment.", WhyBlocked: publicContinuationReason(rec)})
 	return err
+}
+
+// Older persisted reasons may contain internal handles. They are never public.
+func publicContinuationReason(rec domain.StoryContinuation) string {
+	reason := rec.Reason
+	if rec.DeliveryID != "" {
+		reason = strings.ReplaceAll(reason, rec.DeliveryID, "[retained delivery]")
+	}
+	return reason
 }

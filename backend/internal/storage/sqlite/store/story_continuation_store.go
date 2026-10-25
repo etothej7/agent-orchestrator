@@ -41,3 +41,31 @@ func (s *Store) SaveStoryContinuation(ctx context.Context, rec domain.StoryConti
 	}
 	return n == 1, err
 }
+
+// ClaimStoryContinuation linearizes dispatch eligibility with the ledger claim.
+// A question, completion or assignment edit committed after the sweep read wins.
+func (s *Store) ClaimStoryContinuation(ctx context.Context, rec domain.StoryContinuation, storyRevision int64) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var n int64
+	err := s.inTx(ctx, "claim eligible story continuation", func(q *gen.Queries) error {
+		row, err := q.GetWorkspaceStory(ctx, rec.StoryID)
+		if err != nil {
+			return err
+		}
+		var story domain.Story
+		if err := json.Unmarshal([]byte(row.Record), &story); err != nil {
+			return err
+		}
+		if row.Revision != storyRevision || !story.Autonomous || story.Status == "done" || story.Question != "" {
+			return nil
+		}
+		if rec.Revision == 0 {
+			n, err = q.InsertStoryContinuation(ctx, gen.InsertStoryContinuationParams{StoryID: rec.StoryID, Record: storyJSON(rec)})
+		} else {
+			n, err = q.UpdateStoryContinuation(ctx, gen.UpdateStoryContinuationParams{StoryID: rec.StoryID, Record: storyJSON(rec), Revision: rec.Revision})
+		}
+		return err
+	})
+	return n == 1, err
+}

@@ -82,6 +82,9 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			if len(opts.clientRequestID) > 128 || strings.TrimSpace(opts.clientRequestID) != opts.clientRequestID || strings.IndexFunc(opts.clientRequestID, unicode.IsControl) >= 0 {
 				return usageError{fmt.Errorf("--client-request-id must contain 1-128 visible characters")}
 			}
+			if opts.clientRequestID != "" && opts.kind == "orchestrator" {
+				return usageError{fmt.Errorf("--client-request-id is worker-only; orchestrator creation reuses the active project manager")}
+			}
 			if opts.clientRequestID != "" && opts.claimPR != "" {
 				return usageError{fmt.Errorf("--client-request-id cannot be combined with --claim-pr; claim the returned session separately so a retry cannot roll back an existing actor")}
 			}

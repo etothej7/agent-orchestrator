@@ -5993,6 +5993,7 @@ export interface components {
             /** @enum {string} */
             purpose: "scope_question" | "blocking_decision" | "completion_decision";
             question: string;
+            storyId?: string;
             whyBlocked: string;
         };
         HumanDecisionResponse: {

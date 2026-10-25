@@ -1218,6 +1218,7 @@ func TestSpawnStableActorKeyRejectsUnsafeOptions(t *testing.T) {
 	for _, args := range [][]string{
 		{"--client-request-id", " key"}, {"--client-request-id", strings.Repeat("a", 129)},
 		{"--client-request-id", "key", "--claim-pr", "1"},
+		{"--client-request-id", "key", "--kind", "orchestrator"},
 	} {
 		_, _, err := executeCLI(t, Deps{}, append([]string{"spawn", "--name", "worker"}, args...)...)
 		if err == nil {

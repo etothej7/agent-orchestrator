@@ -65,7 +65,10 @@ internal. For an actual scope question use:
 ao ask --id label-choice --purpose scope_question --question 'Blue or Green?' --why-blocked 'The required label is not specified.'
 ```
 
-Only the overall coordinator can use this path. Other allowed purposes are
+Only the overall coordinator can use this path. Include `--story <story-id>`
+for adopted work: the decision and its requester-owned story pause are persisted
+atomically, and normal answer delivery resolves that exact question. An unscoped
+decision is rejected while autonomous work exists. Other allowed purposes are
 `blocking_decision` and `completion_decision`; completion alone is not a reason
 to contact the human. Explain the decision and why work cannot proceed without
 it. Retain the id and content on retry. Agent-resolvable technical questions go

@@ -3913,6 +3913,7 @@ type ResumeStoryContinuationRequest struct {
 
 // HumanDecisionRequest is an explicit Ed-required question, not ordinary prose.
 type HumanDecisionRequest struct {
+	StoryID    string `json:"storyId,omitempty"`
 	ID         string `json:"id"`
 	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision"`
 	Question   string `json:"question"`

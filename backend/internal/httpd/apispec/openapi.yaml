@@ -17338,6 +17338,8 @@ components:
           type: string
         question:
           type: string
+        storyId:
+          type: string
         whyBlocked:
           type: string
       required:

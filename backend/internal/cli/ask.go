@@ -10,6 +10,7 @@ import (
 )
 
 type humanDecisionAPIRequest struct {
+	StoryID    string `json:"storyId,omitempty"`
 	ID         string `json:"id"`
 	Purpose    string `json:"purpose"`
 	Question   string `json:"question"`
@@ -26,6 +27,7 @@ func newAskCommand(c *commandContext) *cobra.Command {
 		return c.postJSON(cmd.Context(), "sessions/"+url.PathEscape(session)+"/conversation/human-decisions", req, nil)
 	}}
 	f := cmd.Flags()
+	f.StringVar(&req.StoryID, "story", "", "Story paused by this decision; required when autonomous work exists")
 	f.StringVar(&req.ID, "id", "", "Stable question/decision handle")
 	f.StringVar(&req.Purpose, "purpose", "scope_question", "scope_question, blocking_decision or completion_decision")
 	f.StringVar(&req.Question, "question", "", "The specific decision only the human can make")
