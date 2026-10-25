@@ -1,3 +1,4 @@
+import { isPersonalBuild } from "./personal-build";
 import { autoUpdater as stockAutoUpdater } from "electron-updater";
 import { MacDifferentialV2Updater } from "./mac-differential-v2-updater";
 import macV2TrustedKeys from "../../scripts/mac-differential-v2-trust.json";
@@ -43,6 +44,14 @@ const autoUpdater = process.platform === "darwin" && macDifferentialRollout.enab
   ? new MacDifferentialV2Updater({ trustedKeys: macV2TrustedKeys })
   : stockAutoUpdater;
 
+// Set these before settings hydration or native updater event wiring.
+if (isPersonalBuild(app.getVersion())) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+}
+
+const PERSONAL_UPDATE_MESSAGE = "Personal builds are updated locally; in-app updates are disabled.";
+
 const FAIL_CLOSED_UPDATE_SETTINGS: UpdateSettings = {
   enabled: false,
   channel: "latest",
@@ -82,6 +91,11 @@ export function applyUpdaterPolicy(
   platform: NodeJS.Platform = process.platform,
 ): void {
   lastAppliedUpdateSettings = settings;
+  if (isPersonalBuild(app.getVersion())) {
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    return;
+  }
   // Keep this gate closed until the dependency and older-client feed isolation
   // contracts pass. This repository never generates macOS release sidecars.
   const eligible = macDifferentialRollout.enabled === true && developerModeHydrated && macDifferentialUpdatesEnabled({ platform, settings });
@@ -2160,6 +2174,7 @@ async function awaitStartedDownload(result: UpdateCheckOutcome): Promise<void> {
 async function runAutomaticUpdateCheck(
   stateDir: string,
 ): Promise<number> {
+  if (blockPersonalBuildUpdates()) return AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
   let nextIntervalMs =
     automaticUpdateTimerIntervalMs ?? AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
   try {
@@ -2261,6 +2276,7 @@ function schedulePeriodicAutomaticUpdateCheck(
   stateDir: string,
   intervalMs: number,
 ): void {
+  if (blockPersonalBuildUpdates()) return;
   if (
     automaticUpdateTimer !== undefined &&
     automaticUpdateTimerIntervalMs === intervalMs
@@ -2307,11 +2323,25 @@ async function requestAutomaticUpdateCheck(
   }
 }
 
+// Guard every update entry point, including settings changes and stale-stage recovery.
+// A personal build never hands an upstream release to the OS installer.
+function blockPersonalBuildUpdates(requestId?: string): boolean {
+  if (!isPersonalBuild(app.getVersion())) return false;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  stopPeriodicAutomaticUpdateCheck();
+  if (retirementPollTimer !== undefined) clearInterval(retirementPollTimer);
+  retirementPollTimer = undefined;
+  broadcast({ state: "unsupported", message: PERSONAL_UPDATE_MESSAGE, requestId });
+  return true;
+}
+
 // startAutoUpdates configures electron-updater from the user's ~/.ao settings.
 // Channel controls discovery; enabled controls whether a discovered build is
 // downloaded automatically. Both preferences come from update-settings.
 // Caller guards on app.isPackaged.
 export async function startAutoUpdates(stateDir: string): Promise<void> {
+  if (blockPersonalBuildUpdates()) return;
   escalationStateDir = stateDir;
   restoreStagedBuild(stateDir);
   startRetirementPollTimer(stateDir);
@@ -2347,6 +2377,7 @@ export async function setUpdateSettings(
   stateDir: string,
   settings: UpdateSettings,
 ): Promise<void> {
+  if (blockPersonalBuildUpdates()) return;
   await runSerializedUpdaterOperation("settings-write", () =>
     persistUpdaterSettings(stateDir, settings),
   );
@@ -2366,6 +2397,7 @@ export async function checkForUpdatesNow(
   stateDir: string,
   options: UpdateCheckOptions = {},
 ): Promise<void> {
+  if (blockPersonalBuildUpdates(options.requestId)) return;
   escalationStateDir = stateDir;
   wireUpdaterEvents();
   // Asking again IS the explicit retry the exhausted message points at.
@@ -2475,6 +2507,7 @@ export async function returnToHome(
   stateDir: string,
   requestId?: string,
 ): Promise<void> {
+  if (blockPersonalBuildUpdates(requestId)) return;
   escalationStateDir = stateDir;
   wireUpdaterEvents();
   if (!app.isPackaged) {
@@ -2538,6 +2571,7 @@ export async function returnToHome(
 
 // downloadUpdateNow starts downloading the update found by checkForUpdatesNow.
 export async function downloadUpdateNow(requestId?: string): Promise<void> {
+  if (blockPersonalBuildUpdates(requestId)) return;
   if (manualDownloadPending || lastStatus.state === "downloading" || lastStatus.state === "preparing") return;
   const version = lastStatus.version;
   wireUpdaterEvents();
@@ -2685,6 +2719,10 @@ export function getMacInstallBlocker(): string | undefined {
 // did, and #3527's dialog only ever covered the button. Turning it off makes
 // the staged build wait for a location it can actually install from.
 function applyInstallOnQuitPolicy(): void {
+  if (isPersonalBuild(app.getVersion())) {
+    autoUpdater.autoInstallOnAppQuit = false;
+    return;
+  }
   const blocker = getMacInstallBlocker();
   autoUpdater.autoInstallOnAppQuit = blocker === undefined && !awaitingStagedReplacement && !nativePreparationBlocked;
   if (awaitingStagedReplacement) {
@@ -2707,6 +2745,7 @@ export function setUpdateRestartFailureHandler(handler: () => void): void { rest
 export function isUpdateRestartRequested(): boolean { return macRestartRequested; }
 
 export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<UpdateInstallResult> {
+  if (blockPersonalBuildUpdates()) throw new Error(PERSONAL_UPDATE_MESSAGE);
   if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
     throw new Error("A valid confirmed update version is required.");
   }
@@ -2878,6 +2917,7 @@ async function prepareRememberedNonDarwinUpdate(): Promise<void> {
 // ensureUpdatePrefs prompts once (first run, before any settings file exists)
 // for auto-update opt-in + channel, with a nightly instability disclaimer.
 export async function ensureUpdatePrefs(stateDir: string): Promise<void> {
+  if (blockPersonalBuildUpdates()) return;
   if (existsSync(path.join(stateDir, UPDATE_SETTINGS_FILE_NAME))) return;
 
   const installedNightly = installedUpdateChannel() === "nightly";

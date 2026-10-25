@@ -94,15 +94,19 @@ const ACP_RUNTIME_NODE_ENTITLEMENTS = [
 	"com.apple.security.cs.allow-unsigned-executable-memory",
 ];
 
-export function macSignOptionsForFile(filePath: string): { entitlements?: string[] } {
+export function macSignOptionsForFile(filePath: string): { entitlements?: string[]; hardenedRuntime?: boolean } {
 	// Cheap gate first: optionsForFile is invoked for every Mach-O in the
 	// bundle, and only the nested Node path can need an override.
-	if (!filePath.endsWith(ACP_RUNTIME_NODE_PATH)) return {};
+	// Ad-hoc signatures have no Team ID: hardened library validation rejects
+	// Electron loading its own ad-hoc framework. Keep this local-only; real
+	// certificate builds retain osx-sign's hardened-runtime default.
+	const localOptions = localAdHocSign ? { hardenedRuntime: false } : {};
+	if (!filePath.endsWith(ACP_RUNTIME_NODE_PATH)) return localOptions;
 	// Fail closed: an unreadable or unparseable binary throws out of
 	// optionsForFile and aborts the signing pass. Never fall back to
 	// process.arch or to "no entitlements" — silently signing the Intel Node
 	// without allow-unsigned-executable-memory is exactly the #3879 crash.
-	return machoHasX86_64Slice(filePath) ? { entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS } : {};
+	return machoHasX86_64Slice(filePath) ? { ...localOptions, entitlements: ACP_RUNTIME_NODE_ENTITLEMENTS } : localOptions;
 }
 
 // parseReleaseRepo turns an "owner/repo" string (from AO_RELEASE_REPO) into the
