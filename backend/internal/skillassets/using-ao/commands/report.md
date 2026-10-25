@@ -47,11 +47,12 @@ user-authorized scope.
 `--pr-created` and `--pr-reviewed` accept complete GitHub PR or GitLab MR URLs.
 
 `--needs-input` requests immediate non-interrupting delivery. `--stuck`
-requests immediate delivery plus a rate-limited interrupt. `--done` also delivers
-immediately. Use done/needs-input/stuck at phase boundaries; never checkpoint.
-Informational checkpoints may batch for up to one hour, but cannot delay a
-phase-ending report. Continue already authorized work without waiting for a
-routine confirmation.
+requests immediate delivery plus a rate-limited interrupt. Ordinary `--done`
+report delivery retains its five-minute settlement window. Autonomous story-scoped
+done/needs-input/stuck reports wake their responsible manager through durable
+story events immediately, independently of report delivery batching. Use these
+flags at phase boundaries; never checkpoint. Informational checkpoints may batch
+for up to one hour. Continue authorized work without routine confirmation.
 
 **Examples:**
 

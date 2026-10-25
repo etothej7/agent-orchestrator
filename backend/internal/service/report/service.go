@@ -153,8 +153,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (domain.ReportR
 	switch input.State {
 	case domain.ReportDone:
 		settlementDeadline = now.Add(domain.ReportSettlementWindow)
-		// Settlement metadata is historical grouping information, never a phase gate.
-		availableAt = now
+		availableAt = settlementDeadline
 	case domain.ReportNeedsInput, domain.ReportStuck:
 		availableAt = now
 	default:

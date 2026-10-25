@@ -9,6 +9,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
@@ -403,5 +404,59 @@ func TestAutonomousQuestionOwnershipAndInternalReports(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("internal report disappeared")
+	}
+}
+
+func TestStoryPhaseReportWakeSurvivesUncertainDelivery(t *testing.T) {
+	db, _, manager := setupContinuation(t)
+	defer db.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := continuationStore{Store: db, turn: domain.ConversationTurn{ID: "actual-turn", State: domain.TurnStateCompleted}}
+	sender := &continuationSender{err: errors.New("transport lost after acceptance")}
+	c := storysvc.Continuations{Store: st, Stories: &storysvc.Service{Store: st}, Sender: sender, Now: func() time.Time { return now }}
+	if err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reports := reportsvc.New(reportsvc.Deps{Store: db, Coordination: db.GetCoordination, Now: func() time.Time { return now }})
+	report, err := reports.Create(ctx, reportsvc.CreateInput{SessionID: manager, StoryID: "story", ClientReportID: "phase-during-uncertainty", State: domain.ReportDone, Note: "new phase result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		now = now.Add(2 * time.Minute)
+		if attempt == 1 {
+			sender.err = nil
+		}
+		if err = c.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		rec, _, e := db.GetStoryContinuation(ctx, "story")
+		if e != nil {
+			t.Fatal(e)
+		}
+		if rec.PhaseReportID != "" || rec.ProgressAttempts != 1 {
+			t.Fatal("uncertain retry consumed phase wake", rec)
+		}
+	}
+	// Known completed receipt now permits the pending phase to wake immediately,
+	// without clock advance through the normal retry backoff.
+	if err = c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := db.GetStoryContinuation(ctx, "story")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.messages) != 4 || rec.ProgressAttempts != 2 || rec.PhaseReportID != "report-"+report.ID {
+		t.Fatal(len(sender.messages), rec)
+	}
+	for i := 1; i < 3; i++ {
+		if sender.messages[i].ClientMessageID != sender.messages[0].ClientMessageID {
+			t.Fatal("uncertain retry changed handle")
+		}
+	}
+	if sender.messages[3].ClientMessageID == sender.messages[0].ClientMessageID {
+		t.Fatal("fresh phase reused settled handle")
 	}
 }

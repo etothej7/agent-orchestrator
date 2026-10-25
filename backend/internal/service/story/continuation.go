@@ -153,12 +153,21 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if rec.State != "sending" && rec.Checkpoint != checkpoint {
 		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
 	}
-	// Status changes wake a settled phase, but are not implementation evidence
+	// Status/report changes wake a settled phase, but are not implementation evidence
 	// and must never reset the bounded no-progress budget.
-	phaseChanged := rec.PhaseStatus != s.Status
-	rec.PhaseStatus = s.Status
-	if rec.State == "ready" && phaseChanged {
-		rec.NextAt = time.Time{}
+	if rec.State == "ready" {
+		phaseReportID := ""
+		for _, event := range events {
+			if event.Kind == "report" && (event.Result == "done" || event.Result == "needs_input" || event.Result == "stuck") {
+				phaseReportID = event.ID
+			}
+		}
+		phaseChanged := rec.PhaseStatus != s.Status || rec.PhaseReportID != phaseReportID
+		rec.PhaseReportID = phaseReportID
+		rec.PhaseStatus = s.Status
+		if phaseChanged {
+			rec.NextAt = time.Time{}
+		}
 	}
 	// A busy owner becoming available is a real eligibility change. Do not
 	// make the next phase wait out the polling backoff. Outstanding/uncertain

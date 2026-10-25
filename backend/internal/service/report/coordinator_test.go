@@ -100,8 +100,8 @@ func TestCoordinatorStuckInterruptRateLimitAndCoalescing(t *testing.T) {
 	if len(delivery.interrupts) != 1 {
 		t.Fatalf("rate limited interrupts = %v", delivery.interrupts)
 	}
-	if len(delivery.submissions) != 2 {
-		t.Fatalf("interrupt throttling delayed a phase report: %#v", delivery.submissions)
+	if len(delivery.submissions) != 1 {
+		t.Fatalf("throttled repeat created an extra wakeup: %#v", delivery.submissions)
 	}
 }
 

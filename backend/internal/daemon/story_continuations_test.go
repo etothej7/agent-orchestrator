@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
@@ -251,5 +252,156 @@ func TestPhaseStatusCDCDispatchesWithoutHumanWake(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// No report coordinator is running: only the production story-event CDC runner
+// can deliver this next manager turn. The normal report outbox remains pending.
+func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
+	for _, role := range []string{"worker", "reviewer"} {
+		for _, state := range []domain.ReportState{domain.ReportDone, domain.ReportNeedsInput, domain.ReportStuck} {
+			t.Run(role+"/"+string(state), func(t *testing.T) {
+				db, err := sqlite.Open(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				now := time.Now().UTC()
+				for _, id := range []string{"repo", "coordinator"} {
+					if err = db.UpsertProject(ctx, domain.ProjectRecord{ID: id, Path: t.TempDir(), RegisteredAt: now}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err = db.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: "coordinator", ManagedProjectIDs: []domain.ProjectID{"repo"}}, now); err != nil {
+					t.Fatal(err)
+				}
+				makeSession := func(project domain.ProjectID, kind domain.SessionKind) domain.SessionRecord {
+					rec, e := db.CreateSession(ctx, domain.SessionRecord{ProjectID: project, Kind: kind, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, CreatedAt: now, UpdatedAt: now})
+					if e != nil {
+						t.Fatal(e)
+					}
+					return rec
+				}
+				manager := makeSession("repo", domain.KindOrchestrator)
+				reporter := makeSession("repo", domain.KindWorker)
+				makeSession("coordinator", domain.KindOrchestrator)
+				if _, err = db.CreateConversation(ctx, "phase-thread", domain.ConversationScopeSession, "repo", manager.ID, now); err != nil {
+					t.Fatal(err)
+				}
+				if err = db.CreateEpic(ctx, domain.Epic{ID: "epic", Title: "TEST phase report"}); err != nil {
+					t.Fatal(err)
+				}
+				story := domain.Story{ID: "story", EpicID: "epic", Title: "TEST report", Autonomous: true, Status: "in_progress", Revision: 1, ProjectIDs: []domain.ProjectID{"repo"}, Assignments: []domain.StoryAssignment{{SessionID: manager.ID, Role: "manager"}, {SessionID: reporter.ID, Role: role}}}
+				if err = db.CreateStory(ctx, story); err != nil {
+					t.Fatal(err)
+				}
+				other := story
+				other.ID = "other"
+				other.Autonomous = false
+				if err = db.CreateStory(ctx, other); err != nil {
+					t.Fatal(err)
+				}
+				sender := &phaseTurnSender{db: db, sent: make(chan ports.ChatUserMessage, 4)}
+				events := cdc.NewBroadcaster()
+				poller := cdc.NewPoller(db, events, cdc.PollerConfig{Interval: 10 * time.Millisecond})
+				if err = poller.SeekToHead(ctx); err != nil {
+					t.Fatal(err)
+				}
+				pollDone := poller.Start(ctx)
+				recovered := make(chan struct{})
+				close(recovered)
+				runner := &storysvc.Continuations{Store: db, Stories: &storysvc.Service{Store: db}, Sender: sender}
+				done := startStoryContinuations(ctx, recovered, events, runner, slog.New(slog.DiscardHandler))
+				defer func() { cancel(); <-done; <-pollDone }()
+				var first ports.ChatUserMessage
+				select {
+				case first = <-sender.sent:
+				case <-time.After(2 * time.Second):
+					t.Fatal("initial manager dispatch missing")
+				}
+				waitReceipt := func(key string) domain.StoryContinuation {
+					deadline := time.Now().Add(2 * time.Second)
+					for {
+						rec, _, e := db.GetStoryContinuation(ctx, story.ID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						if rec.TurnID == "turn-"+key {
+							return rec
+						}
+						if time.Now().After(deadline) {
+							t.Fatal("receipt missing", rec)
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+				}
+				before := waitReceipt(first.ClientMessageID)
+				if err = db.SettleTurnByID(ctx, before.TurnID, domain.TurnStateCompleted, "", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				manager.Activity.State = domain.ActivityIdle
+				if err = db.UpdateSession(ctx, manager); err != nil {
+					t.Fatal(err)
+				}
+				reports := reportsvc.New(reportsvc.Deps{Store: db})
+				checkpoint, err := reports.Create(ctx, reportsvc.CreateInput{SessionID: reporter.ID, StoryID: story.ID, ClientReportID: "checkpoint", State: domain.ReportCheckpoint, Note: "informational"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !checkpoint.AvailableAt.After(time.Now().Add(50 * time.Minute)) {
+					t.Fatal("checkpoint batching changed", checkpoint)
+				}
+				if _, err = reports.Create(ctx, reportsvc.CreateInput{SessionID: reporter.ID, StoryID: other.ID, ClientReportID: "other-phase", State: state, Note: "another story"}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case msg := <-sender.sent:
+					t.Fatal("checkpoint/unrelated story bypassed backoff", msg.ClientMessageID)
+				case <-time.After(100 * time.Millisecond):
+				}
+				started := time.Now()
+				input := reportsvc.CreateInput{SessionID: reporter.ID, StoryID: story.ID, ClientReportID: "phase-report", State: state, Note: "actual phase result"}
+				report, err := reports.Create(ctx, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state == domain.ReportDone && !report.AvailableAt.After(started.Add(4*time.Minute)) {
+					t.Fatal("human-facing settlement was bypassed", report)
+				}
+				var next ports.ChatUserMessage
+				select {
+				case next = <-sender.sent:
+				case <-time.After(2 * time.Second):
+					t.Fatal("story report CDC waited for settlement/human")
+				}
+				after := waitReceipt(next.ClientMessageID)
+				if after.Generation != before.Generation || after.ProgressAttempts != before.ProgressAttempts+1 || after.PhaseReportID != "report-"+report.ID {
+					t.Fatal("report reset progress budget or lost durable identity", before, after)
+				}
+				if next.ClientMessageID == first.ClientMessageID || !strings.Contains(next.Text, "Story story;") {
+					t.Fatal("wrong/new dispatch identity", next)
+				}
+				persisted, found, err := db.GetReport(ctx, report.ID)
+				if err != nil || !found || persisted.DeliveryState != domain.ReportPending || persisted.DeliveryAttempts != 0 {
+					t.Fatal("dispatch depended on outbox consumption", persisted, err)
+				}
+				replay, err := reports.Create(ctx, input)
+				if err != nil || replay.ID != report.ID {
+					t.Fatal("report retry changed identity", replay, err)
+				}
+				current, err := db.GetStory(ctx, story.ID)
+				if err != nil || current.Question != "" || current.Status != "in_progress" {
+					t.Fatal("report inferred human question/completion", current, err)
+				}
+				select {
+				case extra := <-sender.sent:
+					t.Fatal("duplicate report dispatched again", extra.ClientMessageID)
+				case <-time.After(50 * time.Millisecond):
+				}
+				t.Logf("%s %s report %s -> manager %s turn %s via CDC in %s; outbox remains pending", role, state, report.ID, manager.ID, after.TurnID, time.Since(started))
+			})
+		}
 	}
 }

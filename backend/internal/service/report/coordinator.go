@@ -182,19 +182,26 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 		return c.release(ctx, batch, err)
 	}
 	if batch.hasState(domain.ReportStuck) {
+		interrupted := false
+		var nextInterrupt time.Time
 		for _, worker := range batch.stuckWorkers() {
-			acquired, _, acquireErr := c.store.AcquireReportInterrupt(ctx, worker, c.now().UTC(), ReportInterruptWindow)
+			acquired, next, acquireErr := c.store.AcquireReportInterrupt(ctx, worker, c.now().UTC(), ReportInterruptWindow)
 			if acquireErr != nil {
 				return c.release(ctx, batch, acquireErr)
 			}
 			if acquired {
+				interrupted = true
 				if interruptErr := c.delivery.Interrupt(ctx, target.ID); interruptErr != nil {
 					return c.release(ctx, batch, interruptErr)
 				}
+			} else if nextInterrupt.IsZero() || next.Before(nextInterrupt) {
+				nextInterrupt = next
 			}
 		}
-		// Rate-limit interruption, not phase delivery. A new phase-ending
-		// report must still reach the manager without a later human message.
+		if !interrupted && !batch.hasState(domain.ReportNeedsInput) {
+			_, deferErr := c.store.DeferReportBatch(ctx, batch.ProjectID, batch.Token, nextInterrupt, "repeated stuck report coalesced inside interrupt window")
+			return deferErr
+		}
 	}
 	if err := c.delivery.Submit(ctx, target.ID, batch.Render(), batch.IdempotencyKey()); err != nil {
 		return c.release(ctx, batch, err)
