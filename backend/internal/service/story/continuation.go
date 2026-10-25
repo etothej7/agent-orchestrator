@@ -125,7 +125,7 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if err != nil {
 		return err
 	}
-	checkpoint := string(s.Status) + ":" + continuationCheckpoint(s, events)
+	checkpoint := s.Status + ":" + continuationCheckpoint(s, events)
 	if rec.State == "waiting" {
 		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
 		if err != nil {

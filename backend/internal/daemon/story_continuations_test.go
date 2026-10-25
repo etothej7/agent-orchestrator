@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"context"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"log/slog"
 	"strings"
 	"testing"
@@ -11,7 +9,9 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 type continuationSweepProbe struct {
