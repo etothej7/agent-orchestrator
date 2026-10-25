@@ -38,6 +38,110 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(a.workflow_classification({'question': 'scope?'}, {}, False, 31, 30), 'blocked_no_ready_work')
         self.assertEqual(a.workflow_classification({'status': 'done'}, {}, False, 31, 30), 'completed_no_ready_work')
 
+class HarnessPolicyTests(unittest.TestCase):
+    def test_latency_uses_same_story_stable_delivery(self):
+        h = a.Harness.__new__(a.Harness)
+        h.report_times = {'r': {'id': 'r', 'story_id': 's', 'created_at': '2026-01-01T00:00:00Z'}}
+        h.continuation_history = {'own-key': {'storyId': 's'}, 'other-key': {'storyId': 'other'}}
+        h.observed_dispatches = {
+            'wrong': {'id': 'wrong', 'client_message_id': 'other-key', 'created_at': '2026-01-01T00:00:01Z'},
+            'right': {'id': 'right', 'client_message_id': 'own-key', 'turn_id': 't', 'created_at': '2026-01-01T00:00:03Z'}}
+        result = h.latencies([{'story': {'id': 's'}}])
+        self.assertEqual(result[0]['seconds'], 3)
+        self.assertEqual(result[0]['dispatchMessageId'], 'right')
+
+    def test_scope_answer_does_not_nudge_or_answer_ambiguous_owner(self):
+        import types
+        h = a.Harness.__new__(a.Harness)
+        h.args = types.SimpleNamespace(answers={'Which format?': 'JSON'})
+        h.answer_ids = set()
+        sent = []
+        h.require = lambda *args: sent.append(args)
+        message = {'id': 'm', 'role': 'assistant', 'audience': 'human', 'purpose': 'scope_question',
+                   'text': 'Which format?\n\nWhy your input is needed: scope decision'}
+        story = {'id': 's', 'revision': 2, 'question': message['text'], 'questionEventId': 'm', 'questionRequesterSessionId': 'worker'}
+        h.answer_scope(message, [])
+        h.answer_scope(message, [{'story': dict(story, questionEventId='wrong')}])
+        h.answer_scope(message, [{'story': story}, {'story': dict(story, id='other')}])
+        self.assertEqual(sent, [])
+        h.answer_scope(message, [{'story': story}])
+        h.answer_scope(message, [{'story': story}])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][1], '/api/v1/workspace/commands')
+        self.assertEqual(sent[0][2]['kind'], 'answer')
+
+
+class ProcessOwnershipTests(unittest.TestCase):
+    def test_reused_pid_is_not_an_ancestry_root(self):
+        historical = {10: 'old-start'}
+        current = {10: (1, 'new-start', 'unrelated'), 11: (10, 'child-start', 'unrelated-child')}
+        self.assertEqual(a.live_owned_processes(current, historical, 'unique'), {})
+
+    def test_live_identity_roots_and_detached_marker_are_tracked(self):
+        historical = {10: 'same-start', 20: 'old-start'}
+        current = {10: (1, 'same-start', 'daemon'), 11: (10, 'child-start', 'worker'),
+                   21: (20, 'unrelated-start', 'unrelated'),
+                   30: (1, 'detached-start', 'host AO_ACCEPTANCE_RUN_ID=unique')}
+        self.assertEqual(set(a.live_owned_processes(current, historical, 'unique')), {10, 11, 30})
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_check_command_cannot_be_an_echo_or_other_story(self):
+        self.assertTrue(a.invokes_check('python3 check.py --story-id story-a', 'story-a'))
+        self.assertFalse(a.invokes_check('echo python3 check.py --story-id story-a', 'story-a'))
+        self.assertFalse(a.invokes_check('python3 check.py --story-id story-b', 'story-a'))
+        self.assertFalse(a.invokes_check('cat check.py', 'story-a'))
+
+    def test_opening_turn_or_uncertain_handoff_is_not_review_provenance(self):
+        event = dict(kind='handoff', result='uncertain', recipientSessionId='reviewer', reference='opening', deliveryKind='turn')
+        self.assertEqual(a.delivered_turns([event], 'reviewer', []), set())
+        event.update(result='delivered', reference='review-turn')
+        self.assertEqual(a.delivered_turns([event], 'reviewer', []), {'review-turn'})
+        self.assertEqual(a.delivered_turns([event], 'worker', []), set())
+
+    def test_missing_dispatch_is_retained_and_terminal_report_is_excluded(self):
+        h = a.Harness.__new__(a.Harness)
+        h.report_times = {'r': {'id': 'r', 'story_id': 's', 'created_at': '2026-01-01T00:00:10Z'}}
+        h.continuation_history = {}; h.observed_dispatches = {}
+        detail = {'story': {'id': 's'}, 'events': []}
+        result = h.latencies([detail])
+        self.assertTrue(result[0]['required']); self.assertFalse(result[0]['matched'])
+        detail['events'] = [{'id': 'done', 'kind': 'done', 'createdAt': '2026-01-01T00:00:09Z'}]
+        result = h.latencies([detail])
+        self.assertFalse(result[0]['required'])
+        self.assertEqual(result[0]['excludedReason'], 'explicit_done_before_report')
+
+    @unittest.skipUnless(a.sys.platform == 'darwin', 'macOS sandbox policy test')
+    def test_actor_sandbox_cannot_signal_outside_fixture(self):
+        import tempfile, types, subprocess, sys, json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='ao-signal-test-', dir='/private/tmp') as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory); h.port = 65530
+            h.args = types.SimpleNamespace(mode='real')
+            profile = h.sandbox_profile(False)
+            outside = subprocess.Popen(['/bin/sleep', '15'])
+            code = """import subprocess,os,signal,sys,json
+inside=subprocess.Popen(['/bin/sleep','10'])
+try:
+ os.kill(inside.pid,signal.SIGTERM);inside.wait(timeout=3)
+ try:
+  os.kill(int(sys.argv[1]),signal.SIGTERM);denied=False
+ except PermissionError: denied=True
+ print(json.dumps({'outsideDenied':denied}))
+finally:
+ if inside.poll() is None: inside.kill();inside.wait()
+"""
+            try:
+                result = subprocess.run(['/usr/bin/sandbox-exec','-f',str(profile),sys.executable,'-c',code,str(outside.pid)],
+                                        capture_output=True,text=True,timeout=8)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(json.loads(result.stdout)['outsideDenied'])
+                self.assertIsNone(outside.poll())
+            finally:
+                if outside.poll() is None: outside.terminate()
+                outside.wait(timeout=3)
+
 
 if __name__ == '__main__':
     unittest.main()

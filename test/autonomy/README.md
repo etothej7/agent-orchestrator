@@ -55,7 +55,7 @@ or sending another intake. Fix bootstrap configuration for a **new** trial.
 
 All actor writes are confined to a newly allocated `0700` scratch root. HOME,
 AO_DATA_DIR, AO_RUN_FILE, temporary files, fixture repositories and AO worktrees
-are there. The runtime cannot read the invoking user's live `~/.ao`. Outbound
+are there. Actors may signal only processes in their own sandbox, never outside same-user processes. A regression test proves this against a harmless outside fixture. The runtime cannot read the invoking user's live `~/.ao`. Outbound
 provider traffic is allowed only in real mode, on TLS port 443; loopback traffic
 is restricted to the scratch daemon's allocated port. Provider binaries and their
 dependencies must already be installed; the harness does not install them.
@@ -65,13 +65,13 @@ additional Vitest checks with `--maxWorkers=4`.
 
 Two fixture repositories contain intentionally broken functions and checked-in
 failing tests. The request requires the actual developer to run the failing
-checks before fixing them, commit, obtain a separate actor's fixed-SHA review,
+checks with `python3 check.py --story-id STORY_ID` before fixing them, commit, rerun the check at the final commit, obtain a separate actor's fixed-SHA review,
 and record truthful verification and Done. The harness independently executes
 its original golden assertions against the reported commit's source in the
 scratch sandbox; changing the fixture's test cannot fool that check. Evidence
 also requires actual actor command activity with a failing check followed by a
-passing check, separate worker/reviewer turns, matching implementation/check/
-review SHAs, managers and role assignments, and explicit Done.
+passing check, delivered story-specific worker/reviewer turns, matching implementation/check/
+review SHAs, managers and role assignments, and explicit Done. Each story needs check output tied to its repo, actor, story ID and commit; the check script at that commit must match the original. Each reviewer must inspect `git show FINAL_SHA -- feature.py` in the matching repo after a delivered handoff. Unrelated opening turns and other stories’ passing checks cannot satisfy those gates.
 
 The runner kills **only its daemon** once during observation, then restarts it on
 the same DB/runfile. It observes durable recovery rather than replaying intake.
@@ -83,14 +83,14 @@ do not call a mechanics restart an autonomy-recovery pass.
 
 Report-to-next-dispatch latency uses a report's timestamp and the next durable
 message correlated through that story's continuation delivery key. Unrelated
-concurrent messages do not count. Missing correlations fail the evidence gate.
+concurrent messages do not count. Every report is retained in the result: required continuation, terminal/non-actionable exclusion with reason, or missing correlation. Required missing correlations fail the evidence gate; they are never dropped from the measured set.
 
 Public main-conversation pages and all notification pages are inspected in
 memory. Only structured, human-audience scope questions/blocking decisions are
 classified actionable; routine status/completion chatter is rejected. Delivery
 keys, provider fields, reasoning activity/markers, and the private sentinel are
 checked. Exact scope answers are sent through story commands only when one
-current story owns the corresponding question; unmatched/ambiguous questions
+current story owns the exact question event ID and requester, and the normalized question text matches; unmatched/ambiguous questions
 remain unanswered. No tool approval or generic progress prompt is auto-answered.
 Privacy scanning is an explicit sentinel/field/marker check, not a claim that a
 regex can prove the absence of every conceivable secret or semantic reasoning.
@@ -118,7 +118,7 @@ and retained scratch state stay under the `0700` scratch root for diagnosis.
 
 Cleanup runs in `finally`, including setup errors, timeout, Ctrl-C and SIGTERM.
 It tracks descendants and the unique inherited run marker, including detached
-runtime hosts. PID start-time identity is checked before signals. It uses TERM,
+runtime hosts. PID start-time identity is checked before signals and before using a process as an ancestry root; historical exited PIDs cannot adopt unrelated children after PID reuse. It uses TERM,
 then KILL only for survivors, and records remaining owned PIDs. Scratch data is
 retained. The installed application and live daemon are never stopped.
 

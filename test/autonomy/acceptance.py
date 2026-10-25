@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import signal
 import socket
 import sqlite3
@@ -99,7 +100,7 @@ def classify_message(message):
     purpose = message.get('purpose')
     if purpose in PURPOSES and message.get('audience') == 'human':
         text = message.get('text', '')
-        if 'Why your input is needed:' in text and text.split('Why your input is needed:')[0].strip():
+        if 'Why your input is needed:' in text and all(part.strip() for part in text.split('Why your input is needed:', 1)):
             return purpose
     return 'non_actionable_or_unclassified'
 
@@ -145,6 +146,56 @@ def duplicate_dispatches(messages):
     return [digest(k) for k, turns in seen.items() if len(turns) > 1]
 
 
+def command_tokens(command):
+    if not isinstance(command, str):
+        return []
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def invokes_check(command, story_id):
+    tokens = command_tokens(command)
+    for i, token in enumerate(tokens):
+        if i and tokens[i - 1] not in ('&&', ';'):
+            continue
+        if not re.fullmatch(r'python(?:3(?:\.\d+)?)?', Path(token).name):
+            continue
+        if len(tokens) >= i + 4 and Path(tokens[i + 1]).name == 'check.py' and tokens[i + 2:i + 4] == ['--story-id', story_id]:
+            return True
+    return False
+
+
+def delivered_turns(events, actor, activities):
+    result = set()
+    activity_turn = {a['id']: a.get('turn_id') for a in activities}
+    for event in events:
+        if event.get('kind') not in ('assignment', 'message', 'handoff') or event.get('result') != 'delivered' or event.get('recipientSessionId') != actor:
+            continue
+        ref = event.get('reference')
+        if event.get('deliveryKind') == 'turn' and ref:
+            result.add(ref)
+        elif event.get('deliveryKind') == 'steer' and activity_turn.get(ref):
+            result.add(activity_turn[ref])
+    return result
+
+
+def live_owned_processes(current, historical, token):
+    """Historical PIDs are evidence, never ancestry roots after exit/PID reuse."""
+    owned = {pid for pid, identity in historical.items()
+             if pid in current and current[pid][1] == identity}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent, identity, command) in current.items():
+            if parent in owned or f'AO_ACCEPTANCE_RUN_ID={token}' in command:
+                if pid not in owned:
+                    owned.add(pid)
+                    changed = True
+    return {pid: current[pid][1] for pid in owned}
+
+
 class Harness:
     def __init__(self, args):
         self.args = args
@@ -165,6 +216,7 @@ class Harness:
         self.mutations = []
         self.observed_messages = {}
         self.observed_notifications = {}
+        self.actionable_texts = set()
         self.public_errors = set()
         self.samples = []
         self.observed_dispatches = {}
@@ -196,6 +248,7 @@ class Harness:
                'GIT_COMMITTER_NAME': 'AO acceptance', 'GIT_COMMITTER_EMAIL': 'acceptance@localhost'}
         (self.root / 'bin').mkdir()
         (self.root / 'bin/ao').symlink_to(self.args.daemon)
+        (self.root / 'bin/python3').symlink_to(sys.executable)
         if self.args.mode == 'real':
             for directory in self.args.agent_bin_dir:
                 env['PATH'] += ':' + str(Path(directory).resolve())
@@ -225,6 +278,7 @@ class Harness:
 (allow file-write* (subpath {q(str(self.root))}))
 (allow file-write* (literal "/dev/null"))
 (deny file-read* (subpath {q(str(live))}))
+(deny signal)
 (deny network*)
 (allow network-bind network-inbound (local ip "localhost:{self.port}"))
 (allow network-outbound (remote ip "localhost:{self.port}"))
@@ -232,8 +286,10 @@ class Harness:
 '''
         if seed:
             text += f'(deny process-exec)\n(allow process-exec (literal {q(str(self.args.daemon))}))\n(deny signal)\n'
-        elif self.args.mode == 'real':
-            text += '(allow network-outbound (remote tcp "*:443"))\n'
+        else:
+            text += '(allow signal (target same-sandbox))\n'
+            if self.args.mode == 'real':
+                text += '(allow network-outbound (remote tcp "*:443"))\n'
         path = self.root / ('seed.sb' if seed else 'runtime.sb')
         path.write_text(text)
         return path
@@ -284,18 +340,12 @@ class Harness:
 
     def track(self):
         current = self.process_rows()
-        owned = set(self.owned)
-        if self.daemon:
-            owned.add(self.daemon.pid)
-        changed = True
-        while changed:
-            changed = False
-            for pid, (parent, identity, command) in current.items():
-                if pid != os.getpid() and (parent in owned or f'AO_ACCEPTANCE_RUN_ID={self.token}' in command):
-                    if pid not in owned:
-                        owned.add(pid)
-                        changed = True
-                    self.owned[pid] = identity
+        if self.daemon and self.daemon.poll() is None and self.daemon.pid in current:
+            # Popen still owns this live, unreaped child; seed its exact identity once.
+            self.owned.setdefault(self.daemon.pid, current[self.daemon.pid][1])
+        live = live_owned_processes(current, self.owned, self.token)
+        live.pop(os.getpid(), None)
+        self.owned.update(live)
         return current
 
     def stop(self, daemon_only=False, force=False):
@@ -398,17 +448,25 @@ class Harness:
             repo = self.root / 'repos' / project
             repo.mkdir(parents=True)
             (repo / 'feature.py').write_text(f'def {function}(value):\n    {broken}\n')
-            (repo / 'check.py').write_text(f'from feature import {function}\n{contract}\nprint("contract passed")\n')
+            check_source = ("import argparse, json, os, subprocess, sys\n"
+                "p=argparse.ArgumentParser();p.add_argument('--story-id', required=True);args=p.parse_args()\n"
+                f"from feature import {function}\n"
+                "exit_code=0\ntry:\n" + ''.join('    ' + line + '\n' for line in contract.splitlines()) +
+                "except AssertionError:\n    exit_code=1\n"
+                f"record={{'storyId':args.story_id,'repo':{project!r},'actorId':os.environ.get('AO_SESSION_ID',''),"
+                "'sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'exitCode':exit_code}\n"
+                "print('AO_ACCEPTANCE_CHECK '+json.dumps(record),flush=True)\nsys.exit(exit_code)\n")
+            (repo / 'check.py').write_text(check_source)
             (repo / 'AGENTS.md').write_text('LOCAL ONLY. No push, network, installation, or work outside this scratch root. '
-                'Work on a dedicated local branch/worktree. Run python3 check.py before editing and after the fix. '
-                'Do not weaken or modify check.py. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
+                'Work on a dedicated local branch/worktree. Run python3 check.py --story-id STORY_ID before editing and again AFTER the final commit. Record the real story ID, never a placeholder. '
+                'Do not weaken or modify check.py. Reviewers must run git show FINAL_SHA -- feature.py in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n')
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
             self.git(repo, 'commit', '-m', 'test: seed intentionally failing acceptance contract')
             self.repos.append({'project': project, 'path': str(repo), 'base': self.git(repo, 'rev-parse', 'HEAD'),
-                               'contract': contract, 'function': function})
+                               'contract': contract, 'function': function, 'checkHash': hashlib.sha256(check_source.encode()).hexdigest()})
         self.result['fixtures'] = [{k: v for k, v in r.items() if k not in ('contract', 'function')} for r in self.repos]
 
     def bootstrap(self):
@@ -478,6 +536,8 @@ class Harness:
                 safe['messages'] = [m for m in public.get('messages', []) if m.get('role') != 'user']
                 self.public_errors.update(privacy_violations(safe, handles))
                 for m in safe['messages']:
+                    if classify_message(m) in PURPOSES:
+                        self.actionable_texts.add(m.get('text', '').split('\n\nWhy your input is needed:')[0].strip())
                     self.observed_messages[m['id']] = {'id': m['id'], 'classification': classify_message(m),
                         'textHash': digest(m.get('text', '')), 'streaming': m.get('streaming', False)}
                     self.answer_scope(m, details)
@@ -502,7 +562,7 @@ class Harness:
             for n in notices.get('notifications', []):
                 kind = n.get('kind', n.get('type', ''))
                 self.observed_notifications[n['id']] = {'id': n['id'], 'kind': kind,
-                    'actionable': kind in ('approval', 'needs_input', 'scope_question', 'blocking_decision')}
+                    'actionable': kind in ('needs_input', 'scope_question', 'blocking_decision') and any(q and q in n.get('body', '') for q in self.actionable_texts)}
             cursor = notices.get('nextCursor', '')
             if not cursor:
                 break
@@ -524,14 +584,16 @@ class Harness:
         answer = self.args.answers.get(question)
         if answer is None:
             return
-        matching = [d['story'] for d in details if d['story'].get('question', '').strip() == question
-                    and d['story'].get('questionEventID', d['story'].get('questionEventId'))]
+        matching = [d['story'] for d in details
+                    if d['story'].get('questionEventId') == message['id']
+                    and d['story'].get('questionRequesterSessionId')
+                    and d['story'].get('question', '').split('\n\nWhy your input is needed:')[0].strip() == question]
         if len(matching) != 1:
             return
         s = matching[0]
         self.require('POST', '/api/v1/workspace/commands', {'id': 'answer-' + digest(message['id'])[:24],
             'storyId': s['id'], 'revision': s['revision'], 'kind': 'answer', 'text': answer,
-            'questionEventId': s.get('questionEventId', s.get('questionEventID')),
+            'questionEventId': s['questionEventId'],
             'recipientSessionId': s.get('questionRequesterSessionId', '')})
         self.answer_ids.add(message['id'])
 
@@ -583,31 +645,43 @@ class Harness:
         self.check('public_privacy', not self.public_errors, reasons=sorted(self.public_errors))
         self.result['answeredScopeQuestionCount'] = len(self.answer_ids)
         self.result['reportToNextDispatchSeconds'] = self.latencies(details)
-        self.check('report_dispatch_latency_bounded', bool(self.result['reportToNextDispatchSeconds']) and all(r['seconds'] <= self.args.max_dispatch_latency for r in self.result['reportToNextDispatchSeconds']))
-        self.check('report_dispatch_latency_observed', bool(self.result['reportToNextDispatchSeconds']))
+        self.check('report_dispatch_latency_bounded', any(r['required'] for r in self.result['reportToNextDispatchSeconds']) and all(r.get('matched') and r['seconds'] <= self.args.max_dispatch_latency for r in self.result['reportToNextDispatchSeconds'] if r['required']))
+        self.check('report_dispatch_latency_observed', any(r.get('matched') for r in self.result['reportToNextDispatchSeconds']))
         self.verify_code(state, details, evidence)
 
     def latencies(self, details):
         result = []
         for report in self.report_times.values():
+            row = {'reportId': report['id'], 'storyId': report.get('story_id'), 'required': False}
             start = stamp(report.get('created_at'))
-            if start is None or not report.get('story_id'):
-                continue
-            detail = next((d for d in details if d['story']['id'] == report['story_id']), None)
-            if not detail:
-                continue
-            candidates = []
-            for dispatch in self.observed_dispatches.values():
-                c = self.continuation_history.get(dispatch.get('client_message_id'))
-                when = stamp(dispatch.get('created_at'))
-                if c and c.get('storyId') == report['story_id'] and when is not None and when >= start:
-                    candidates.append((when, dispatch))
-            if candidates:
-                when, dispatch = min(candidates, key=lambda pair: pair[0])
-                result.append({'reportId': report['id'], 'storyId': report['story_id'],
-                               'dispatchMessageId': dispatch['id'], 'turnId': dispatch.get('turn_id'),
-                               'deliveryKeyHash': digest(dispatch['client_message_id']),
-                               'seconds': round(when - start, 3)})
+            detail = next((d for d in details if d['story']['id'] == report.get('story_id')), None)
+            if not report.get('story_id'):
+                row['excludedReason'] = 'unscoped_report'
+            elif start is None or detail is None:
+                row.update(required=True, matched=False, failure='missing_story_or_timestamp')
+            else:
+                prior = [e for e in detail.get('events', []) if stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) <= start]
+                status_events = [e for e in sorted(prior, key=lambda e: e.get('createdAt', '')) if e.get('kind') in ('done', 'in_progress', 'in_review', 'ready_for_approval', 'implementation', 'testing', 'review_failed')]
+                terminal = bool(status_events) and status_events[-1].get('kind') == 'done'
+                questions = {e['id'] for e in prior if e.get('kind') == 'question'}
+                answered = {e.get('relatedEventId') for e in prior if e.get('kind') in ('answer', 'answer_confirmation') and e.get('result') in ('delivered', 'confirmed')}
+                if terminal:
+                    row['excludedReason'] = 'explicit_done_before_report'
+                elif questions - answered:
+                    row['excludedReason'] = 'unanswered_scope_question_before_report'
+                else:
+                    row.update(required=True, matched=False, failure='no_correlated_next_dispatch')
+                    candidates = []
+                    for dispatch in self.observed_dispatches.values():
+                        c = self.continuation_history.get(dispatch.get('client_message_id'))
+                        when = stamp(dispatch.get('created_at'))
+                        if c and c.get('storyId') == report['story_id'] and when is not None and when >= start:
+                            candidates.append((when, dispatch))
+                    if candidates:
+                        when, dispatch = min(candidates, key=lambda pair: pair[0])
+                        row.update(matched=True, failure=None, dispatchMessageId=dispatch['id'], turnId=dispatch.get('turn_id'),
+                                   deliveryKeyHash=digest(dispatch['client_message_id']), seconds=round(when - start, 3))
+            result.append(row)
         return result
 
     def verify_code(self, state, details, evidence):
@@ -633,21 +707,68 @@ class Harness:
                     commits.append({'storyId': story['story']['id'], 'sha': e['sha'], 'changed': False, 'goldenCheckExit': -1})
         self.result['commits'] = commits
         self.check('actual_code_commits_and_golden_checks', len(commits) >= 2 and all(c['changed'] and c['goldenCheckExit'] == 0 for c in commits))
-        commands = []
-        for activity in state['conversation_activities']:
-            raw = activity.get('detail_json', '{}') or '{}'
-            try:
-                detail = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if activity.get('kind') == 'command' and 'check.py' in str(detail.get('command', detail.get('rawCommand', ''))):
-                commands.append({'id': activity['id'], 'turnId': activity.get('turn_id'), 'at': activity.get('created_at'), 'exitCode': detail.get('exitCode')})
-        failed = [c for c in commands if isinstance(c['exitCode'], int) and c['exitCode'] != 0]
-        passed = [c for c in commands if c['exitCode'] == 0]
-        self.result['actorChecks'] = commands
-        self.check('actual_failure_and_remediation', bool(failed) and any(str(p['at']) > str(f['at']) for p in passed for f in failed))
+        activities = state['conversation_activities']
+        turns = {t['id']: t for t in state['conversation_turns']}
+        sessions = {r['id']: r for r in state['sessions']}
+        provenance = []
+        for detail in details:
+            story = detail['story']
+            proof = evidence[story['id']]
+            events = detail.get('events', [])
+            worker, reviewer = proof['author'], proof['reviewer']
+            worker_turns = delivered_turns(events, worker, activities)
+            reviewer_turns = delivered_turns(events, reviewer, activities)
+            fixture = next((f for f in self.repos if f['project'] == sessions.get(worker, {}).get('project_id') and f['project'] in story.get('projectIds', [])), None)
+            checks, inspections = [], []
+            for activity in activities:
+                turn = turns.get(activity.get('turn_id'), {})
+                actor = turn.get('handled_by_session_id')
+                if activity.get('kind') != 'command' or activity.get('status') != 'completed' or turn.get('state') != 'completed' or fixture is None:
+                    continue
+                try:
+                    command = json.loads(activity.get('detail_json') or '{}')
+                    cwd = Path(command.get('cwd', '')).resolve()
+                    if not command.get('cwd') or not cwd.is_relative_to(self.root):
+                        continue
+                    common = (cwd / self.git(cwd, 'rev-parse', '--git-common-dir')).resolve()
+                    if common != (Path(fixture['path']) / '.git').resolve():
+                        continue
+                except (ValueError, OSError, subprocess.SubprocessError):
+                    continue
+                text = command.get('rawCommand', command.get('command', ''))
+                tokens = command_tokens(text)
+                if actor == reviewer and activity['turn_id'] in reviewer_turns and proof['sha'] in tokens and 'show' in tokens and any(Path(t).name == 'git' for t in tokens) and command.get('exitCode') == 0:
+                    inspections.append({'activityId': activity['id'], 'turnId': activity['turn_id'], 'sha': proof['sha'], 'actorId': actor})
+                if actor != worker or activity['turn_id'] not in worker_turns or not invokes_check(text, story['id']):
+                    continue
+                output = activity.get('command_output', '') or command.get('output', '')
+                for line in output.splitlines():
+                    if not line.startswith('AO_ACCEPTANCE_CHECK '):
+                        continue
+                    try:
+                        record = json.loads(line.removeprefix('AO_ACCEPTANCE_CHECK '))
+                        if record.get('storyId') != story['id'] or record.get('repo') != fixture['project'] or record.get('actorId') != actor or not SHA.fullmatch(record.get('sha', '')) or record.get('exitCode') != command.get('exitCode'):
+                            continue
+                        original_check = self.git(fixture['path'], 'show', record['sha'] + ':check.py') + '\n'
+                        if hashlib.sha256(original_check.encode()).hexdigest() != fixture['checkHash']:
+                            continue
+                        self.git(fixture['path'], 'merge-base', '--is-ancestor', record['sha'], proof['sha'])
+                    except (ValueError, OSError, subprocess.SubprocessError):
+                        continue
+                    checks.append({'activityId': activity['id'], 'turnId': activity['turn_id'], 'sha': record['sha'],
+                                   'actorId': actor, 'exitCode': record['exitCode'], 'at': activity.get('created_at')})
+            failed = [c for c in checks if c['exitCode'] != 0]
+            passed = [c for c in checks if c['exitCode'] == 0 and c['sha'] == proof['sha']]
+            remediation = any(stamp(p['at']) is not None and stamp(f['at']) is not None and stamp(p['at']) > stamp(f['at']) for p in passed for f in failed)
+            provenance.append({'storyId': story['id'], 'workerTurns': sorted(worker_turns), 'reviewerTurns': sorted(reviewer_turns),
+                               'actorChecks': checks, 'reviewInspections': inspections, 'remediation': remediation,
+                               'valid': bool(proof['valid'] and remediation and inspections and worker != reviewer)})
+        self.result['actorProvenance'] = provenance
+        self.check('per_story_actor_revision_provenance', len(provenance) >= 2 and all(p['valid'] for p in provenance))
+        self.check('actual_failure_and_remediation', len(provenance) >= 2 and all(p['remediation'] for p in provenance))
 
     def run(self):
+        self.result['harnessSha'] = subprocess.check_output(['/usr/bin/git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'], text=True).strip()
         self.result['binary'] = {'path': str(self.args.daemon), 'sha256': hashlib.sha256(self.args.daemon.read_bytes()).hexdigest()}
         self.seed_check()
         self.fixtures()
