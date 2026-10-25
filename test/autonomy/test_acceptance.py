@@ -395,5 +395,83 @@ class DeterministicRemediationTests(unittest.TestCase):
         self.assertIsNone(chain(c=passed))
 
 
+class PhaseLatencyPolicyTests(unittest.TestCase):
+    def state(self, busy=False):
+        turns = [dict(id='target',conversation_id='c',handled_by_session_id='m',started_at='2026-01-01T00:00:20Z')]
+        if busy:
+            turns[0]['started_at'] = '2026-01-01T00:02:20Z'
+            turns.append(dict(id='current',conversation_id='c',handled_by_session_id='m',started_at='2025-12-31T23:59:00Z',completed_at='2026-01-01T00:02:00Z'))
+        return {'sessions':[{'id':'m'}], 'conversation_turns':turns, 'conversation_activities':[],
+                'conversation_messages':[dict(id='msg',conversation_id='c',turn_id='target',client_message_id='batch',created_at='2026-01-01T00:00:00Z')],
+                'reports':[dict(id='r',story_id='s',state='done',recipient_session_id='m',delivery_batch_id='batch',created_at='2026-01-01T00:00:00Z')]}
+
+    def test_idle_busy_bound_and_cold_start_unknown(self):
+        for busy in [False,True]:
+            state = self.state(busy)
+            row = a.recipient_turn_latency(state,'m','2026-01-01T00:00:00Z','target',30)
+            self.assertEqual(row['recipientState'],'busy' if busy else 'idle')
+            self.assertEqual(row['seconds'],20)
+            self.assertTrue(row['passed'])
+            self.assertIsNone(row['providerColdStartSeconds'])
+            state['conversation_turns'][0]['started_at'] = '2026-01-01T00:%02d:30Z' % (2 if busy else 0)
+            self.assertTrue(a.recipient_turn_latency(state,'m','2026-01-01T00:00:00Z','target',30)['passed'])
+            state['conversation_turns'][0]['started_at'] = '2026-01-01T00:%02d:30.001Z' % (2 if busy else 0)
+            self.assertFalse(a.recipient_turn_latency(state,'m','2026-01-01T00:00:00Z','target',30)['passed'])
+
+    def test_missing_start_or_busy_end_and_wrong_actor_fail(self):
+        state = self.state(True)
+        state['conversation_turns'][1]['completed_at'] = None
+        self.assertFalse(a.recipient_turn_latency(state,'m','2026-01-01T00:00:00Z','target',30)['passed'])
+        state = self.state(); state['conversation_turns'][0]['started_at'] = None
+        self.assertFalse(a.recipient_turn_latency(state,'m','2026-01-01T00:00:00Z','target',30)['passed'])
+        self.assertFalse(a.recipient_turn_latency(self.state(),'wrong','2026-01-01T00:00:00Z','target',30)['passed'])
+
+    def test_phase_batch_and_transition_need_correlated_actual_start(self):
+        state = self.state()
+        details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'}]},'events':[]}]
+        self.assertTrue(a.phase_latencies(state,details,{},30)[0]['passed'])
+        state['conversation_messages'] = []
+        self.assertFalse(a.phase_latencies(state,details,{},30)[0]['passed'])
+        state['reports'] = []
+        details[0]['events'] = [dict(id='review',storyId='s',kind='in_review',createdAt='2026-01-01T00:00:00Z')]
+        state['conversation_messages'] = self.state()['conversation_messages']
+        history = {'batch':dict(storyId='s',recipientSessionId='m',phaseStatus='in_review')}
+        self.assertTrue(a.phase_latencies(state,details,history,30)[0]['passed'])
+        history['batch']['storyId'] = 'wrong'
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+
+    def test_busy_same_story_turn_queued_before_signal_can_start_after_owner(self):
+        state = self.state(True)
+        state['reports'][0]['delivery_batch_id'] = 'missing'
+        state['conversation_messages'][0]['created_at'] = '2025-12-31T23:59:30Z'
+        details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'}]},'events':[]}]
+        history = {'batch':dict(storyId='s',recipientSessionId='m',phaseStatus='backlog')}
+        row = a.phase_latencies(state,details,history,30)[0]
+        self.assertTrue(row['passed'])
+        self.assertEqual(row['seconds'],20)
+        self.assertEqual(row['correlation'],'same_story_continuation')
+        history['batch']['recipientSessionId']='other'
+        self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+
+    def test_superseded_question_does_not_exclude_missing_phase_start(self):
+        state = self.state(); state['conversation_messages'] = []
+        state['reports'][0]['created_at'] = '2026-01-01T00:00:05Z'
+        details = [{'story':{'id':'s','assignments':[]},'events':[
+            dict(id='q1',kind='question',createdAt='2026-01-01T00:00:01Z'),
+            dict(id='q2',kind='question',createdAt='2026-01-01T00:00:02Z'),
+            dict(id='answer',kind='answer',relatedEventId='q2',result='delivered',createdAt='2026-01-01T00:00:03Z')]}]
+        row = a.phase_latencies(state,details,{},30)[0]
+        self.assertTrue(row['required'])
+        self.assertFalse(row['passed'])
+        self.assertNotIn('excludedReason',row)
+
+    def test_done_excluded_only_without_other_ready_story(self):
+        state = self.state();state['reports']=[]
+        details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'}]},'events':[dict(id='done',storyId='s',kind='done',createdAt='2026-01-01T00:00:00Z')]}]
+        self.assertFalse(a.phase_latencies(state,details,{},30)[0]['required'])
+        details.append({'story':{'id':'ready','assignments':[]},'events':[]})
+        self.assertTrue(a.phase_latencies(state,details,{},30)[0]['required'])
+
+
 if __name__ == '__main__':
     unittest.main()

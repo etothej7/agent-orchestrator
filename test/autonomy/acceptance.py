@@ -155,6 +155,134 @@ def report_delivery_timings(state):
     return result  # A queued report receipt is NOT the next work dispatch.
 
 
+def recipient_turn_latency(state, recipient, receipt_at, target_id, bound):
+    receipt = stamp(receipt_at)
+    actor_turns = [t for t in state['conversation_turns'] if t.get('handled_by_session_id') == recipient]
+    target = next((t for t in actor_turns if t['id'] == target_id), {})
+    row = {'recipientSessionId': recipient, 'receiptAt': receipt_at, 'turnId': target.get('id'),
+           'recipientState': 'unknown', 'matched': False, 'passed': False,
+           'providerColdStartSeconds': None, 'providerColdStartReason': 'no separate provider-launch timestamp persisted'}
+    if receipt is None or not target:
+        return dict(row, failure='missing_receipt_or_correlated_recipient_turn')
+    busy = [t for t in actor_turns if t['id'] != target_id and stamp(t.get('started_at')) is not None
+            and stamp(t['started_at']) <= receipt
+            and (stamp(t.get('completed_at')) is None or stamp(t['completed_at']) > receipt)]
+    if len(busy) > 1:
+        return dict(row, failure='ambiguous_overlapping_current_turns')
+    current = busy[0] if busy else None
+    baseline = stamp(current.get('completed_at')) if current else receipt
+    started = stamp(target.get('started_at'))
+    row.update(recipientState='busy' if current else 'idle', currentTurnId=current['id'] if current else None,
+               currentTurnEndedAt=current.get('completed_at') if current else None,
+               turnStartedAt=target.get('started_at'), matched=True)
+    if baseline is None:
+        return dict(row, failure='current_turn_not_finished')
+    if started is None:
+        return dict(row, failure='correlated_turn_not_started')
+    if started < baseline:
+        return dict(row, failure='correlated_turn_precedes_eligibility')
+    elapsed = started - baseline
+    preceding = [t for t in actor_turns if t['id'] != target_id and stamp(t.get('completed_at')) is not None and stamp(t['completed_at']) <= started]
+    previous = max(preceding, key=lambda t: stamp(t['completed_at'])) if preceding else None
+    queued_ahead = [t['id'] for t in actor_turns if t['id'] != target_id and stamp(t.get('started_at')) is not None and baseline <= stamp(t['started_at']) < started]
+    row.update(queuedTurnsAhead=queued_ahead, previousTurnId=previous['id'] if previous else None,
+               gapAfterPreviousTurnSeconds=round(started-stamp(previous['completed_at']), 3) if previous else None)
+    activity_times = [stamp(a.get('created_at')) for a in state.get('conversation_activities', [])
+                      if a.get('turn_id') == target_id and a.get('provider_item_id') and stamp(a.get('created_at')) is not None]
+    first = min(activity_times) if activity_times else None
+    row.update(seconds=round(elapsed, 3), passed=elapsed <= bound,
+               receiptToTurnStartSeconds=round(started-receipt, 3),
+               firstProviderActivitySeconds=round(first-started, 3) if first is not None and first >= started else None)
+    if elapsed > bound:
+        row['failure'] = 'recipient_start_over_bound'
+    return row
+
+
+def phase_latencies(state, details, history, bound, main=None):
+    """Correlate real phase signals; report receipt alone is never a start."""
+    events = [e for d in details for e in d.get('events', [])]
+    messages = {m.get('client_message_id'): m for m in state['conversation_messages'] if m.get('client_message_id')}
+    results = []
+    signals = []
+    for report in state['reports']:
+        signals.append({'sourceKind': 'report', 'sourceId': report['id'], 'storyId': report.get('story_id'),
+                        'receiptAt': report.get('created_at'), 'phase': report.get('state'),
+                        'recipientSessionId': report.get('recipient_session_id'), 'batchKey': report.get('delivery_batch_id'),
+                        'eventId': next((e['id'] for e in events if e.get('kind') == 'report' and e.get('reference') == report['id']), None)})
+    for event in events:
+        if event.get('kind') in ('in_review', 'ready_for_approval', 'done'):
+            story = next((d['story'] for d in details if d['story']['id'] == event.get('storyId')), {})
+            managers = {a['sessionId'] for a in story.get('assignments', []) if a['role'] == 'manager'}
+            signals.append({'sourceKind': 'transition', 'sourceId': event['id'], 'eventId': event['id'],
+                            'storyId': event.get('storyId'), 'receiptAt': event.get('createdAt'),
+                            'phase': event['kind'], 'recipientSessionId': next(iter(managers)) if len(managers) == 1 else None})
+    for signal in signals:
+        row = dict(signal, required=True, matched=False, passed=False)
+        row.pop('batchKey', None)
+        receipt = stamp(signal['receiptAt'])
+        detail = next((d for d in details if d['story']['id'] == signal['storyId']), None)
+        if signal['sourceKind'] == 'report' and signal['phase'] not in ('done', 'needs_input', 'stuck'):
+            results.append(dict(row, required=False, excludedReason='non_phase_report'))
+            continue
+        if not detail or receipt is None:
+            results.append(dict(row, failure='missing_story_or_receipt'))
+            continue
+        prior = sorted([e for e in detail.get('events', []) if stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) <= receipt], key=lambda e: (stamp(e['createdAt']), e['id']))
+        question = None
+        terminal = False
+        for event in prior:
+            if event.get('kind') == 'question': question = event['id']
+            elif event.get('kind') in ('answer', 'answer_confirmation') and event.get('result') in ('delivered', 'confirmed') and event.get('relatedEventId') == question: question = None
+            if event.get('kind') in ('done', 'in_progress', 'in_review', 'ready_for_approval', 'implementation', 'review_failed'):
+                terminal = event['kind'] == 'done'
+        if question:
+            results.append(dict(row, required=False, excludedReason='current_unanswered_scope_question'))
+            continue
+        if terminal:
+            ready = []
+            for other in details:
+                if other['story']['id'] == signal['storyId']:
+                    continue
+                changes = [e for e in other.get('events', []) if e.get('kind') in ('in_progress', 'in_review', 'ready_for_approval', 'done', 'backlog') and stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) <= receipt]
+                status = max(changes, key=lambda e: stamp(e['createdAt']))['kind'] if changes else 'backlog'
+                if status == 'backlog':
+                    ready.append(other['story']['id'])
+            if not ready:
+                results.append(dict(row, required=False, excludedReason='completed_story_no_ready_work'))
+                continue
+            row['nextReadyStoryIds'] = ready
+            if main:
+                signal['recipientSessionId'] = main
+                row['recipientSessionId'] = main
+        candidates = []
+        batch = messages.get(signal.get('batchKey'))
+        if batch and stamp(batch.get('created_at')) is not None and stamp(batch['created_at']) >= receipt:
+            candidates.append((stamp(batch['created_at']), batch, 'exact_report_batch'))
+        for key, continuation in history.items():
+            message = messages.get(key)
+            if not message or continuation.get('storyId') != signal['storyId'] or continuation.get('recipientSessionId') != signal['recipientSessionId']:
+                continue
+            at = stamp(message.get('created_at'))
+            target = next((t for t in state['conversation_turns'] if t['id'] == message.get('turn_id')), {})
+            started = stamp(target.get('started_at'))
+            linked = (bool(signal.get('eventId')) and continuation.get('phaseReportId') == signal['eventId'] if signal['sourceKind'] == 'report'
+                      else continuation.get('phaseStatus') == signal['phase'])
+            # The next same-story turn may already be queued while the owner is busy.
+            # Its actual start, never its old queue receipt, is the acceptance boundary.
+            if at is not None and (at >= receipt or started is not None and started >= receipt):
+                candidates.append((at, message, 'phase_continuation' if linked else 'same_story_continuation'))
+        if not candidates:
+            results.append(dict(row, failure='no_correlated_phase_turn'))
+            continue
+        measured = []
+        for _, message, source in candidates:
+            timing = recipient_turn_latency(state, signal['recipientSessionId'], signal['receiptAt'], message.get('turn_id'), bound)
+            measured.append(dict(row, **timing, correlation=source, messageId=message['id']))
+        # A stalled duplicate report route cannot hide a successfully started phase wake.
+        results.append(min(measured, key=lambda r: (not r.get('passed'), r.get('seconds', float('inf')))))
+    return results
+
+
 def midflow_actor_ids(state, details, main):
     if len(details) < 2 or not any(d['story']['status'] != 'done' for d in details):
         return []
@@ -776,8 +904,10 @@ class Harness:
         self.result['answeredScopeQuestionCount'] = len(self.answer_ids)
         self.result['reportDeliverySeconds'] = report_delivery_timings(state)
         self.result['reportToNextDispatchSeconds'] = self.latencies(details)
-        self.check('report_dispatch_latency_bounded', any(r['required'] for r in self.result['reportToNextDispatchSeconds']) and all(r.get('matched') and r['seconds'] <= self.args.max_dispatch_latency for r in self.result['reportToNextDispatchSeconds'] if r['required']))
-        self.check('report_dispatch_latency_observed', any(r.get('matched') for r in self.result['reportToNextDispatchSeconds']))
+        self.result['phaseRecipientLatency'] = phase_latencies(state, details, self.continuation_history, self.args.max_dispatch_latency, self.main)
+        required = [r for r in self.result['phaseRecipientLatency'] if r['required']]
+        self.check('report_dispatch_latency_bounded', bool(required) and all(r.get('passed') for r in required))
+        self.check('report_dispatch_latency_observed', any(r.get('passed') for r in required))
         self.verify_code(state, details, evidence)
 
     def latencies(self, details):
@@ -971,7 +1101,9 @@ class Harness:
                                           'workingActorIds': working_actors, 'observedAt': observed_at,
                                           'storyIds': sorted(d['story']['id'] for d in details)}
             if restarted and len(details) >= 2 and all(d['story']['status'] == 'done' for d in details):
-                break
+                required = [r for r in phase_latencies(state, details, self.continuation_history, self.args.max_dispatch_latency, self.main) if r['required']]
+                if required and all(r.get('passed') for r in required):
+                    break
             time.sleep(self.args.poll)
         if last:
             last = self.observe()
