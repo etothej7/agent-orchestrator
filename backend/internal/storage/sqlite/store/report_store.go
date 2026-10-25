@@ -61,7 +61,9 @@ func (s *Store) CreateReport(ctx context.Context, rec domain.ReportRecord) (doma
 			if !linked {
 				return apierr.Invalid("REPORT_STORY_SESSION", "Reporter must be explicitly assigned to this story", nil)
 			}
-			if rec.State == domain.ReportNeedsInput || rec.State == domain.ReportStuck {
+			// Autonomous reports are internal manager input. They must not replace
+			// an explicit human decision or stop the manager from resolving it.
+			if !story.Autonomous && (rec.State == domain.ReportNeedsInput || rec.State == domain.ReportStuck) {
 				if rec.State == domain.ReportNeedsInput {
 					story.Question = rec.Note
 					story.QuestionEventID = "report-" + rec.ID

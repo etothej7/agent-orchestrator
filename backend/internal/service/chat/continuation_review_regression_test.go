@@ -227,6 +227,22 @@ func TestAskHTTPAtomicallyPausesOwnedStoryUntilDeliveredAnswer(t *testing.T) {
 	if row.QuestionEventID != "decision-scope" || row.QuestionRequesterSessionID != testSession {
 		t.Fatal(row)
 	}
+	worker, err := h.st.CreateSession(ctx, domain.SessionRecord{ProjectID: "other", Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Assignments = append(row.Assignments, domain.StoryAssignment{SessionID: worker.ID, Role: "worker"})
+	if _, _, err := h.st.ApplyStoryEvent(ctx, row, domain.StoryEvent{ID: "assigned-worker", StoryID: row.ID, Kind: "assignment"}, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	now := h.now()
+	if _, err := h.st.CreateReport(ctx, domain.ReportRecord{ID: "internal-question", StoryID: row.ID, ClientReportID: "internal-question", SessionID: worker.ID, ProjectID: "other", State: domain.ReportNeedsInput, Note: "Manager: help debug the check", CreatedAt: now, AvailableAt: now, DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = h.st.GetStory(ctx, "s")
+	if row.QuestionEventID != "decision-scope" || row.QuestionRequesterSessionID != testSession {
+		t.Fatal("worker report displaced human question", row)
+	}
 	for range 4 {
 		if err := c.RunOnce(ctx); err != nil {
 			t.Fatal(err)
@@ -433,6 +449,62 @@ func TestWaitingContinuationBackoffDoesNotChurnLedgerOrCDC(t *testing.T) {
 				if check.State != "blocked" {
 					t.Fatal("backoff hid stop", check)
 				}
+			}
+		})
+	}
+}
+
+func TestBlockedWorkerWakesManagerWithoutInterruptingPermission(t *testing.T) {
+	for _, blockedManager := range []bool{false, true} {
+		t.Run(fmt.Sprint(blockedManager), func(t *testing.T) {
+			h, c, _ := continuationHarness(t, false)
+			ctx := context.Background()
+			worker, err := h.st.CreateSession(ctx, domain.SessionRecord{ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityBlocked}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := h.st.GetStory(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			row.Assignments = append(row.Assignments, domain.StoryAssignment{SessionID: worker.ID, Role: "worker"})
+			if blockedManager {
+				manager, err := h.st.CreateSession(ctx, domain.SessionRecord{ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityBlocked}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				row.Assignments[0].SessionID = manager.ID
+			}
+			if _, _, err := h.st.ApplyStoryEvent(ctx, row, domain.StoryEvent{ID: "assigned-blocked", StoryID: row.ID, Kind: "assignment"}, `{}`); err != nil {
+				t.Fatal(err)
+			}
+			now := h.now()
+			if _, err := h.st.CreateReport(ctx, domain.ReportRecord{ID: "technical-help", StoryID: row.ID, ClientReportID: "technical-help", SessionID: worker.ID, ProjectID: testProject, State: domain.ReportNeedsInput, Note: "Investigate failing test", CreatedAt: now, AvailableAt: now, DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			rec, _, err := h.st.GetStoryContinuation(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blockedManager {
+				if len(h.conv.sentTexts()) != 0 || rec.TurnID != "" {
+					t.Fatal("dispatched into manager permission", rec)
+				}
+			} else {
+				if len(h.conv.sentTexts()) != 1 || rec.RecipientSessionID != testSession || rec.TurnID == "" {
+					t.Fatal("manager not awakened", rec)
+				}
+				turn, err := h.st.TurnByID(ctx, rec.TurnID)
+				if err != nil || turn.ID == "" {
+					t.Fatal(turn, err)
+				}
+			}
+			row, _ = h.st.GetStory(ctx, "s")
+			if row.Question != "" || row.BlockedReason != "" {
+				t.Fatal("technical report became human blocker", row)
 			}
 		})
 	}

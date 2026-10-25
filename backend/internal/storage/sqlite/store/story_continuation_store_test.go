@@ -340,3 +340,68 @@ func TestStoryContinuationScopeRevocationAndHumanStopDoNotDispatch(t *testing.T)
 		})
 	}
 }
+
+func TestAutonomousQuestionOwnershipAndInternalReports(t *testing.T) {
+	db, dir, manager := setupContinuation(t)
+	ctx := context.Background()
+	worker, err := db.CreateSession(ctx, sampleRecord("repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := storysvc.Service{Store: db, Messenger: &storyMessenger{}}
+	row, _ := db.GetStory(ctx, "story")
+	if _, err := svc.Apply(ctx, storysvc.Command{ID: "worker", StoryID: row.ID, Revision: row.Revision, Kind: "assignment", RecipientSessionID: worker.ID, Role: "worker", Text: "Wait for handoff"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.GetStory(ctx, "story")
+	if _, err := svc.Apply(ctx, storysvc.Command{ID: "technical", StoryID: row.ID, Revision: row.Revision, Kind: "question", SenderSessionID: worker.ID, Text: "How should I debug?"}); err == nil {
+		t.Fatal("worker bypassed manager")
+	}
+	question := storysvc.Command{ID: "scope", StoryID: row.ID, Revision: row.Revision, Kind: "question", SenderSessionID: manager, Text: "Which approved behavior?"}
+	if _, err := svc.Apply(ctx, question); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = db.GetStory(ctx, "story")
+	if _, err := svc.Apply(ctx, storysvc.Command{ID: "replacement", StoryID: row.ID, Revision: row.Revision, Kind: "question", SenderSessionID: manager, Text: "Different question"}); err == nil {
+		t.Fatal("open question displaced")
+	}
+	now := time.Now().UTC()
+	report := domain.ReportRecord{ID: "worker-question", StoryID: row.ID, ClientReportID: "worker-question", SessionID: worker.ID, ProjectID: "repo", State: domain.ReportNeedsInput, Note: "Technical help required", CreatedAt: now, AvailableAt: now, DeliveryState: domain.ReportPending, RepeatCount: 1}
+	if _, err := db.CreateReport(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	report.ID = "retry-attempt"
+	if got, err := db.CreateReport(ctx, report); err != nil || got.ID != "worker-question" {
+		t.Fatal(got, err)
+	}
+	if _, err := svc.Apply(ctx, question); err != nil {
+		t.Fatal("question retry lost", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sqlite.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	row, _ = db.GetStory(ctx, "story")
+	if row.QuestionEventID != "scope" || row.QuestionRequesterSessionID != manager || row.Question != "Which approved behavior?" {
+		t.Fatal(row)
+	}
+	reports, err := db.ListReportsBySession(ctx, worker.ID)
+	if err != nil || len(reports) != 1 || reports[0].Note != "Technical help required" {
+		t.Fatal(reports, err)
+	}
+	events, err := db.StoryEvents(ctx, "story")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		found = found || event.ID == "report-worker-question"
+	}
+	if !found {
+		t.Fatal("internal report disappeared")
+	}
+}

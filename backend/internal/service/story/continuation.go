@@ -234,8 +234,9 @@ func (c *Continuations) owner(ctx context.Context, s domain.Story) (domain.Sessi
 		if !found || session.IsTerminated || session.Activity.State == domain.ActivityExited {
 			continue
 		}
-		// Never interrupt active work or inject into an outstanding permission dialog.
-		busy = busy || session.Activity.State == domain.ActivityActive || session.Activity.State == domain.ActivityBlocked || session.ProvisionState.IsProvisioning()
+		// A blocked worker needs its manager to investigate. Do not inject
+		// into a manager's own active turn or permission dialog.
+		busy = busy || session.Activity.State == domain.ActivityActive || session.ProvisionState.IsProvisioning() || (a.Role == "manager" && session.Activity.State == domain.ActivityBlocked)
 		if a.Role == "manager" {
 			manager = a.SessionID
 		}

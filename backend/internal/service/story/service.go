@@ -223,6 +223,14 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 		}
 		story.BlockedReason = ""
 	case "question":
+		if story.Autonomous {
+			if story.Question != "" {
+				return e, apierr.Conflict("STORY_QUESTION_PENDING", "Resolve the current question before raising another; its requester and history are preserved", nil)
+			}
+			if !assigned(story, c.SenderSessionID, "manager") && !s.coordinator(ctx, c.SenderSessionID) {
+				return e, invalid("Report technical questions to the assigned manager; only a manager or coordinator can raise an autonomous story's human decision")
+			}
+		}
 		if strings.TrimSpace(c.Text) == "" {
 			return e, invalid("Question is required")
 		}
