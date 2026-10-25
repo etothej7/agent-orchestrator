@@ -843,6 +843,12 @@ type ShellTerminal struct {
 	PreviewCapabilityVerifier string
 }
 
+type StoryContinuation struct {
+	StoryID  string
+	Record   string
+	Revision int64
+}
+
 type TelemetryEvent struct {
 	ID          string
 	OccurredAt  time.Time

@@ -16,6 +16,7 @@ type StoryAssignment struct {
 
 // Story stores explicit workflow decisions, never derived session activity.
 type Story struct {
+	Autonomous                 bool              `json:"autonomous,omitempty"`
 	QuestionEventID            string            `json:"questionEventId,omitempty"`
 	QuestionRequesterSessionID SessionID         `json:"questionRequesterSessionId,omitempty"`
 	ID                         string            `json:"id"`

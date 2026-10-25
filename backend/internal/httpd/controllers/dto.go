@@ -3895,3 +3895,14 @@ type StoryCommandRequest struct {
 type StoryEventResponse struct {
 	Event domain.StoryEvent `json:"event"`
 }
+
+// StoryContinuationResponse exposes durable progress and bounded retry decisions.
+type StoryContinuationResponse struct {
+	Continuation domain.StoryContinuationStatus `json:"continuation"`
+}
+
+// ResumeStoryContinuationRequest confirms one retry budget with a stable handle.
+type ResumeStoryContinuationRequest struct {
+	ID       string `json:"id"`
+	Revision int64  `json:"revision"`
+}

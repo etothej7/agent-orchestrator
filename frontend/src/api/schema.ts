@@ -4363,6 +4363,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace/stories/{storyId}/continuation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getStoryContinuation */
+        get: operations["getStoryContinuation"];
+        put?: never;
+        /** resumeStoryContinuation */
+        post: operations["resumeStoryContinuation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5801,6 +5819,15 @@ export interface components {
             selection: string;
             sourceRole: string;
         };
+        DomainStoryContinuationStatus: {
+            checkpoint: string;
+            reason?: string;
+            recipientSessionId?: string;
+            /** Format: int64 */
+            revision: number;
+            state: string;
+            storyId: string;
+        };
         EditConversationMessageRequest: {
             clientMessageId?: string;
             text: string;
@@ -6600,6 +6627,11 @@ export interface components {
             resumeMode: "native" | "saved_prompt" | "fresh";
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
+        };
+        ResumeStoryContinuationRequest: {
+            id: string;
+            /** Format: int64 */
+            revision: number;
         };
         RetryTurnResponse: {
             providerTurnId?: string;
@@ -7433,6 +7465,7 @@ export interface components {
         };
         Story: {
             assignments: components["schemas"]["StoryAssignment"][];
+            autonomous?: boolean;
             blockedReason: string;
             epicId: string;
             id: string;
@@ -7464,6 +7497,9 @@ export interface components {
             senderSessionId: string;
             storyId: string;
             text: string;
+        };
+        StoryContinuationResponse: {
+            continuation: components["schemas"]["DomainStoryContinuationStatus"];
         };
         StoryDetailResponse: {
             events: components["schemas"]["StoryEvent"][];
@@ -23931,6 +23967,108 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getStoryContinuation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                storyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryContinuationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resumeStoryContinuation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                storyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResumeStoryContinuationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryContinuationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

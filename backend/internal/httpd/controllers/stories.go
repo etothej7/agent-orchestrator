@@ -21,6 +21,8 @@ func (c *StoriesController) Register(r chi.Router) {
 	r.Post("/workspace/stories", c.create)
 	r.Get("/workspace/stories/{storyId}", c.detail)
 	r.Post("/workspace/commands", c.command)
+	r.Get("/workspace/stories/{storyId}/continuation", c.continuation)
+	r.Post("/workspace/stories/{storyId}/continuation", c.resume)
 }
 func (c *StoriesController) available(w http.ResponseWriter, r *http.Request) bool {
 	if c.Svc != nil {
@@ -144,4 +146,44 @@ func (c *StoriesController) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, StoryEventResponse{Event: event})
+}
+
+func (c *StoriesController) continuations(w http.ResponseWriter, r *http.Request) *storysvc.Continuations {
+	if !c.available(w, r) {
+		return nil
+	}
+	store, ok := c.Svc.Store.(storysvc.ContinuationStore)
+	if !ok {
+		apispec.NotImplemented(w, r, r.Method, r.URL.Path)
+		return nil
+	}
+	return &storysvc.Continuations{Store: store, Stories: c.Svc}
+}
+func (c *StoriesController) continuation(w http.ResponseWriter, r *http.Request) {
+	runner := c.continuations(w, r)
+	if runner == nil {
+		return
+	}
+	status, err := runner.Status(r.Context(), chi.URLParam(r, "storyId"))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, StoryContinuationResponse{Continuation: status})
+}
+func (c *StoriesController) resume(w http.ResponseWriter, r *http.Request) {
+	runner := c.continuations(w, r)
+	if runner == nil {
+		return
+	}
+	var req ResumeStoryContinuationRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	status, err := runner.Resume(r.Context(), chi.URLParam(r, "storyId"), req.ID, req.Revision)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, StoryContinuationResponse{Continuation: status})
 }
