@@ -62,7 +62,7 @@ def read_state(path):
         return {name: rows(db, name) for name in (
             'sessions', 'conversation_turns', 'conversation_messages',
             'conversation_activities', 'reports', 'workspace_story_events',
-            'story_continuations', 'notifications')}
+            'story_continuations', 'notifications', 'workspace_stories')}
 
 
 def records(state, table):
@@ -105,6 +105,28 @@ def classify_message(message):
         if 'Why your input is needed:' in text and all(part.strip() for part in text.split('Why your input is needed:', 1)):
             return purpose
     return 'non_actionable_or_unclassified'
+
+
+def report_delivery_timings(state):
+    messages = {m.get('client_message_id'): m for m in state['conversation_messages'] if m.get('client_message_id')}
+    turns = {t['id']: t for t in state['conversation_turns']}
+    sessions = {s['id']: s for s in state['sessions']}
+    result = []
+    for report in state['reports']:
+        message = messages.get(report.get('delivery_batch_id'), {})
+        turn = turns.get(message.get('turn_id'), {})
+        recipient = sessions.get(report.get('recipient_session_id'), {})
+        start, delivered, ran = stamp(report.get('created_at')), stamp(message.get('created_at')), stamp(turn.get('started_at'))
+        matched = bool(recipient and message and message.get('conversation_id') == turn.get('conversation_id') and
+                       turn.get('handled_by_session_id') == report.get('recipient_session_id'))
+        result.append({'reportId': report['id'], 'storyId': report.get('story_id'), 'state': report.get('state'),
+                       'recipientSessionId': report.get('recipient_session_id'), 'reportAt': report.get('created_at'),
+                       'matched': matched, 'messageId': message.get('id') if matched else None,
+                       'turnId': turn.get('id') if matched else None, 'deliveredAt': message.get('created_at') if matched else None,
+                       'turnStartedAt': turn.get('started_at') if matched else None,
+                       'deliverySeconds': round(delivered-start, 3) if matched and delivered is not None and start is not None else None,
+                       'turnStartSeconds': round(ran-start, 3) if matched and ran is not None and start is not None else None})
+    return result  # A queued report receipt is NOT the next work dispatch.
 
 
 def midflow_actor_ids(state, details, main):
@@ -170,14 +192,34 @@ def command_tokens(command):
         return []
 
 
-def invokes_check(command, story_id):
+def proof_tokens(command):
     tokens = command_tokens(command)
+    # Codex persists the shell argv, not just the shell's command string.
+    if len(tokens) == 3 and tokens[0] in ('/bin/zsh', '/bin/bash', '/bin/sh') and tokens[1] in ('-c', '-lc'):
+        tokens = command_tokens(tokens[2])
+    return tokens
+
+
+def command_finished(activity, command):
+    code = command.get('exitCode')
+    return type(code) is int and ((activity.get('status') == 'completed' and code == 0) or
+                                 (activity.get('status') == 'failed' and code != 0))
+
+
+def running_worker_ids(state):
+    workers = {s['id'] for s in state['sessions'] if s.get('kind') == 'worker'}
+    return sorted({t.get('handled_by_session_id') for t in state['conversation_turns']
+                   if t.get('state') == 'running' and t.get('handled_by_session_id') in workers})
+
+
+def invokes_check(command, story_id):
+    tokens = proof_tokens(command)
     return (len(tokens) == 4 and bool(re.fullmatch(r'python(?:3(?:\.\d+)?)?', Path(tokens[0]).name))
             and Path(tokens[1]).name == 'check.py' and tokens[2:] == ['--story-id', story_id])
 
 
 def invokes_git_show(command, sha):
-    tokens = command_tokens(command)
+    tokens = proof_tokens(command)
     return len(tokens) == 5 and Path(tokens[0]).name == 'git' and tokens[1:] == ['show', sha, '--', 'feature.py']
 
 
@@ -516,7 +558,7 @@ class Harness:
             (repo / 'check.py').write_text(check_source)
             (repo / 'AGENTS.md').write_text('LOCAL ONLY. No push, network, installation, or work outside this scratch root. '
                 'Work on a dedicated local branch/worktree. Run python3 check.py --story-id STORY_ID before editing and again AFTER the final commit. Record the real story ID, never a placeholder. '
-                'Do not weaken or modify check.py. Reviewers must run git show FINAL_SHA -- feature.py in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
+                'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n')
             self.git(repo, 'init', '-b', 'main')
@@ -581,7 +623,7 @@ class Harness:
             if m.get('client_message_id'):
                 self.observed_dispatches[m['id']] = {k: m.get(k) for k in ('id', 'turn_id', 'client_message_id', 'conversation_id', 'created_at', 'sender_session_id')}
         for r in state['reports']:
-            self.report_times[r['id']] = {k: r.get(k) for k in ('id', 'story_id', 'session_id', 'created_at')}
+            self.report_times[r['id']] = {k: r.get(k) for k in ('id', 'story_id', 'session_id', 'created_at', 'state', 'delivery_batch_id', 'recipient_session_id')}
         if self.main:
             before = None
             while True:
@@ -633,7 +675,7 @@ class Harness:
         self.track()
         self.samples.append({'at': time.time(), 'stories': [{'id': d['story']['id'], 'status': d['story']['status'],
             'revision': d['story']['revision']} for d in details], 'actors': sorted(s['id'] for s in state['sessions']),
-            'activeWorkers': len({t.get('handled_by_session_id') for t in state['conversation_turns'] if t.get('state') == 'running' and t.get('handled_by_session_id') != self.main})})
+            'activeWorkers': len(running_worker_ids(state)), 'activeWorkerIds': running_worker_ids(state)})
         return state, board, details, continuations
 
     def answer_scope(self, message, details):
@@ -704,6 +746,7 @@ class Harness:
         self.check('actionable_only', all(m['classification'] in PURPOSES for m in self.observed_messages.values()) and all(n['actionable'] for n in self.observed_notifications.values()))
         self.check('public_privacy', not self.public_errors, reasons=sorted(self.public_errors))
         self.result['answeredScopeQuestionCount'] = len(self.answer_ids)
+        self.result['reportDeliverySeconds'] = report_delivery_timings(state)
         self.result['reportToNextDispatchSeconds'] = self.latencies(details)
         self.check('report_dispatch_latency_bounded', any(r['required'] for r in self.result['reportToNextDispatchSeconds']) and all(r.get('matched') and r['seconds'] <= self.args.max_dispatch_latency for r in self.result['reportToNextDispatchSeconds'] if r['required']))
         self.check('report_dispatch_latency_observed', any(r.get('matched') for r in self.result['reportToNextDispatchSeconds']))
@@ -772,6 +815,9 @@ class Harness:
         self.result['commits'] = commits
         covered = {c['projectId'] for c in commits if c['changed'] and c['goldenCheckExit'] == 0}
         self.check('actual_code_commits_and_golden_checks', set(self.project_ids) <= covered and all(c['changed'] and c['goldenCheckExit'] == 0 for c in commits), coveredProjectIds=sorted(covered), requiredProjectIds=self.project_ids)
+        self.verify_actor_provenance(state, details, evidence)
+
+    def verify_actor_provenance(self, state, details, evidence):
         activities = state['conversation_activities']
         turns = {t['id']: t for t in state['conversation_turns']}
         sessions = {r['id']: r for r in state['sessions']}
@@ -789,10 +835,12 @@ class Harness:
             for activity in activities:
                 turn = turns.get(activity.get('turn_id'), {})
                 actor = turn.get('handled_by_session_id')
-                if activity.get('kind') != 'command' or activity.get('status') != 'completed' or turn.get('state') != 'completed' or fixture is None:
+                if activity.get('kind') != 'command' or turn.get('state') != 'completed' or fixture is None:
                     continue
                 try:
                     command = json.loads(activity.get('detail_json') or '{}')
+                    if not command_finished(activity, command):
+                        continue
                     cwd = Path(command.get('cwd', '')).resolve()
                     if not command.get('cwd') or not cwd.is_relative_to(self.root):
                         continue

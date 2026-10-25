@@ -122,3 +122,7 @@ argument/initialization failure uses exit 2. Passing the harness's unit tests or
 mechanics checks does not mean autonomy passed. Fixed-SHA independent review of
 this harness and of the product, native app acceptance, and installation approval
 are separate gates.
+
+## Offline re-score
+
+`python3 test/autonomy/rescore.py ORIGINAL/result.json --output ARTIFACT_DIR/offline-rescore.json` reads the retained scratch DB and Git objects only. It does not launch providers, daemons or checks, and refuses to overwrite the original result. It labels the result as the same-run re-score, reconstructs worker-only concurrency from turn lifetimes, and separates report receipt timing from recipient turn start. Neither proves the next work dispatch. Known shell argv wrappers are unwrapped once; inner proof commands must still be standalone. A failed command with a nonzero exit code is valid failure evidence, never a passing check.

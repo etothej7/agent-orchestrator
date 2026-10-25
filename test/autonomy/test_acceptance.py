@@ -315,5 +315,38 @@ class FinalEvidenceRegressionTests(unittest.TestCase):
                     self.assertEqual(h.result['assertions']['binary_commit_provenance']['passed'], expected)
 
 
+class PersistedFormatTests(unittest.TestCase):
+    def test_shell_wrapped_proofs_remain_standalone(self):
+        import shlex
+        sha = 'a'*40
+        for shell in ['/bin/zsh', '/bin/bash', '/bin/sh']:
+            self.assertTrue(a.invokes_check(shell+' -lc '+shlex.quote('python3 check.py --story-id s'), 's'))
+            self.assertTrue(a.invokes_git_show(shell+' -c '+shlex.quote('git show '+sha+' -- feature.py'), sha))
+            for payload in ['false && git show '+sha+' -- feature.py ; true', 'echo git show '+sha+' -- feature.py', 'git show '+sha+' -- feature.py | cat']:
+                self.assertFalse(a.invokes_git_show(shell+' -lc '+shlex.quote(payload), sha))
+        self.assertFalse(a.invokes_check('/unknown/shell -c '+shlex.quote('python3 check.py --story-id s'), 's'))
+
+    def test_failed_check_is_finished_but_running_or_inconsistent_is_not(self):
+        self.assertTrue(a.command_finished({'status': 'failed'}, {'exitCode': 1}))
+        self.assertTrue(a.command_finished({'status': 'completed'}, {'exitCode': 0}))
+        for status, code in [('running', 1), ('failed', 0), ('completed', 1), ('failed', None), ('completed', False)]:
+            self.assertFalse(a.command_finished({'status': status}, {'exitCode': code}))
+
+    def test_managers_do_not_count_as_worker_parallelism(self):
+        state = {'sessions': [{'id':'m','kind':'orchestrator'}, {'id':'w','kind':'worker'}],
+                 'conversation_turns': [{'handled_by_session_id':x,'state':'running'} for x in ['m','w','unknown']]}
+        self.assertEqual(a.running_worker_ids(state), ['w'])
+
+    def test_report_receipt_is_separate_from_delayed_actor_start(self):
+        state = {'sessions':[{'id':'m'}], 'reports':[{'id':'r','story_id':'s','recipient_session_id':'m','delivery_batch_id':'batch','created_at':'2026-01-01T00:00:00Z'}],
+                 'conversation_messages':[{'id':'msg','client_message_id':'batch','conversation_id':'c','turn_id':'t','created_at':'2026-01-01T00:00:01Z'}],
+                 'conversation_turns':[{'id':'t','conversation_id':'c','handled_by_session_id':'m','started_at':'2026-01-01T00:02:00Z'}]}
+        row = a.report_delivery_timings(state)[0]
+        self.assertEqual((row['deliverySeconds'],row['turnStartSeconds']), (1,120))
+        state['conversation_turns'][0]['handled_by_session_id'] = 'wrong'
+        self.assertFalse(a.report_delivery_timings(state)[0]['matched'])
+        self.assertIsNone(a.report_delivery_timings(state)[0]['turnStartSeconds'])
+
+
 if __name__ == '__main__':
     unittest.main()
