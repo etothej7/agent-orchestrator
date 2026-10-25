@@ -55,8 +55,7 @@ or sending another intake. Fix bootstrap configuration for a **new** trial.
 All actor writes are confined to a newly allocated `0700` scratch root. HOME,
 AO_DATA_DIR, AO_RUN_FILE, temporary files, fixture repositories and AO worktrees
 are there. Actors may signal only processes in their own sandbox, never outside same-user processes. A regression test proves this against a harmless outside fixture. The runtime cannot read the invoking user's live `~/.ao`. Outbound
-provider traffic is allowed only in real mode, on TLS port 443; loopback traffic
-is restricted to the scratch daemon's allocated port. Provider binaries and their
+provider traffic is allowed only in real mode, on TLS port 443; loopback traffic permits the scratch daemon and new ephemeral provider-host listeners. Every pre-existing TCP listener port and the live AO runfile port are explicitly denied for outbound access; a socket test proves both new-host connectivity and denial to an outside fixture listener. These are loopback-only binds, never LAN listeners. Services started on new ports by unrelated processes after the inventory are outside that static denylist; do not run concurrent service-start experiments during acceptance. Provider binaries and their
 dependencies must already be installed; the harness does not install them.
 GOMAXPROCS=4 and GOFLAGS=-p=4 are set; fixture instructions cap active workers at
 four and the observer asserts that cap. The driver itself is serial. Run any

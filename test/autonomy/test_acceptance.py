@@ -190,5 +190,33 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(a.stamp('2026-10-25 21:27:27.994829 +0000 UTC'), a.stamp('2026-10-25T21:27:27.994829Z'))
 
 
+class HostTransportTests(unittest.TestCase):
+    @unittest.skipUnless(a.sys.platform == 'darwin', 'macOS sandbox policy test')
+    def test_new_host_transport_allowed_existing_listener_denied(self):
+        import socket, subprocess, tempfile, types, sys, json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='ao-transport-test-', dir='/private/tmp') as directory, socket.socket() as outside:
+            outside.bind(('127.0.0.1', 0)); outside.listen()
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory); h.port = 65530
+            h.protected_ports = {outside.getsockname()[1]}
+            h.args = types.SimpleNamespace(mode='real')
+            profile = h.sandbox_profile(False)
+            code = """import socket,sys,json
+with socket.socket() as server:
+ server.bind(('127.0.0.1',0));server.listen()
+ with socket.create_connection(server.getsockname(),timeout=2) as client:
+  accepted,_=server.accept();accepted.close()
+ denied=False
+ try:
+  other=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=2);other.close()
+ except OSError: denied=True
+ print(json.dumps({'privateHostConnected':True,'outsideDenied':denied}))
+"""
+            result = subprocess.run(['/usr/bin/sandbox-exec','-f',str(profile),sys.executable,'-c',code,str(outside.getsockname()[1])],capture_output=True,text=True,timeout=8)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout), {'privateHostConnected':True,'outsideDenied':True})
+
+
 if __name__ == '__main__':
     unittest.main()

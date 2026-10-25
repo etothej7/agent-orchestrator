@@ -233,6 +233,7 @@ class Harness:
         self.data.mkdir(parents=True)
         self.runfile = self.home / '.ao/running.json'
         self.port = self.free_port()
+        self.protected_ports = self.existing_listener_ports()
         self.url = f'http://127.0.0.1:{self.port}'
         self.token = uuid.uuid4().hex
         self.daemon = None
@@ -265,6 +266,21 @@ class Harness:
         with socket.socket() as s:
             s.bind(('127.0.0.1', 0))
             return s.getsockname()[1]
+
+    @staticmethod
+    def existing_listener_ports():
+        probe = subprocess.run(['/usr/sbin/lsof', '-nP', '-iTCP', '-sTCP:LISTEN', '-Fn'], capture_output=True, text=True)
+        if probe.returncode not in (0, 1):
+            raise RuntimeError('cannot inventory existing listeners for confinement')
+        ports = {int(m.group(1)) for line in probe.stdout.splitlines()
+                 if line.startswith('n') and (m := re.search(r':(\d+)$', line))}
+        runfile = Path.home() / '.ao/running.json'
+        if runfile.exists():
+            live = json.loads(runfile.read_text())
+            if not isinstance(live.get('port'), int) or live['port'] <= 0:
+                raise RuntimeError('cannot identify live AO port for confinement')
+            ports.add(live['port'])
+        return ports
 
     def environment(self):
         env = {'HOME': str(self.home), 'PATH': str(self.root / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin',
@@ -315,6 +331,11 @@ class Harness:
             text += f'(deny process-exec)\n(allow process-exec (literal {q(str(self.args.daemon))}))\n(deny signal)\n'
         else:
             text += '(allow signal (target same-sandbox))\n'
+            # Persistent provider hosts bind fresh loopback ports; never expose LAN.
+            text += '(allow network-bind network-inbound (local ip "localhost:*"))\n'
+            text += '(allow network-outbound (remote ip "localhost:*"))\n'
+            for port in sorted(getattr(self, 'protected_ports', set())):
+                text += f'(deny network-outbound (remote ip "localhost:{port}"))\n'
             if self.args.mode == 'real':
                 text += '(allow network-outbound (remote tcp "*:443"))\n'
         path = self.root / ('seed.sb' if seed else 'runtime.sb')
