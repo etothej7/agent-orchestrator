@@ -125,7 +125,7 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if err != nil {
 		return err
 	}
-	checkpoint := s.Status + ":" + continuationCheckpoint(s, events)
+	checkpoint := continuationCheckpoint(s, events)
 	if rec.State == "waiting" {
 		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
 		if err != nil {
@@ -152,6 +152,13 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	// Do not discard an uncertain in-flight delivery, even when progress changed.
 	if rec.State != "sending" && rec.Checkpoint != checkpoint {
 		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
+	}
+	// Status changes wake a settled phase, but are not implementation evidence
+	// and must never reset the bounded no-progress budget.
+	phaseChanged := rec.PhaseStatus != s.Status
+	rec.PhaseStatus = s.Status
+	if rec.State == "ready" && phaseChanged {
+		rec.NextAt = time.Time{}
 	}
 	// A busy owner becoming available is a real eligibility change. Do not
 	// make the next phase wait out the polling backoff. Outstanding/uncertain

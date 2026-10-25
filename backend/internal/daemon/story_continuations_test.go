@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -164,14 +165,90 @@ func TestPhaseStatusCDCDispatchesWithoutHumanWake(t *testing.T) {
 			if err = db.UpdateSession(ctx, manager); err != nil {
 				t.Fatal(err)
 			}
+			var delivered ports.ChatUserMessage
 			select {
 			case msg := <-sender.sent:
+				delivered = msg
 				if !strings.Contains(msg.Text, "Story "+target+";") {
 					t.Fatal("wrong next story", msg.Text)
 				}
 				t.Logf("%s CDC -> durable next dispatch %s in %s", status, msg.ClientMessageID, time.Since(started))
 			case <-time.After(2 * time.Second):
 				t.Fatal("phase waited for timer/human instead of CDC")
+			}
+
+			if status == "in_review" {
+				var generation int64
+				for attempt := 1; attempt <= 3; attempt++ {
+					deadline := time.Now().Add(2 * time.Second)
+					for {
+						rec, _, e := db.GetStoryContinuation(ctx, target)
+						if e != nil {
+							t.Fatal(e)
+						}
+						if rec.TurnID == "turn-"+delivered.ClientMessageID {
+							if attempt == 1 {
+								generation = rec.Generation
+							}
+							if rec.Generation != generation || rec.ProgressAttempts != attempt {
+								t.Fatal("status reset progress budget", rec)
+							}
+							break
+						}
+						if time.Now().After(deadline) {
+							t.Fatal("dispatch not settled", rec)
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+					if err = db.SettleTurnByID(ctx, "turn-"+delivered.ClientMessageID, domain.TurnStateCompleted, "", time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					source, err = db.GetStory(ctx, "source")
+					if err != nil {
+						t.Fatal(err)
+					}
+					source.Status = "in_progress"
+					if attempt%2 == 0 {
+						source.Status = "in_review"
+					}
+					if _, _, err = db.ApplyStoryEvent(ctx, source, domain.StoryEvent{ID: fmt.Sprintf("oscillate-%d", attempt), StoryID: source.ID, Kind: "status", CreatedAt: time.Now()}, `{}`); err != nil {
+						t.Fatal(err)
+					}
+					manager.Activity.State = domain.ActivityIdle
+					if err = db.UpdateSession(ctx, manager); err != nil {
+						t.Fatal(err)
+					}
+					if attempt < 3 {
+						select {
+						case delivered = <-sender.sent:
+						case <-time.After(2 * time.Second):
+							t.Fatal("settled status did not wake promptly")
+						}
+					} else {
+						deadline = time.Now().Add(2 * time.Second)
+						for {
+							rec, _, e := db.GetStoryContinuation(ctx, target)
+							if e != nil {
+								t.Fatal(e)
+							}
+							if rec.State == "blocked" {
+								if rec.ProgressAttempts != 3 || rec.Generation != generation {
+									t.Fatal(rec)
+								}
+								break
+							}
+							if time.Now().After(deadline) {
+								t.Fatal("status oscillation escaped bound", rec)
+							}
+							time.Sleep(5 * time.Millisecond)
+						}
+						select {
+						case extra := <-sender.sent:
+							t.Fatal("fourth dispatch escaped bound", extra.ClientMessageID)
+						default:
+						}
+					}
+				}
 			}
 		})
 	}

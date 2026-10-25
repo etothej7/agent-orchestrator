@@ -10,6 +10,7 @@ type StoryContinuation struct {
 	StoryID            string    `json:"storyId"`
 	Revision           int64     `json:"revision"`
 	Generation         int64     `json:"generation"`
+	PhaseStatus        string    `json:"phaseStatus,omitempty"`
 	Checkpoint         string    `json:"checkpoint"`
 	State              string    `json:"state"`
 	RecipientSessionID SessionID `json:"recipientSessionId"`
