@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 const maxDisplayNameLen = 100
 
 type spawnOptions struct {
+	clientRequestID string
 	project         string
 	standalone      bool
 	harness         string
@@ -41,6 +43,7 @@ type spawnOptions struct {
 // spawnRequest mirrors the daemon's SpawnSessionRequest body for
 // POST /api/v1/sessions. The CLI keeps its own copy so it need not import httpd.
 type spawnRequest struct {
+	ClientRequestID string `json:"clientRequestId,omitempty"`
 	ProjectID       string `json:"projectId,omitempty"`
 	IssueID         string `json:"issueId,omitempty"`
 	ParentSessionID string `json:"parentSessionId,omitempty"`
@@ -76,6 +79,12 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			"fresh isolated workspace. Git projects use worktrees; standalone agents use an AO-managed plain directory.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(opts.clientRequestID) > 128 || strings.TrimSpace(opts.clientRequestID) != opts.clientRequestID || strings.IndexFunc(opts.clientRequestID, unicode.IsControl) >= 0 {
+				return usageError{fmt.Errorf("--client-request-id must contain 1-128 visible characters")}
+			}
+			if opts.clientRequestID != "" && opts.claimPR != "" {
+				return usageError{fmt.Errorf("--client-request-id cannot be combined with --claim-pr; claim the returned session separately so a retry cannot roll back an existing actor")}
+			}
 			if opts.standalone && strings.TrimSpace(opts.project) != "" {
 				return usageError{fmt.Errorf("--standalone and --project cannot be used together")}
 			}
@@ -164,6 +173,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			req := spawnRequest{
+				ClientRequestID: opts.clientRequestID,
 				ProjectID:       opts.project,
 				IssueID:         opts.issue,
 				ParentSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
@@ -221,6 +231,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.StringVar(&opts.clientRequestID, "client-request-id", "", "Stable actor creation key; reuse identical options after an uncertain response")
 	// --agent is an alias for --harness so the more intuitive `ao spawn --agent
 	// droid` works identically; both resolve to the same harness flag.
 	f.SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {

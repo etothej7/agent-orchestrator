@@ -71,3 +71,22 @@ to contact the human. Explain the decision and why work cannot proceed without
 it. Retain the id and content on retry. Agent-resolvable technical questions go
 to the responsible manager, not the human. Pending provider permission/input
 controls remain available. The gate changes presentation, not stored history.
+
+## Stable actors and local independent review
+
+Managers can create a worker with `ao spawn --project <repo> --mode chat --name
+"Story developer" --client-request-id <stable-story-worker-key>`. Keep the key
+and all options unchanged on retry. The existing daemon creation ledger returns
+the same actor; it rejects changed input and incomplete startup rather than
+replaying its opening prompt. Do not combine this flag with `--claim-pr`:
+claim separately, so a claim failure cannot terminate a reused actor.
+
+Use a short opening prompt to wait for assignment, assign the actor to the story,
+then send a story `handoff` with scope, repository boundaries and acceptance.
+The independent local reviewer is a separate actor reviewing a fixed SHA; local
+review never requires publishing. Record implementation, actual testing and
+review_passed/review_failed evidence at that same SHA. Findings go back to the
+original developer, then the same reviewer inspects the revised SHA. Preserve
+failed evidence and public result references. Ready and Done still use the
+server's evidence/independence gates; none of these commands grants installation,
+publication or permission to ignore required human decisions.
