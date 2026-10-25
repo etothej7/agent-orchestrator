@@ -646,6 +646,8 @@ type RetryPrompt struct {
 
 // ConversationMessage is one readable block of text.
 type ConversationMessage struct {
+	Audience string `json:"audience,omitempty"`
+	Purpose  string `json:"purpose,omitempty"`
 	// InteractionAt is an internal write fact, independent of history CreatedAt.
 	InteractionAt  time.Time `json:"-"`
 	ID             string    `json:"id"`

@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "자동화에 결정이 필요합니다",
+	"workspace.automation_decision": "자동화에 결정이 필요합니다: {{reason}}",
+	"workspace.automation_retry_explanation": "차단 원인을 해결한 후 제한된 횟수의 재시도를 허용할 수 있습니다. 전달 여부가 불확실하면 원래 요청 식별자를 유지합니다.",
+	"workspace.confirm_automation_retry": "자동화 재시도 확인",
 	"workspace.answer_question": "질문에 답변 — {{requester}}",
 	"workspace.use_existing_answer": "전달된 메시지를 답변으로 사용",
 	"workspace.confirm_existing_answer": "기존 답변 확인",

@@ -231,3 +231,25 @@ it("keeps the original confirmation handle after a lost response and does not lo
  expect(post.mock.calls[1]?.[1]).toEqual(original);
  expect(screen.getAllByText("Needs Ed: Which fixture?").length).toBeGreaterThan(0);
 });
+
+it("shows bounded automation failure on card and detail and retains the explicit retry handle", async () => {
+ let waiting = false;
+ const story = {...one, autonomous:true, question:"", blockedReason:""};
+ const continuation = () => ({storyId:one.id,revision:7,state:waiting?"waiting":"blocked",checkpoint:"implementation",reason:"Resolve the provider connection before retrying."});
+ vi.mocked(apiClient.GET).mockImplementation(async path => path === "/api/v1/workspace"
+  ? {data:{epics:[],stories:[story],continuations:[continuation()]}} as never
+  : {data:{story,events:[],continuation:continuation()}} as never);
+ const post=vi.spyOn(apiClient,"POST").mockRejectedValueOnce(new Error("response lost")).mockImplementation(async()=>{waiting=true;return {data:{continuation:continuation()}} as never});
+ mount();
+ expect(await screen.findByText("Automation needs your decision: Resolve the provider connection before retrying.")).toBeInTheDocument();
+ await userEvent.click(screen.getByText("TEST first story"));
+ const retry=await screen.findByRole("button",{name:"Confirm automation retry"});
+ await userEvent.click(retry);
+ await screen.findByText(/response lost/);
+ await userEvent.click(retry);
+ await waitFor(()=>expect(post).toHaveBeenCalledTimes(2));
+ expect(post.mock.calls[0]).toEqual(post.mock.calls[1]);
+ expect(post.mock.calls[0]?.[1]).toMatchObject({params:{path:{storyId:"one"}},body:{revision:7}});
+ await waitFor(()=>expect(screen.queryByRole("button",{name:"Confirm automation retry"})).not.toBeInTheDocument());
+ expect(screen.getByText("In progress")).toBeInTheDocument();
+});

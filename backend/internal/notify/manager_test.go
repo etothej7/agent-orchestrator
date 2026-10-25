@@ -249,3 +249,46 @@ func TestManagerReconcilePublishesRecoveredResolutions(t *testing.T) {
 		t.Fatal("expected published resolution")
 	}
 }
+
+type coordinatedNotifyStore struct {
+	*fakeStore
+	activity domain.ActivityState
+}
+
+func (f *coordinatedNotifyStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
+	return domain.CoordinationConfig{CoordinatorProjectID: "coord"}, nil
+}
+func (f *coordinatedNotifyStore) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
+	return domain.SessionRecord{Activity: domain.Activity{State: f.activity}}, true, nil
+}
+func (f *coordinatedNotifyStore) ListStories(context.Context) ([]domain.Story, error) {
+	return []domain.Story{{Autonomous: true, Status: "in_progress", Assignments: []domain.StoryAssignment{{SessionID: "worker", Role: "worker"}}}}, nil
+}
+func TestCoordinatedNotificationsOnlyContactHumanForAction(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session domain.SessionID
+		project domain.ProjectID
+		state   domain.ActivityState
+		kind    domain.NotificationType
+		want    int
+	}{
+		{"coordinator receipt", "coord-1", "coord", domain.ActivityWaitingInput, domain.NotificationNeedsInput, 0},
+		{"worker idle", "worker", "repo", domain.ActivityWaitingInput, domain.NotificationNeedsInput, 0},
+		{"review result belongs to manager", "worker", "repo", domain.ActivityIdle, domain.NotificationReviewCompleted, 0},
+		{"review findings belong to manager", "worker", "repo", domain.ActivityIdle, domain.NotificationReviewChangesRequested, 0},
+		{"real permission blocker", "worker", "repo", domain.ActivityBlocked, domain.NotificationNeedsInput, 1},
+		{"uncoordinated session unchanged", "other", "repo", domain.ActivityWaitingInput, domain.NotificationNeedsInput, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &coordinatedNotifyStore{fakeStore: &fakeStore{}, activity: tc.state}
+			m := New(Deps{Store: st})
+			if err := m.Notify(context.Background(), Intent{SessionID: tc.session, ProjectID: tc.project, Type: tc.kind}); err != nil {
+				t.Fatal(err)
+			}
+			if len(st.rows) != tc.want {
+				t.Fatalf("notifications %d want %d", len(st.rows), tc.want)
+			}
+		})
+	}
+}

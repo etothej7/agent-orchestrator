@@ -10,6 +10,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
+// GetStoryContinuation reads the durable dispatch and recovery state.
 func (s *Store) GetStoryContinuation(ctx context.Context, id string) (domain.StoryContinuation, bool, error) {
 	row, err := s.qr.GetStoryContinuation(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {

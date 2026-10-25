@@ -2459,6 +2459,23 @@ export interface paths {
         patch: operations["setSessionConversationConfigOption"];
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/conversation/human-decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record an explicit human blocking question */
+        post: operations["recordHumanDecision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve": {
         parameters: {
             query?: never;
@@ -4329,6 +4346,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace/intake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adopt one human request into an epic and stories atomically */
+        post: operations["adoptStoryIntake"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspace/stories": {
         parameters: {
             query?: never;
@@ -5477,6 +5511,7 @@ export interface components {
             status: string;
         };
         ConversationMessageResponse: {
+            audience?: string;
             clientMessageId?: string;
             content?: components["schemas"]["ConversationContentSummaryResponse"][];
             continuation?: boolean;
@@ -5487,6 +5522,7 @@ export interface components {
             kind: "message";
             /** @enum {string} */
             origin: "human" | "automation" | "daemon" | "provider";
+            purpose?: string;
             /** Format: int64 */
             revision: number;
             /** @enum {string} */
@@ -5951,6 +5987,16 @@ export interface components {
         };
         HarnessDefault: {
             disabledModels?: string[];
+        };
+        HumanDecisionRequest: {
+            id: string;
+            /** @enum {string} */
+            purpose: "scope_question" | "blocking_decision" | "completion_decision";
+            question: string;
+            whyBlocked: string;
+        };
+        HumanDecisionResponse: {
+            id: string;
         };
         IdentityResponse: {
             apiVersion: number;
@@ -7502,6 +7548,7 @@ export interface components {
             continuation: components["schemas"]["DomainStoryContinuationStatus"];
         };
         StoryDetailResponse: {
+            continuation?: components["schemas"]["DomainStoryContinuationStatus"];
             events: components["schemas"]["StoryEvent"][];
             replyThreads: components["schemas"]["StoryReplyThread"][];
             reports: components["schemas"]["ReportResponse"][];
@@ -7526,6 +7573,19 @@ export interface components {
         };
         StoryEventResponse: {
             event: components["schemas"]["StoryEvent"];
+        };
+        StoryIntakeItem: {
+            id: string;
+            projectIds: string[];
+            scope: string;
+            title: string;
+        };
+        StoryIntakeRequest: {
+            epic: components["schemas"]["Epic"];
+            id: string;
+            sessionId: string;
+            sourceMessageId: string;
+            stories: components["schemas"]["StoryIntakeItem"][];
         };
         StoryReply: {
             conversationId: string;
@@ -7998,6 +8058,7 @@ export interface components {
             repo: string;
         };
         WorkspaceResponse: {
+            continuations?: components["schemas"]["DomainStoryContinuationStatus"][];
             epics: components["schemas"]["Epic"][];
             stories: components["schemas"]["Story"][];
         };
@@ -16620,6 +16681,69 @@ export interface operations {
             };
         };
     };
+    recordHumanDecision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HumanDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HumanDecisionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     resolveSessionConversationInput: {
         parameters: {
             query?: never;
@@ -23836,6 +23960,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreateEpicRequest"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    adoptStoryIntake: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoryIntakeRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryIntakeRequest"];
                 };
             };
             /** @description Bad Request */

@@ -3085,6 +3085,8 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
+	Audience          string                               `json:"audience,omitempty"`
+	Purpose           string                               `json:"purpose,omitempty"`
 	Kind              string                               `json:"kind" enum:"message"`
 	ID                string                               `json:"id"`
 	TurnID            string                               `json:"turnId,omitempty"`
@@ -3848,8 +3850,9 @@ type SwitchSessionAgentAccountRequest struct {
 
 // WorkspaceResponse is the integrated epic/story board projection.
 type WorkspaceResponse struct {
-	Epics   []domain.Epic  `json:"epics"`
-	Stories []domain.Story `json:"stories"`
+	Continuations []domain.StoryContinuationStatus `json:"continuations,omitempty"`
+	Epics         []domain.Epic                    `json:"epics"`
+	Stories       []domain.Story                   `json:"stories"`
 }
 
 // CreateEpicRequest creates a durable grouping.
@@ -3864,10 +3867,11 @@ type CreateStoryRequest struct {
 
 // StoryDetailResponse contains public events, never provider payloads.
 type StoryDetailResponse struct {
-	ReplyThreads []domain.StoryReplyThread `json:"replyThreads"`
-	Reports      []ReportResponse          `json:"reports"`
-	Story        domain.Story              `json:"story"`
-	Events       []domain.StoryEvent       `json:"events"`
+	Continuation *domain.StoryContinuationStatus `json:"continuation,omitempty"`
+	ReplyThreads []domain.StoryReplyThread       `json:"replyThreads"`
+	Reports      []ReportResponse                `json:"reports"`
+	Story        domain.Story                    `json:"story"`
+	Events       []domain.StoryEvent             `json:"events"`
 }
 
 // StoryIDParam selects one durable story.
@@ -3905,4 +3909,34 @@ type StoryContinuationResponse struct {
 type ResumeStoryContinuationRequest struct {
 	ID       string `json:"id"`
 	Revision int64  `json:"revision"`
+}
+
+// HumanDecisionRequest is an explicit Ed-required question, not ordinary prose.
+type HumanDecisionRequest struct {
+	ID         string `json:"id"`
+	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision"`
+	Question   string `json:"question"`
+	WhyBlocked string `json:"whyBlocked"`
+}
+
+// HumanDecisionResponse identifies the durable human-facing decision.
+type HumanDecisionResponse struct {
+	ID string `json:"id"`
+}
+
+// StoryIntakeRequest atomically adopts one actual human request into canonical stories.
+type StoryIntakeRequest struct {
+	ID              string            `json:"id"`
+	SourceMessageID string            `json:"sourceMessageId"`
+	SessionID       domain.SessionID  `json:"sessionId"`
+	Epic            domain.Epic       `json:"epic"`
+	Stories         []StoryIntakeItem `json:"stories"`
+}
+
+// StoryIntakeItem declares a story and its authorized repositories.
+type StoryIntakeItem struct {
+	ID         string             `json:"id"`
+	Title      string             `json:"title"`
+	Scope      string             `json:"scope"`
+	ProjectIDs []domain.ProjectID `json:"projectIds"`
 }

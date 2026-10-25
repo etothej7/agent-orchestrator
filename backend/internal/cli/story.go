@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -53,5 +54,19 @@ func newStoryCommand(c *commandContext) *cobra.Command {
 	f.StringVar(&req.Role, "role", "", "Assignment role: manager, worker, reviewer")
 	f.StringVar(&req.Text, "text", "", "Public message or decision explanation")
 	f.StringVar(&req.Reference, "reference", "", "Evidence reference or fixed revision")
+	cmd.AddCommand(&cobra.Command{Use: "show <id>", Short: "Read public story events, actors and evidence", Args: exactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		var result json.RawMessage
+		if err := c.getJSON(cmd.Context(), "workspace/stories/"+url.PathEscape(args[0]), &result); err != nil {
+			return err
+		}
+		return writeJSON(cmd.OutOrStdout(), result)
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "list", Short: "Read the shared epic/story board", Args: noArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		var result json.RawMessage
+		if err := c.getJSON(cmd.Context(), "workspace", &result); err != nil {
+			return err
+		}
+		return writeJSON(cmd.OutOrStdout(), result)
+	}})
 	return cmd
 }

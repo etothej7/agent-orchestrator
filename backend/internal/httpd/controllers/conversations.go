@@ -123,6 +123,7 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/side-chats/launch/retire", c.retireSideLaunch)
 	r.Post("/sessions/{sessionId}/chat-view", c.setChatView)
 	r.Get("/sessions/{sessionId}/conversation", c.snapshot)
+	r.Post("/sessions/{sessionId}/conversation/human-decisions", c.humanDecision)
 	r.Post("/sessions/{sessionId}/conversation/messages", c.send)
 	r.Post("/sessions/{sessionId}/conversation/prompt-suggestion", c.promptSuggestion)
 	r.Post("/sessions/{sessionId}/conversation/approvals/{requestId}/resolve", c.resolve)
@@ -915,6 +916,15 @@ func (c *ConversationsController) snapshot(w http.ResponseWriter, r *http.Reques
 		writeConversationError(w, r, err)
 		return
 	}
+	if gate, ok := c.Svc.(interface {
+		HumanSnapshot(context.Context, chatsvc.Snapshot) (chatsvc.Snapshot, error)
+	}); ok {
+		snapshot, err = gate.HumanSnapshot(r.Context(), snapshot)
+		if err != nil {
+			writeConversationError(w, r, err)
+			return
+		}
+	}
 	response := conversationSnapshotResponse(snapshot)
 	// Excerpt verification is owned by AO, independently of provider capabilities.
 	// Older daemons ignore this request field, so clients must negotiate support.
@@ -1370,6 +1380,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, msg := range s.Messages {
 		message := ConversationMessageResponse{
+			Audience: msg.Audience, Purpose: msg.Purpose,
 			Kind:              "message",
 			ID:                msg.ID,
 			TurnID:            msg.TurnID,
@@ -1769,4 +1780,24 @@ func (c *ConversationsController) createSideChat(w http.ResponseWriter, r *http.
 		return
 	}
 	envelope.WriteJSON(w, http.StatusCreated, CreateConversationSideChatResponse{Side: side})
+}
+
+func (c *ConversationsController) humanDecision(w http.ResponseWriter, r *http.Request) {
+	service, ok := c.Svc.(interface {
+		RecordHumanDecision(context.Context, domain.SessionID, chatsvc.HumanDecision) (string, error)
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, r.Method, r.URL.Path)
+		return
+	}
+	var req HumanDecisionRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	id, err := service.RecordHumanDecision(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), chatsvc.HumanDecision(req))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, HumanDecisionResponse{ID: id})
 }

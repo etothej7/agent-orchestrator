@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "自动化需要您作出决定",
+	"workspace.automation_decision": "自动化需要您作出决定：{{reason}}",
+	"workspace.automation_retry_explanation": "解决阻碍后，您可以允许新一轮有限次数的重试。传递结果不确定的请求会保留原始请求标识。",
+	"workspace.confirm_automation_retry": "确认重试自动化",
 	"workspace.answer_question": "回答问题 — {{requester}}",
 	"workspace.use_existing_answer": "将这条已送达消息用作回答",
 	"workspace.confirm_existing_answer": "确认现有回答",

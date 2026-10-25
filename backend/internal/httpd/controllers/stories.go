@@ -18,6 +18,7 @@ type StoriesController struct{ Svc *storysvc.Service }
 func (c *StoriesController) Register(r chi.Router) {
 	r.Get("/workspace", c.list)
 	r.Post("/workspace/epics", c.epic)
+	r.Post("/workspace/intake", c.intake)
 	r.Post("/workspace/stories", c.create)
 	r.Get("/workspace/stories/{storyId}", c.detail)
 	r.Post("/workspace/commands", c.command)
@@ -45,7 +46,22 @@ func (c *StoriesController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, WorkspaceResponse{Epics: epics, Stories: stories})
+	result := WorkspaceResponse{Epics: epics, Stories: stories}
+	if store, ok := c.Svc.Store.(storysvc.ContinuationStore); ok {
+		runner := storysvc.Continuations{Store: store, Stories: c.Svc}
+		for _, row := range stories {
+			if !row.Autonomous {
+				continue
+			}
+			status, err := runner.Status(r.Context(), row.ID)
+			if err != nil {
+				envelope.WriteError(w, r, err)
+				return
+			}
+			result.Continuations = append(result.Continuations, status)
+		}
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
 }
 func (c *StoriesController) epic(w http.ResponseWriter, r *http.Request) {
 	if !c.available(w, r) {
@@ -130,7 +146,17 @@ func (c *StoriesController) detail(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, StoryDetailResponse{Story: story, Events: events, Reports: reports, ReplyThreads: replies})
+	result := StoryDetailResponse{Story: story, Events: events, Reports: reports, ReplyThreads: replies}
+	if store, ok := c.Svc.Store.(storysvc.ContinuationStore); ok && story.Autonomous {
+		runner := storysvc.Continuations{Store: store, Stories: c.Svc}
+		status, err := runner.Status(r.Context(), id)
+		if err != nil {
+			envelope.WriteError(w, r, err)
+			return
+		}
+		result.Continuation = &status
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
 }
 func (c *StoriesController) command(w http.ResponseWriter, r *http.Request) {
 	if !c.available(w, r) {
@@ -186,4 +212,23 @@ func (c *StoriesController) resume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, StoryContinuationResponse{Continuation: status})
+}
+
+func (c *StoriesController) intake(w http.ResponseWriter, r *http.Request) {
+	if !c.available(w, r) {
+		return
+	}
+	var req StoryIntakeRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	input := storysvc.Intake{ID: req.ID, SourceMessageID: req.SourceMessageID, SessionID: req.SessionID, Epic: req.Epic}
+	for _, item := range req.Stories {
+		input.Stories = append(input.Stories, storysvc.IntakeStory(item))
+	}
+	if err := c.Svc.Intake(r.Context(), input); err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, req)
 }

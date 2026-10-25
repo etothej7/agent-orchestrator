@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "Die Automatisierung benötigt deine Entscheidung",
+	"workspace.automation_decision": "Die Automatisierung benötigt deine Entscheidung: {{reason}}",
+	"workspace.automation_retry_explanation": "Nach Behebung der Blockade kannst du weitere begrenzte Versuche erlauben. Ungewisse Zustellungen behalten ihre ursprüngliche Anfragekennung.",
+	"workspace.confirm_automation_retry": "Erneuten Automatisierungsversuch bestätigen",
 	"workspace.answer_question": "Frage beantworten — {{requester}}",
 	"workspace.use_existing_answer": "Diese zugestellte Nachricht als Antwort verwenden",
 	"workspace.confirm_existing_answer": "Vorhandene Antwort bestätigen",

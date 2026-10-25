@@ -69,31 +69,40 @@ func invalid(message string) error { return apierr.Invalid("INVALID_STORY", mess
 
 // Create validates links against real projects and coordinator configuration.
 func (s *Service) Create(ctx context.Context, story domain.Story) error {
-	if !validID(story.ID) || !validID(story.EpicID) || strings.TrimSpace(story.Title) == "" || len(story.Title) > 200 || len(story.Scope) > 10000 {
-		return invalid("Story id, epic and title are required")
-	}
-	cfg, err := s.Store.GetCoordination(ctx)
+	story, err := s.prepare(ctx, story)
 	if err != nil {
 		return err
 	}
+	return s.Store.CreateStory(ctx, story)
+}
+
+// Create validates links against real projects and coordinator configuration.
+func (s *Service) prepare(ctx context.Context, story domain.Story) (domain.Story, error) {
+	if !validID(story.ID) || !validID(story.EpicID) || strings.TrimSpace(story.Title) == "" || len(story.Title) > 200 || len(story.Scope) > 10000 {
+		return story, invalid("Story id, epic and title are required")
+	}
+	cfg, err := s.Store.GetCoordination(ctx)
+	if err != nil {
+		return story, err
+	}
 	if cfg.CoordinatorProjectID == "" {
-		return invalid("Configure an overall coordinator first")
+		return story, invalid("Configure an overall coordinator first")
 	}
 	if len(story.ProjectIDs) == 0 || len(story.ProjectIDs) > 100 {
-		return invalid("Choose the repositories in scope")
+		return story, invalid("Choose the repositories in scope")
 	}
 	seen := map[domain.ProjectID]bool{}
 	for _, id := range story.ProjectIDs {
 		if seen[id] || !cfg.Manages(id) {
-			return invalid("Choose distinct managed repositories")
+			return story, invalid("Choose distinct managed repositories")
 		}
 		seen[id] = true
 		p, ok, err := s.Store.GetProject(ctx, string(id))
 		if err != nil {
-			return err
+			return story, err
 		}
 		if !ok || !p.ArchivedAt.IsZero() {
-			return invalid("Project is unavailable")
+			return story, invalid("Project is unavailable")
 		}
 	}
 	story.Status = "backlog"
@@ -103,7 +112,7 @@ func (s *Service) Create(ctx context.Context, story domain.Story) error {
 	story.Question = ""
 	story.QuestionEventID = ""
 	story.QuestionRequesterSessionID = ""
-	return s.Store.CreateStory(ctx, story)
+	return story, nil
 }
 
 // CreateEpic creates a named grouping; identifiers are caller-owned retry handles.

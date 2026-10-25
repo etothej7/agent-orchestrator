@@ -217,6 +217,8 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newSendCommand(ctx))
 	root.AddCommand(newReportCommand(ctx))
 	root.AddCommand(newStoryCommand(ctx))
+	root.AddCommand(newAskCommand(ctx))
+	root.AddCommand(newIntakeCommand(ctx))
 	root.AddCommand(newPreviewCommand(ctx))
 	root.AddCommand(newRenderCommand(ctx))
 	root.AddCommand(newMCPCommand(ctx))

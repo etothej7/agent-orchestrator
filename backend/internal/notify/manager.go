@@ -84,6 +84,13 @@ func (m *Manager) Notify(ctx context.Context, intent Intent) error {
 	if m == nil || m.store == nil {
 		return errors.New("notify: store is required")
 	}
+	quiet, err := m.quietCoordination(ctx, intent)
+	if err != nil {
+		return fmt.Errorf("notification coordination gate: %w", err)
+	}
+	if quiet {
+		return nil
+	}
 	if intent.CreatedAt.IsZero() {
 		intent.CreatedAt = m.clock().UTC()
 	}

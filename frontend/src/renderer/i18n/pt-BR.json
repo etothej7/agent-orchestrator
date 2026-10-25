@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "A automação precisa da sua decisão",
+	"workspace.automation_decision": "A automação precisa da sua decisão: {{reason}}",
+	"workspace.automation_retry_explanation": "Após resolver o bloqueio, você pode permitir outro número limitado de tentativas. Entregas incertas mantêm a identidade da solicitação original.",
+	"workspace.confirm_automation_retry": "Confirmar nova tentativa de automação",
 	"workspace.answer_question": "Responder à pergunta — {{requester}}",
 	"workspace.use_existing_answer": "Usar esta mensagem entregue como resposta",
 	"workspace.confirm_existing_answer": "Confirmar resposta existente",

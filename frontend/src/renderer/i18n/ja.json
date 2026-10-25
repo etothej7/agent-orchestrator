@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "自動処理に判断が必要です",
+	"workspace.automation_decision": "自動処理に判断が必要です: {{reason}}",
+	"workspace.automation_retry_explanation": "問題を解決した後、回数を制限した再試行を許可できます。配信結果が不明な場合は元のリクエスト識別子が維持されます。",
+	"workspace.confirm_automation_retry": "自動処理の再試行を確認",
 	"workspace.answer_question": "質問に回答 — {{requester}}",
 	"workspace.use_existing_answer": "この配信済みメッセージを回答として使用",
 	"workspace.confirm_existing_answer": "既存の回答を確認",

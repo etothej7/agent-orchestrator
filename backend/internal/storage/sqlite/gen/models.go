@@ -412,6 +412,11 @@ type ConversationTurn struct {
 	UsageLimitResumeError string
 }
 
+type CoordinatorHumanMessage struct {
+	MessageID string
+	Purpose   string
+}
+
 type Cue struct {
 	ID        domain.CueID
 	ProjectID domain.ProjectID
@@ -847,6 +852,14 @@ type StoryContinuation struct {
 	StoryID  string
 	Record   string
 	Revision int64
+}
+
+type StoryIntake struct {
+	ID              string
+	SourceMessageID string
+	SenderSessionID string
+	RequestHash     string
+	EpicID          string
 }
 
 type TelemetryEvent struct {

@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "Automation needs your decision",
+	"workspace.automation_decision": "Automation needs your decision: {{reason}}",
+	"workspace.automation_retry_explanation": "After resolving the blocker, you can allow another bounded retry. Any uncertain delivery keeps its original request identity.",
+	"workspace.confirm_automation_retry": "Confirm automation retry",
 	"workspace.answer_question": "Answer question — {{requester}}",
 	"workspace.use_existing_answer": "Use this delivered message as answer",
 	"workspace.confirm_existing_answer": "Confirm existing answer",

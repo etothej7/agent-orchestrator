@@ -9,6 +9,8 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
 )
 
 const continuationLimit = 3
@@ -21,6 +23,7 @@ type ContinuationStore interface {
 	SaveStoryContinuation(context.Context, domain.StoryContinuation) (bool, error)
 }
 
+// ContinuationSender uses normal idempotent chat delivery.
 type ContinuationSender interface {
 	Send(context.Context, domain.SessionID, ports.ChatUserMessage) (domain.ConversationTurn, error)
 }
@@ -60,6 +63,8 @@ func (c *Continuations) RunOnce(ctx context.Context) error {
 }
 
 func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
+	ctx, release := coordination.ReadLock(ctx, c.Store)
+	defer release()
 	now := c.now()
 	rec, found, err := c.Store.GetStoryContinuation(ctx, s.ID)
 	if err != nil {
@@ -87,12 +92,32 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		_, err = c.Store.SaveStoryContinuation(ctx, rec)
 		return err
 	}
-	if rec.State == "blocked" {
-		return nil
-	} // Explicit human recovery is required.
-	if rec.NextAt.After(now) {
-		return nil
+	rec.StoryID = s.ID
+	cfg, err := c.Store.GetCoordination(ctx)
+	if err != nil {
+		return err
 	}
+	for _, projectID := range s.ProjectIDs {
+		if !cfg.Manages(projectID) {
+			if rec.State == "blocked" {
+				return c.notifyBlocked(ctx, s, rec)
+			}
+			return c.block(ctx, rec, "The story is outside the current coordinator repository scope. Restore its authorized scope before resuming.")
+		}
+		project, found, err := c.Store.GetProject(ctx, string(projectID))
+		if err != nil {
+			return err
+		}
+		if !found || !project.ArchivedAt.IsZero() {
+			if rec.State == "blocked" {
+				return c.notifyBlocked(ctx, s, rec)
+			}
+			return c.block(ctx, rec, "A repository in this story is unavailable or archived. Restore the authorized repository before resuming.")
+		}
+	}
+	if rec.State == "blocked" {
+		return c.notifyBlocked(ctx, s, rec)
+	} // Explicit human recovery is required.
 	events, err := c.Store.StoryEvents(ctx, s.ID)
 	if err != nil {
 		return err
@@ -102,15 +127,20 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if rec.State != "sending" && rec.Checkpoint != checkpoint {
 		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
 	}
+	if rec.NextAt.After(now) {
+		return nil
+	}
 	if rec.State == "waiting" {
 		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
 		if err != nil {
-			return err
+			return c.deferOrBlock(ctx, rec, now, "The manager turn cannot be inspected. Restore its durable state before deciding whether to retry.")
 		} // Unknown is not dead, failed, or safe to redispatch.
 		switch turn.State {
 		case domain.TurnStateQueued, domain.TurnStateRunning:
 			return c.deferOrBlock(ctx, rec, now, "The assigned manager has not completed its turn. Check its pending provider or permission blocker.")
-		case domain.TurnStateCompleted, domain.TurnStateFailed, domain.TurnStateInterrupted, domain.TurnStateCancelled, domain.TurnStateRecovered:
+		case domain.TurnStateInterrupted, domain.TurnStateCancelled:
+			return c.block(ctx, rec, "The manager turn was stopped or cancelled. Confirm whether this story should resume; automation will not override that stop.")
+		case domain.TurnStateCompleted, domain.TurnStateFailed, domain.TurnStateRecovered:
 			if rec.ProgressAttempts >= continuationLimit {
 				return c.block(ctx, rec, "The manager completed three continuation turns without advancing this story. Decide whether to clarify scope, change the responsible agent, or stop the work.")
 			}
@@ -354,4 +384,38 @@ func (c *Continuations) Resume(ctx context.Context, storyID, recoveryID string, 
 		return domain.StoryContinuationStatus{}, invalid("Automation changed; refresh before retrying")
 	}
 	return c.Status(ctx, storyID)
+}
+
+// Exhaustion creates one explicit human decision, not repeated chat dialogue.
+// Its stable key is the revision that entered blocked; retrying notification
+// after a process crash cannot duplicate the conversation message.
+func (c *Continuations) notifyBlocked(ctx context.Context, s domain.Story, rec domain.StoryContinuation) error {
+	recorder, ok := c.Sender.(interface {
+		RecordHumanDecision(context.Context, domain.SessionID, chatsvc.HumanDecision) (string, error)
+	})
+	if !ok {
+		return nil
+	}
+	cfg, err := c.Store.GetCoordination(ctx)
+	if err != nil {
+		return err
+	}
+	if cfg.CoordinatorProjectID == "" {
+		return nil
+	}
+	sessions, err := c.Store.ListSessions(ctx, cfg.CoordinatorProjectID)
+	if err != nil {
+		return err
+	}
+	var coordinator domain.SessionRecord
+	for _, session := range sessions {
+		if session.Kind == domain.KindOrchestrator && !session.IsTerminated && session.Activity.State != domain.ActivityExited && (coordinator.ID == "" || session.CreatedAt.After(coordinator.CreatedAt)) {
+			coordinator = session
+		}
+	}
+	if coordinator.ID == "" {
+		return nil
+	} // The same actionable reason remains on the board.
+	_, err = recorder.RecordHumanDecision(ctx, coordinator.ID, chatsvc.HumanDecision{ID: fmt.Sprintf("story-blocked-%x-%d", sha256.Sum256([]byte(s.ID)), rec.Revision), Purpose: "blocking_decision", Question: "How should “" + s.Title + "” continue? Resolve the blocker, then confirm a bounded retry in the story, or change its scope/assignment.", WhyBlocked: rec.Reason})
+	return err
 }

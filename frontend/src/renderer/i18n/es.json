@@ -1,4 +1,8 @@
 {
+	"workspace.automation_needs_decision": "La automatización necesita tu decisión",
+	"workspace.automation_decision": "La automatización necesita tu decisión: {{reason}}",
+	"workspace.automation_retry_explanation": "Después de resolver el bloqueo, puedes permitir otro número limitado de reintentos. Las entregas inciertas conservan su identidad de solicitud original.",
+	"workspace.confirm_automation_retry": "Confirmar reintento de automatización",
 	"workspace.answer_question": "Responder pregunta — {{requester}}",
 	"workspace.use_existing_answer": "Usar este mensaje entregado como respuesta",
 	"workspace.confirm_existing_answer": "Confirmar respuesta existente",

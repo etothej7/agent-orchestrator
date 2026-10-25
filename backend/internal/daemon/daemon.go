@@ -638,6 +638,7 @@ func Run(buildVersion string) error {
 		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
+	storySvc := &storysvc.Service{Store: store, Messenger: chatSvc, Actions: sessionSvc}
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()
@@ -995,7 +996,7 @@ func Run(buildVersion string) error {
 		Conversations:      chatSvc,
 		Settings:           settingsSvc,
 		Coordination:       coordinationsvc.New(store, cfg.DataDir),
-		Stories:            &storysvc.Service{Store: store, Messenger: chatSvc, Actions: sessionSvc},
+		Stories:            storySvc,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           hookActivity,
@@ -1102,6 +1103,7 @@ func Run(buildVersion string) error {
 
 	var startupReconcileDone <-chan struct{}
 	var usageLimitResumeDone <-chan struct{}
+	var storyContinuationsDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1154,6 +1156,7 @@ func Run(buildVersion string) error {
 				}
 			}
 		}()
+		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone
 		go func() {
@@ -1201,6 +1204,9 @@ func Run(buildVersion string) error {
 	// via defer) avoids the LIFO trap where a Stop() that blocks on ctx-cancel
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
+	if storyContinuationsDone != nil {
+		<-storyContinuationsDone
+	}
 	if usageLimitResumeDone != nil {
 		<-usageLimitResumeDone
 	}

@@ -1404,6 +1404,12 @@ func (s *Store) appendUserMessage(
 		}); err != nil {
 			return err
 		}
+		if msg.Origin == domain.MessageOriginHuman && msg.SenderSessionID == "" {
+			if err := q.InsertCoordinatorHumanMessage(ctx, gen.InsertCoordinatorHumanMessageParams{MessageID: msg.ID, Purpose: "human_request"}); err != nil {
+				return err
+			}
+		}
+
 		interactionAt := msg.InteractionAt
 		if interactionAt.IsZero() {
 			interactionAt = now

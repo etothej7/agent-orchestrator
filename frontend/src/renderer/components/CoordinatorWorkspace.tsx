@@ -78,7 +78,7 @@ export function StoryBoard() {
   </header>
   {(error || board.error) ? <p role="alert" className="p-3 text-sm text-destructive">{error || apiErrorMessage(board.error)}</p> : null}
   <div className="min-h-0 flex-1 overflow-auto p-3">
-   {selected ? <StoryDetail key={selected} id={selected} onBack={() => setSelected("")} onChanged={refresh} /> : <div className="space-y-4">{statuses.map(([status, label]) => <section key={status} aria-label={t(label)}><h3 className="mb-2 text-sm font-medium">{t(label)}</h3><div className="space-y-2">{board.data?.stories?.filter(s => (!epic || s.epicId === epic) && s.status === status).map(story => <Card key={story.id}><CardContent className="p-0"><button className="w-full space-y-1 p-3 text-left hover:bg-muted/40" onClick={() => setSelected(story.id)}><div className="font-medium">{story.title}</div><div className="text-xs text-muted-foreground">{story.projectIds?.join(" · ")}</div><div className="text-xs">{story.assignments?.map(a => storyActorLabel(a.sessionId, workspace.data?.flatMap(p => p.sessions) ?? [], a.role)).join(" · ") || t("workspace.unassigned")}</div>{story.blockedReason ? <p className="text-sm text-destructive">{t("workspace.blocked",{reason:story.blockedReason})}</p> : null}{story.question ? <p className="text-sm">{t("workspace.needs_ed",{question:story.question})}</p> : null}</button></CardContent></Card>)}</div></section>)}</div>}
+   {selected ? <StoryDetail key={selected} id={selected} onBack={() => setSelected("")} onChanged={refresh} /> : <div className="space-y-4">{statuses.map(([status, label]) => <section key={status} aria-label={t(label)}><h3 className="mb-2 text-sm font-medium">{t(label)}</h3><div className="space-y-2">{board.data?.stories?.filter(s => (!epic || s.epicId === epic) && s.status === status).map(story => <Card key={story.id}><CardContent className="p-0"><button className="w-full space-y-1 p-3 text-left hover:bg-muted/40" onClick={() => setSelected(story.id)}><div className="font-medium">{story.title}</div><div className="text-xs text-muted-foreground">{story.projectIds?.join(" · ")}</div><div className="text-xs">{story.assignments?.map(a => storyActorLabel(a.sessionId, workspace.data?.flatMap(p => p.sessions) ?? [], a.role)).join(" · ") || t("workspace.unassigned")}</div>{story.blockedReason ? <p className="text-sm text-destructive">{t("workspace.blocked",{reason:story.blockedReason})}</p> : null}{story.question ? <p className="text-sm">{t("workspace.needs_ed",{question:story.question})}</p> : null}{board.data?.continuations?.filter(c=>c.storyId===story.id && c.state==="blocked").map(c=><p key={c.storyId} className="text-sm text-destructive">{t("workspace.automation_decision",{reason:c.reason??""})}</p>)}</button></CardContent></Card>)}</div></section>)}</div>}
   </div>
  </aside>;
 }
@@ -98,6 +98,14 @@ function StoryDetail({ id, onBack, onChanged }: { id: string; onBack: () => void
  const [pending, setPending] = useState<Command | null>(null);
  const [busy, setBusy] = useState(false);
  const [error, setError] = useState("");
+ const [resumeRequest,setResumeRequest]=useState<{id:string;revision:number}|null>(null);
+ async function resumeAutomation(){
+  const continuation=detail.data?.continuation;if(!continuation)return;
+  const request=resumeRequest??{id:crypto.randomUUID(),revision:continuation.revision};setResumeRequest(request);setBusy(true);setError("");
+  try {const {error}=await apiClient.POST("/api/v1/workspace/stories/{storyId}/continuation",{params:{path:{storyId:id}},body:request});if(error){if(apiErrorCode(error)==="INVALID_STORY")setResumeRequest(null);throw new Error(apiErrorMessage(error))};setResumeRequest(null);await onChanged()}
+  catch(e){setError(apiErrorMessage(e))}finally{setBusy(false)}
+ }
+
  const navigateSession = useSessionLinkNavigation();
  const workspaces = useWorkspaceQuery({ includeCloud: false });
  const detail = useQuery({ queryKey: ["story-detail", id], refetchInterval: 2000, queryFn: async () => {
@@ -141,6 +149,8 @@ function StoryDetail({ id, onBack, onChanged }: { id: string; onBack: () => void
  const delivery = kind === "message" || kind === "assignment" || kind === "handoff" || kind === "answer";
  return <div className="space-y-4"><Button variant="ghost" onClick={onBack}>{t("workspace.back_to_stories")}</Button><div><h3 className="font-semibold">{story.title}</h3><p className="text-sm">{storyStatus(story.status)}</p><p className="whitespace-pre-wrap text-sm text-muted-foreground">{story.scope}</p><p className="text-xs">{story.projectIds?.join(" · ")}</p></div>
   {story.blockedReason ? <p className="text-sm text-destructive">{t("workspace.blocked",{reason:story.blockedReason})}</p> : null}{story.question ? <p className="text-sm">{t("workspace.needs_ed",{question:story.question})}</p> : null}
+  {detail.data?.continuation?.state==="blocked" ? <section aria-label={t("workspace.automation_needs_decision")} className="space-y-2 rounded-md border p-3"><p>{t("workspace.automation_decision",{reason:detail.data.continuation.reason??""})}</p><p className="text-xs">{t("workspace.automation_retry_explanation")}</p><Button disabled={busy || Boolean(story.question)} onClick={()=>void resumeAutomation()}>{t("workspace.confirm_automation_retry")}</Button></section> : null}
+
   {story.question && story.questionRequesterSessionId ? <section aria-label={t("workspace.needs_ed", { question: story.question })} className="space-y-2 rounded-md border p-3">
    <Button disabled={busy || Boolean(pending)} onClick={() => { setKind("answer"); setAnswerQuestionId(story.questionEventId ?? ""); messageInput.current?.focus(); }}>{t("workspace.answer_question", { requester: storyActorLabel(story.questionRequesterSessionId ?? "", sessions, story.assignments?.find(a => a.sessionId === story.questionRequesterSessionId)?.role) })}</Button>
    {answerOptions.map(({ event, reply }) => <div key={event.id} className="space-y-1 text-sm"><ChatMarkdown text={event.text} /><Button variant="outline" disabled={busy || Boolean(pending)} onClick={() => setConfirmation({ questionEventId: story.questionEventId ?? "", sourceEventId: event.id, replyMessageId: reply.id, questionText: story.question })}>{t("workspace.use_existing_answer")}</Button></div>)}

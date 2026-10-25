@@ -1358,7 +1358,11 @@ func (s *Service) Send(
 		return domain.ConversationTurn{}, err
 	}
 	var reports reportsvc.PreparedBatch
-	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation {
+	coordinator, coordErr := s.isHumanCoordinator(ctx, record.ProjectID)
+	if coordErr != nil {
+		return domain.ConversationTurn{}, coordErr
+	}
+	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation && !coordinator {
 		var err error
 		reports, err = s.reports.PreparePiggyback(ctx, id)
 		if err != nil {

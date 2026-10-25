@@ -305,3 +305,38 @@ func TestStoryContinuationActiveAndUnknownTurnsAreNotRedispatched(t *testing.T) 
 		})
 	}
 }
+
+func TestStoryContinuationScopeRevocationAndHumanStopDoNotDispatch(t *testing.T) {
+	for _, scenario := range []string{"scope-revoked", "human-stop"} {
+		t.Run(scenario, func(t *testing.T) {
+			db, _, _ := setupContinuation(t)
+			defer db.Close()
+			ctx := context.Background()
+			now := time.Now().UTC()
+			st := continuationStore{Store: db, turn: domain.ConversationTurn{ID: "actual-turn", State: domain.TurnStateInterrupted}}
+			sender := &continuationSender{}
+			c := storysvc.Continuations{Store: st, Stories: &storysvc.Service{Store: st}, Sender: sender, Now: func() time.Time { return now }}
+			if scenario == "human-stop" {
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				now = now.Add(time.Minute * 2)
+			} else if err := db.SetCoordination(ctx, domain.CoordinationConfig{}, now); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rec, _, err := db.GetStoryContinuation(ctx, "story")
+			want := 0
+			if scenario == "human-stop" {
+				want = 1
+			}
+			if err != nil || rec.State != "blocked" || len(sender.messages) != want {
+				t.Fatal(rec, len(sender.messages), err)
+			}
+		})
+	}
+}

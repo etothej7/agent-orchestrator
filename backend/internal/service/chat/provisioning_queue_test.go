@@ -661,3 +661,74 @@ func TestControllerPublishedWhileProvisioningCannotOvertakeQueuedPrompt(t *testi
 		t.Fatalf("provider received %v, want only the opening prompt first", got)
 	}
 }
+
+func TestCoordinatorHumanPromptNeverPiggybacksInternalReports(t *testing.T) {
+	st, workerID := openProvisioningStore(t, domain.SessionProvisionReady)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	coordinator, err := st.CreateSession(ctx, domain.SessionRecord{ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, ProvisionState: domain.SessionProvisionProvisioning, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateReport(ctx, domain.ReportRecord{ID: "internal-report", SessionID: workerID, ProjectID: testProject, State: domain.ReportCheckpoint, Note: "PRIVATE_REPORT_CHATTER", CreatedAt: now, AvailableAt: now.Add(time.Hour), DeliveryState: domain.ReportPending, RepeatCount: 1}); err != nil {
+		t.Fatal(err)
+	}
+	svc := provisioningService(t, st)
+	svc.SetReportCoordinator(reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: st}))
+	turn, err := svc.Send(ctx, coordinator.ID, ports.ChatUserMessage{Text: "Build the agreed feature", Origin: domain.MessageOriginHuman, ClientMessageID: "ed-intake"})
+	if err != nil || turn.ID == "" {
+		t.Fatal(turn, err)
+	}
+	snap, err := svc.Snapshot(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := svc.HumanSnapshot(ctx, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(public.Messages) != 1 || public.Messages[0].Text != "Build the agreed feature" {
+		t.Fatal(public.Messages)
+	}
+	report, found, err := st.GetReport(ctx, "internal-report")
+	if err != nil || !found || report.DeliveryState != domain.ReportPending {
+		t.Fatal("quiet gate changed delivery fact", report, err)
+	}
+	messageID := public.Messages[0].ID
+	if _, err := st.CreateProjectConversationAdoptingQueue(ctx, "coordinator-project-conversation", testProject, coordinator.ID, domain.ConversationActivity{ID: "reset", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Controller started"}, now); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = svc.Snapshot(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err = svc.HumanSnapshot(ctx, snap)
+	if err != nil || len(public.Messages) != 1 || public.Messages[0].ID != messageID {
+		t.Fatal("project conversation adoption lost human identity", public.Messages, err)
+	}
+	project, _, err := st.GetProject(ctx, string(testProject))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := sqlite.Open(project.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reloaded := provisioningService(t, reopened)
+	snap, err = reloaded.Snapshot(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err = reloaded.HumanSnapshot(ctx, snap)
+	if err != nil || len(public.Messages) != 1 || public.Messages[0].ID != messageID {
+		t.Fatal("reopen lost human audience", public.Messages, err)
+	}
+
+}

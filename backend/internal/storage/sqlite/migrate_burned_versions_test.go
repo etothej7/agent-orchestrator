@@ -228,6 +228,8 @@ var shippedMigrations = map[int64]string{
 	20261023171530050: "20261023171530050_story_delivery_identity.sql",
 	20261023173124801: "20261023173124801_story_native_evidence_fence.sql",
 	20261025200310086: "20261025200310086_story_continuations.sql",
+	20261025201435973: "20261025201435973_coordinator_human_messages.sql",
+	20261025202041421: "20261025202041421_story_intake.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

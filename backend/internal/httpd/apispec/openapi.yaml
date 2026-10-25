@@ -6668,6 +6668,57 @@ paths:
       summary: Choose one provider-advertised session configuration value
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/human-decisions:
+    post:
+      operationId: recordHumanDecision
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanDecisionRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanDecisionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Record an explicit human blocking question
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve:
     post:
       operationId: resolveSessionConversationInput
@@ -12881,6 +12932,49 @@ paths:
       summary: createEpic
       tags:
       - workspace
+  /api/v1/workspace/intake:
+    post:
+      operationId: adoptStoryIntake
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoryIntakeRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoryIntakeRequest'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Adopt one human request into an epic and stories atomically
+      tags:
+      - workspace
   /api/v1/workspace/stories:
     post:
       operationId: createStory
@@ -15968,6 +16062,8 @@ components:
       type: object
     ConversationMessageResponse:
       properties:
+        audience:
+          type: string
         clientMessageId:
           type: string
         content:
@@ -15992,6 +16088,8 @@ components:
           - automation
           - daemon
           - provider
+          type: string
+        purpose:
           type: string
         revision:
           format: int64
@@ -17227,6 +17325,33 @@ components:
             type: string
           maxItems: 20000
           type: array
+      type: object
+    HumanDecisionRequest:
+      properties:
+        id:
+          type: string
+        purpose:
+          enum:
+          - scope_question
+          - blocking_decision
+          - completion_decision
+          type: string
+        question:
+          type: string
+        whyBlocked:
+          type: string
+      required:
+      - id
+      - purpose
+      - question
+      - whyBlocked
+      type: object
+    HumanDecisionResponse:
+      properties:
+        id:
+          type: string
+      required:
+      - id
       type: object
     IdentityResponse:
       properties:
@@ -21193,6 +21318,8 @@ components:
       type: object
     StoryDetailResponse:
       properties:
+        continuation:
+          $ref: '#/components/schemas/DomainStoryContinuationStatus'
         events:
           items:
             $ref: '#/components/schemas/StoryEvent'
@@ -21261,6 +21388,45 @@ components:
           $ref: '#/components/schemas/StoryEvent'
       required:
       - event
+      type: object
+    StoryIntakeItem:
+      properties:
+        id:
+          type: string
+        projectIds:
+          items:
+            type: string
+          type: array
+        scope:
+          type: string
+        title:
+          type: string
+      required:
+      - id
+      - title
+      - scope
+      - projectIds
+      type: object
+    StoryIntakeRequest:
+      properties:
+        epic:
+          $ref: '#/components/schemas/Epic'
+        id:
+          type: string
+        sessionId:
+          type: string
+        sourceMessageId:
+          type: string
+        stories:
+          items:
+            $ref: '#/components/schemas/StoryIntakeItem'
+          type: array
+      required:
+      - id
+      - sourceMessageId
+      - sessionId
+      - epic
+      - stories
       type: object
     StoryReply:
       properties:
@@ -22518,6 +22684,10 @@ components:
       type: object
     WorkspaceResponse:
       properties:
+        continuations:
+          items:
+            $ref: '#/components/schemas/DomainStoryContinuationStatus'
+          type: array
         epics:
           items:
             $ref: '#/components/schemas/Epic'
