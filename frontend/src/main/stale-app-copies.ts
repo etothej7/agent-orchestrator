@@ -1,3 +1,4 @@
+import { isPersonalBuild } from "./personal-build";
 import { randomUUID } from "node:crypto";
 import { lstat, readFile, rename } from "node:fs/promises";
 import os from "node:os";
@@ -201,7 +202,7 @@ export async function retireStaleAppCopies(dependencies: RetirementDependencies)
 }
 
 export async function retireStaleMacAppCopies(options: MacRetirementOptions): Promise<void> {
-	if (options.platform !== "darwin" || !options.isPackaged) return;
+	if (options.platform !== "darwin" || !options.isPackaged || isPersonalBuild(options.runningVersion)) return;
 	if (path.resolve(options.runningPath) !== MAINTAINED_MAC_APP_PATH) return;
 	if (semver.valid(options.runningVersion) === null) return;
 

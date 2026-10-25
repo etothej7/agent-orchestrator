@@ -1,3 +1,4 @@
+import { isPersonalBuild } from "./personal-build";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import semver from "semver";
@@ -48,7 +49,7 @@ export interface RelocationInputs {
  * session to a bundle we could not identify.
  */
 export function decideRelocation(inputs: RelocationInputs): RelocationAction {
-	if (inputs.inApplicationsFolder) return "stay";
+	if (inputs.inApplicationsFolder || isPersonalBuild(inputs.runningVersion)) return "stay";
 	if (!inputs.installedPresent) return "relocate";
 
 	const installed = semver.valid(inputs.installedVersion ?? "");
