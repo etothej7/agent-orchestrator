@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -175,6 +177,11 @@ func TestCoordinatorHumanHTTPPagesByVisibleItems(t *testing.T) {
 }
 
 func TestCoordinatorStartupFailureHTTPIsActionablePrivateAndIdempotent(t *testing.T) {
+	startupFailureHTTP(t)
+}
+
+func startupFailureHTTP(t *testing.T) string {
+	t.Helper()
 	h := newHarness(t)
 	ctx := context.Background()
 	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
@@ -211,5 +218,31 @@ func TestCoordinatorStartupFailureHTTPIsActionablePrivateAndIdempotent(t *testin
 	}
 	if len(h.conv.sentTexts()) != 0 {
 		t.Fatal("startup notice dispatched a prompt")
+	}
+	return body
+}
+
+func TestCoordinatorStartupFailureHTTPAcceptanceClassifier(t *testing.T) {
+	path := os.Getenv("AUTONOMY_CLASSIFIER_PATH")
+	if path == "" {
+		t.Skip("set AUTONOMY_CLASSIFIER_PATH to the reviewed runtime harness acceptance.py")
+	}
+	body := startupFailureHTTP(t)
+	cmd := exec.Command("python3", "-B", "-c", `import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("acceptance",sys.argv[1])
+a=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=a
+spec.loader.exec_module(a)
+body=json.load(sys.stdin)
+messages=body["messages"]
+notices=[m for m in messages if m.get("purpose")=="blocking_decision"]
+assert len(notices)==1, messages
+assert a.classify_message(notices[0])=="blocking_decision", notices
+bad=dict(notices[0],text="Startup failed. Why your input is needed: ")
+assert a.classify_message(bad)=="non_actionable_or_unclassified"
+`, path)
+	cmd.Stdin = strings.NewReader(body)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("actual acceptance classifier: %v\n%s", err, out)
 	}
 }

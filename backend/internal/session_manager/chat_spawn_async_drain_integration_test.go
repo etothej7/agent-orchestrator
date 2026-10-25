@@ -219,20 +219,42 @@ func TestAsyncChatSpawnRealDrainFailureStaysRetryable(t *testing.T) {
 
 type failedStartupDriver struct {
 	integrationChatDriver
-	fail bool
+	fail      bool
+	cancelled bool
+	entered   chan struct{}
 }
 
 func (d *failedStartupDriver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
 	if d.fail {
+		if d.cancelled {
+			close(d.entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("%w: local host did not become ready PRIVATE_PROVIDER_SENTINEL", ports.ErrChatRecoveryInconclusive)
 	}
 	return d.integrationChatDriver.Start(ctx, cfg)
 }
 
 func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelled=%t", cancelled), func(t *testing.T) { startupRecovery(t, cancelled) })
+	}
+}
+func startupRecovery(t *testing.T, cancelled bool) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	st := sqlitetest.MustOpenAt(t, dataDir)
+	st, openErr := sqlitetest.Open(dataDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() {
+		if st != nil {
+			if err := st.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: string(chatTestProject), Path: dataDir, Config: testRoleAgents(), RegisteredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,12 +262,15 @@ func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(
 		t.Fatal(err)
 	}
 	provider := newIntegrationChatConversation("startup-retry-provider")
-	driver := &failedStartupDriver{integrationChatDriver: integrationChatDriver{harness: domain.HarnessCodex, start: func() ports.ChatConversation { return provider }}, fail: true}
+	driver := &failedStartupDriver{integrationChatDriver: integrationChatDriver{harness: domain.HarnessCodex, start: func() ports.ChatConversation { return provider }}, fail: true, cancelled: cancelled, entered: make(chan struct{})}
 	var next atomic.Int64
-	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: integrationChatRegistry{domain.HarnessCodex: driver}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("startup-notice-%d", next.Add(1)) }, Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, id string) (chatsvc.ConversationRows, error) {
-		rows, err := st.LoadConversationSnapshot(ctx, id)
-		return chatsvc.ConversationRows{Conversation: rows.Conversation, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, err
-	})})
+	newService := func() *chatsvc.Service {
+		return chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: integrationChatRegistry{domain.HarnessCodex: driver}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("startup-notice-%d", next.Add(1)) }, Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, id string) (chatsvc.ConversationRows, error) {
+			rows, err := st.LoadConversationSnapshot(ctx, id)
+			return chatsvc.ConversationRows{Conversation: rows.Conversation, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, err
+		})})
+	}
+	svc := newService()
 	t.Cleanup(func() { svc.StopAll(context.Background()) })
 	m := New(Deps{Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{path: t.TempDir()}, Store: st, Messenger: &fakeMessenger{}, Chat: realQueueDrainLauncher{integrationChatLauncher{service: svc}}, Lifecycle: lifecycle.New(st, nil), DataDir: dataDir, LookPath: func(string) (string, error) { return "/bin/true", nil }, Logger: slog.New(slog.DiscardHandler)})
 	m.browserCapabilities = browsersvc.NewAuthority()
@@ -256,9 +281,21 @@ func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(
 	if err != nil {
 		t.Fatal(err)
 	}
-	(*jobs)[0]()
+	if cancelled {
+		go (*jobs)[0]()
+		select {
+		case <-driver.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider did not start")
+		}
+		if err := m.cancelAsyncChatSpawn(ctx, rec.ID); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		(*jobs)[0]()
+	}
 	stored, _, err := st.GetSession(ctx, rec.ID)
-	if err != nil || stored.ProvisionState != domain.SessionProvisionFailed {
+	if err != nil || stored.ProvisionState != domain.SessionProvisionFailed || stored.ProvisionCancelled != cancelled {
 		t.Fatal(stored.ProvisionState, err)
 	}
 	conv, err := st.ConversationForSession(ctx, rec.ID)
@@ -266,11 +303,22 @@ func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(
 		t.Fatal(err)
 	}
 	snap, err := st.LoadConversationSnapshot(ctx, conv.ID)
-	if err != nil || len(snap.Turns) != 1 || snap.Turns[0].State != domain.TurnStateQueued || len(snap.Messages) != 2 {
+	if err != nil || len(snap.Turns) != 1 || snap.Turns[0].State != domain.TurnStateQueued || len(snap.Messages) != 2-boolInt(cancelled) {
 		t.Fatal("request or failure notice lost", snap.Turns, snap.Messages, err)
 	}
 	originalTurn := snap.Turns[0].ID
 	originalMessage := snap.Messages[0].ID
+	// Reopen the durable store and create a fresh service/manager, as on restart.
+	svc.StopAll(ctx)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = sqlite.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = newService()
+	m = New(Deps{Store: st, Chat: realQueueDrainLauncher{integrationChatLauncher{service: svc}}, Logger: slog.New(slog.DiscardHandler)})
 	// Startup recovery retries publication without spawning or rewriting the task.
 	for range 2 {
 		if err := m.FailInterruptedProvisioning(ctx); err != nil {
@@ -290,14 +338,18 @@ func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(
 		t.Fatal(err)
 	}
 	body := string(encoded)
-	if strings.Count(body, "Automatic startup attempts have stopped") != 1 || strings.Contains(body, "PRIVATE_PROVIDER_SENTINEL") || !strings.Contains(body, originalMessage) {
+	if strings.Count(body, "Automatic startup attempts have stopped") != 1-boolInt(cancelled) || strings.Contains(body, "PRIVATE_PROVIDER_SENTINEL") || !strings.Contains(body, originalMessage) {
 		t.Fatal(body)
 	}
+	// Reconstruct the full manager for an explicit user retry only.
+	m = New(Deps{Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{path: t.TempDir()}, Store: st, Messenger: &fakeMessenger{}, Chat: realQueueDrainLauncher{integrationChatLauncher{service: svc}}, Lifecycle: lifecycle.New(st, nil), DataDir: dataDir, LookPath: func(string) (string, error) { return "/bin/true", nil }, Logger: slog.New(slog.DiscardHandler)})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	jobs = deferredBackground(m)
 	driver.fail = false
 	if _, err := m.ResumeAgentWithMode(ctx, rec.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, job := range (*jobs)[1:] {
+	for _, job := range *jobs {
 		job()
 	}
 	if err := svc.DrainQueued(ctx, rec.ID); err != nil {
@@ -311,9 +363,20 @@ func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(
 	if err != nil || len(final.Turns) != 1 || final.Turns[0].ID != originalTurn {
 		t.Fatal("retry replaced task", final.Turns, err)
 	}
+	stored, _, err = st.GetSession(ctx, rec.ID)
+	if err != nil || stored.ProvisionCancelled {
+		t.Fatal("retry retained cancellation", stored.ProvisionCancelled, err)
+	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	if len(provider.sent) != 1 || provider.sent[0].Text != "Original outcome: preserve exactly once" {
 		t.Fatal(provider.sent)
 	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

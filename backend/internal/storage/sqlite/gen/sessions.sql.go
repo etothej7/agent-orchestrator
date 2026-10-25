@@ -223,7 +223,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -292,6 +292,7 @@ type GetSessionRow struct {
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
+	ProvisionCancelled               bool
 	ProvisionSteps                   string
 	BranchState                      string
 	BranchNaming                     bool
@@ -376,6 +377,7 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.RequestedOutput,
 		&i.ProvisionState,
 		&i.ProvisionError,
+		&i.ProvisionCancelled,
 		&i.ProvisionSteps,
 		&i.BranchState,
 		&i.BranchNaming,
@@ -413,7 +415,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -482,6 +484,7 @@ type GetSessionByAutomationRunIDRow struct {
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
+	ProvisionCancelled               bool
 	ProvisionSteps                   string
 	BranchState                      string
 	BranchNaming                     bool
@@ -566,6 +569,7 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.RequestedOutput,
 		&i.ProvisionState,
 		&i.ProvisionError,
+		&i.ProvisionCancelled,
 		&i.ProvisionSteps,
 		&i.BranchState,
 		&i.BranchNaming,
@@ -766,7 +770,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -835,6 +839,7 @@ type ListAllSessionsRow struct {
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
+	ProvisionCancelled               bool
 	ProvisionSteps                   string
 	BranchState                      string
 	BranchNaming                     bool
@@ -925,6 +930,7 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.RequestedOutput,
 			&i.ProvisionState,
 			&i.ProvisionError,
+			&i.ProvisionCancelled,
 			&i.ProvisionSteps,
 			&i.BranchState,
 			&i.BranchNaming,
@@ -1005,7 +1011,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -1074,6 +1080,7 @@ type ListSessionsByProjectRow struct {
 	RequestedOutput                  string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
+	ProvisionCancelled               bool
 	ProvisionSteps                   string
 	BranchState                      string
 	BranchNaming                     bool
@@ -1164,6 +1171,7 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.RequestedOutput,
 			&i.ProvisionState,
 			&i.ProvisionError,
+			&i.ProvisionCancelled,
 			&i.ProvisionSteps,
 			&i.BranchState,
 			&i.BranchNaming,
@@ -1828,9 +1836,38 @@ func (q *Queries) SetSessionPreviewURL(ctx context.Context, arg SetSessionPrevie
 	return result.RowsAffected()
 }
 
+const setSessionProvisionCancelled = `-- name: SetSessionProvisionCancelled :execrows
+UPDATE sessions SET provision_state = ?1, provision_cancelled = ?2,
+    provision_error = ?3, updated_at = ?4
+WHERE id = ?5
+`
+
+type SetSessionProvisionCancelledParams struct {
+	ProvisionState     domain.SessionProvisionState
+	ProvisionCancelled bool
+	ProvisionError     string
+	UpdatedAt          time.Time
+	ID                 domain.SessionID
+}
+
+func (q *Queries) SetSessionProvisionCancelled(ctx context.Context, arg SetSessionProvisionCancelledParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionProvisionCancelled,
+		arg.ProvisionState,
+		arg.ProvisionCancelled,
+		arg.ProvisionError,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionProvisionState = `-- name: SetSessionProvisionState :execrows
 UPDATE sessions SET
     provision_state = ?1,
+    provision_cancelled = CASE WHEN ?1 IN ('provisioning', 'ready') THEN FALSE ELSE provision_cancelled END,
     provision_error = ?2,
     updated_at = ?3
 WHERE id = ?4

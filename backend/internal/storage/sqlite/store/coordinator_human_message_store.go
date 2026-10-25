@@ -45,7 +45,7 @@ func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.S
 	if err != nil {
 		return err
 	}
-	if rec.Kind != domain.KindOrchestrator || rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionFailed {
+	if rec.Kind != domain.KindOrchestrator || rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionCancelled || rec.ProvisionState != domain.SessionProvisionFailed {
 		return nil
 	}
 	conv, err := s.ConversationForSession(ctx, id)
@@ -58,7 +58,7 @@ func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.S
 	msg := domain.ConversationMessage{
 		ID:             fmt.Sprintf("startup-failed-%x", sha256.Sum256([]byte(string(id)+"\x00"+conv.ID))),
 		ConversationID: conv.ID, SenderDisplayName: "AO",
-		Text: "AO could not finish starting this coordinator. Your conversation is preserved. Check the startup error shown with your request, resolve the reported setup, provider or permission problem, then choose Retry. Automatic startup attempts have stopped; do not resend the request.",
+		Text: "AO could not finish starting this coordinator. Your conversation is preserved. Why your input is needed: startup cannot continue until you resolve the reported problem. Check the startup error shown with your request, resolve the reported setup, provider or permission problem, then choose Retry. Automatic startup attempts have stopped; do not resend the request.",
 	}
 	_, err = s.recordCoordinatorHumanMessage(ctx, msg, "blocking_decision", "", id, now)
 	return err
@@ -81,7 +81,7 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 				return err
 			}
-			if rec.Kind != domain.KindOrchestrator || rec.ProjectID == nil || *rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionFailed {
+			if rec.Kind != domain.KindOrchestrator || rec.ProjectID == nil || *rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionCancelled || rec.ProvisionState != domain.SessionProvisionFailed {
 				return nil
 			}
 			conversation, err := q.SelectConversationByID(ctx, msg.ConversationID)

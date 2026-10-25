@@ -342,6 +342,8 @@ type SessionRecord struct {
 	// do. Sessions written before asynchronous spawn existed read back as
 	// SessionProvisionReady.
 	ProvisionState SessionProvisionState `json:"provisionState,omitempty" enum:"provisioning,ready,failed"`
+	// ProvisionCancelled records a cancelled startup across daemon recovery.
+	ProvisionCancelled bool `json:"-"`
 	// ProvisionError explains a failed start in the user's terms. It is kept on
 	// the row rather than discarded with it, because the user is already looking
 	// at the session by the time the start can fail.

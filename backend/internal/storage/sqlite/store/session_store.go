@@ -1022,17 +1022,18 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			Effort:                           row.Effort,
 			Permissions:                      domain.PermissionMode(row.SessionPermissions),
 		},
-		RequestedOutput:   domain.RequestedOutput(row.RequestedOutput),
-		CleanupGeneration: row.CleanupGeneration,
-		CreatedAt:         row.CreatedAt,
-		UpdatedAt:         row.UpdatedAt,
-		ProvisionState:    row.ProvisionState.WithDefault(),
-		ProvisionError:    row.ProvisionError,
-		ProvisionSteps:    decodeProvisionSteps(row.ProvisionSteps),
-		BranchState:       decodeBranchState(row.BranchState),
-		BranchNaming:      row.BranchNaming,
-		TemporaryBranch:   row.TemporaryBranch,
-		IsTaskPreparation: row.IsTaskPreparation,
+		RequestedOutput:    domain.RequestedOutput(row.RequestedOutput),
+		CleanupGeneration:  row.CleanupGeneration,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+		ProvisionState:     row.ProvisionState.WithDefault(),
+		ProvisionError:     row.ProvisionError,
+		ProvisionCancelled: row.ProvisionCancelled,
+		ProvisionSteps:     decodeProvisionSteps(row.ProvisionSteps),
+		BranchState:        decodeBranchState(row.BranchState),
+		BranchNaming:       row.BranchNaming,
+		TemporaryBranch:    row.TemporaryBranch,
+		IsTaskPreparation:  row.IsTaskPreparation,
 	}
 }
 
@@ -1317,4 +1318,13 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	// rather than trusting each caller's clock.
 	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
+}
+
+// SetSessionProvisionCancelled atomically records the failed start and cancellation
+// intent, so restart recovery cannot turn a user's stop into a setup failure.
+func (s *Store) SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionProvisionCancelled(ctx, gen.SetSessionProvisionCancelledParams{ID: id, UpdatedAt: now, ProvisionState: domain.SessionProvisionFailed, ProvisionCancelled: true, ProvisionError: "Startup cancelled."})
+	return rows > 0, err
 }

@@ -287,6 +287,9 @@ func (f *fakeStore) SetSessionProvisionState(_ context.Context, id domain.Sessio
 		return false, nil
 	}
 	rec.ProvisionState = state
+	if state == domain.SessionProvisionProvisioning || state == domain.SessionProvisionReady {
+		rec.ProvisionCancelled = false
+	}
 	rec.ProvisionError = message
 	rec.UpdatedAt = now
 	f.sessions[id] = rec
@@ -12025,4 +12028,14 @@ func TestPromptOutputContainsMatchesAStyledPrompt(t *testing.T) {
 	if promptOutputContains("\x1b[34mloading…\x1b[39m", []string{"│ >"}) {
 		t.Fatal("output without the prompt matched")
 	}
+}
+
+func (f *fakeStore) SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
+	ok, err := f.SetSessionProvisionState(ctx, id, domain.SessionProvisionFailed, "Startup cancelled.", now)
+	if ok {
+		rec := f.sessions[id]
+		rec.ProvisionCancelled = true
+		f.sessions[id] = rec
+	}
+	return ok, err
 }

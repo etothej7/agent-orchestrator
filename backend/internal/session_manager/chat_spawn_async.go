@@ -386,9 +386,15 @@ func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, c
 	if errors.As(cause, &setupErr) {
 		message = setupErr.Error()
 	}
+	if errors.Is(cause, context.Canceled) {
+		if _, err := m.store.SetSessionProvisionCancelled(cleanupCtx, id, m.clock()); err != nil {
+			m.logger.Error("spawn: record cancelled start", "sessionID", id, "error", err)
+		}
+		return
+	}
 	if _, err := m.setProvisionState(cleanupCtx, id, domain.SessionProvisionFailed, message); err != nil {
 		m.logger.Error("spawn: record failed start", "sessionID", id, "error", err)
-	} else if !errors.Is(cause, context.Canceled) {
+	} else {
 		m.recordChatStartupFailure(cleanupCtx, id)
 	}
 }
@@ -557,7 +563,7 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 	var failures []error
 	var retries []domain.SessionRecord
 	for _, rec := range recs {
-		if !rec.IsTerminated && rec.ProvisionState == domain.SessionProvisionFailed {
+		if !rec.IsTerminated && !rec.ProvisionCancelled && rec.ProvisionState == domain.SessionProvisionFailed {
 			m.recordChatStartupFailure(ctx, rec.ID)
 		}
 		if rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
@@ -610,6 +616,18 @@ func waitForWorkers(ctx context.Context, workers *sync.WaitGroup) error {
 }
 
 func (m *Manager) cancelAsyncChatSpawn(ctx context.Context, id domain.SessionID) error {
+	// Persist intent before interrupting provider I/O: recovery must not invent a
+	// setup failure if the daemon exits before the background goroutine settles.
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if ok && rec.ProvisionState.IsProvisioning() {
+		if _, err := m.store.SetSessionProvisionCancelled(ctx, id, m.clock()); err != nil {
+			return err
+		}
+	}
+
 	m.asyncChatSpawnsMu.Lock()
 	run := m.asyncChatSpawns[id]
 	m.asyncChatSpawnsMu.Unlock()
@@ -621,11 +639,11 @@ func (m *Manager) cancelAsyncChatSpawn(ctx context.Context, id domain.SessionID)
 			return ctx.Err()
 		}
 	}
-	rec, ok, err := m.store.GetSession(ctx, id)
+	rec, ok, err = m.store.GetSession(ctx, id)
 	if err != nil || !ok || !rec.ProvisionState.IsProvisioning() {
 		return err
 	}
-	_, err = m.setProvisionState(ctx, id, domain.SessionProvisionFailed, "Session start was cancelled")
+	_, err = m.store.SetSessionProvisionCancelled(ctx, id, m.clock())
 	return err
 }
 
