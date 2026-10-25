@@ -1,3 +1,4 @@
+import { isPersonalBuild } from "./main/personal-build";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
@@ -3304,7 +3305,7 @@ app.on("second-instance", (_event, argv) => {
 // A live updater additionally requires a signed + notarized build — see
 // frontend/docs/desktop-release.md.
 function initAutoUpdates(): void {
-	if (!app.isPackaged) return;
+	if (!app.isPackaged || isPersonalBuild(app.getVersion())) return;
 	const runFile = runFilePath();
 	if (!runFile) return;
 	const stateDir = path.dirname(runFile);
@@ -3364,7 +3365,8 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-	if (app.isPackaged) {
+	const personalBuild = isPersonalBuild(app.getVersion());
+	if (app.isPackaged && !personalBuild) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
 		await checkDesktopVersionFloor().catch((err) =>
 			console.warn("desktop version floor check failed:", err),
@@ -3400,7 +3402,7 @@ app.whenReady().then(async () => {
 		}
 	}
 
-	if (process.platform === "darwin" && app.isPackaged) {
+	if (process.platform === "darwin" && app.isPackaged && !personalBuild) {
 		const bundlePath = resolveBundlePath();
 		const action = decideRelocation({
 			inApplicationsFolder: app.isInApplicationsFolder(),
@@ -3446,7 +3448,7 @@ app.whenReady().then(async () => {
 		const { formatStaleAppCopies, retireStaleMacAppCopies } = await import("./main/stale-app-copies");
 		await retireStaleMacAppCopies({
 			platform: process.platform,
-			isPackaged: app.isPackaged,
+			isPackaged: app.isPackaged && !personalBuild,
 			runningPath: resolveBundlePath(),
 			runningVersion: app.getVersion(),
 			confirm: async (copies) => {
