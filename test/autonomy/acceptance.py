@@ -338,6 +338,7 @@ class Harness:
                 text += f'(deny network-outbound (remote ip "localhost:{port}"))\n'
             if self.args.mode == 'real':
                 text += '(allow network-outbound (remote tcp "*:443"))\n'
+                text += '(allow network-outbound (literal "/private/var/run/mDNSResponder"))\n'
         path = self.root / ('seed.sb' if seed else 'runtime.sb')
         path.write_text(text)
         return path

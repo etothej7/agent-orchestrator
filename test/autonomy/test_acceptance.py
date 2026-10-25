@@ -218,6 +218,25 @@ with socket.socket() as server:
             self.assertEqual(json.loads(result.stdout), {'privateHostConnected':True,'outsideDenied':True})
 
 
+    @unittest.skipUnless(a.sys.platform == 'darwin', 'macOS resolver socket test')
+    def test_real_mode_can_reach_only_named_system_resolver(self):
+        import tempfile, types, subprocess, sys
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='ao-dns-test-', dir='/private/tmp') as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory); h.port = 65530; h.protected_ports = set()
+            h.args = types.SimpleNamespace(mode='real', daemon=Path(sys.executable))
+            resolver = '(allow network-outbound (literal "/private/var/run/mDNSResponder"))'
+            self.assertNotIn(resolver, h.sandbox_profile(True).read_text())
+            profile = h.sandbox_profile(False)
+            self.assertIn(resolver, profile.read_text())
+            code = 'import socket; s=socket.socket(socket.AF_UNIX); s.connect("/private/var/run/mDNSResponder"); s.close()'
+            result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile), sys.executable, '-c', code], cwd=directory, capture_output=True, timeout=8)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            h.args.mode = 'mechanics'
+            self.assertNotIn(resolver, h.sandbox_profile(False).read_text())
+
+
 class ProcessEncodingTests(unittest.TestCase):
     def test_non_utf8_unrelated_environment_cannot_abort_cleanup(self):
         from unittest.mock import patch
