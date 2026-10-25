@@ -149,3 +149,7 @@ func (a testAgentRegistry) Agent(harness domain.AgentHarness) (ports.Agent, bool
 	agent, ok := a[harness]
 	return agent, ok
 }
+
+func (l integrationChatLauncher) RecordChatStartupFailure(ctx context.Context, id domain.SessionID) error {
+	return l.service.RecordStartupFailure(ctx, id)
+}

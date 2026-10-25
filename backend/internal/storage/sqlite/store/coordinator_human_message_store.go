@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -29,9 +31,71 @@ func (s *Store) CoordinatorHumanMessages(ctx context.Context, conversationID str
 // RecordCoordinatorHumanMessage atomically publishes one explicit decision and
 // its audience marker. A lost response is retryable without duplicate dialogue.
 func (s *Store) RecordCoordinatorHumanMessage(ctx context.Context, msg domain.ConversationMessage, purpose, storyID string, now time.Time) (string, error) {
+	return s.recordCoordinatorHumanMessage(ctx, msg, purpose, storyID, "", now)
+}
+
+// RecordCoordinatorStartupFailure exposes a daemon-owned blocker, not invented
+// agent dialogue. The original queued request remains available to Retry.
+func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.SessionID, now time.Time) error {
+	rec, found, err := s.GetSession(ctx, id)
+	if err != nil || !found {
+		return err
+	}
+	cfg, err := s.GetCoordination(ctx)
+	if err != nil {
+		return err
+	}
+	if rec.Kind != domain.KindOrchestrator || rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionFailed {
+		return nil
+	}
+	conv, err := s.ConversationForSession(ctx, id)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	msg := domain.ConversationMessage{
+		ID:             fmt.Sprintf("startup-failed-%x", sha256.Sum256([]byte(string(id)+"\x00"+conv.ID))),
+		ConversationID: conv.ID, SenderDisplayName: "AO",
+		Text: "AO could not finish starting this coordinator. Your conversation is preserved. Check the startup error shown with your request, resolve the reported setup, provider or permission problem, then choose Retry. Automatic startup attempts have stopped; do not resend the request.",
+	}
+	_, err = s.recordCoordinatorHumanMessage(ctx, msg, "blocking_decision", "", id, now)
+	return err
+}
+
+func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.ConversationMessage, purpose, storyID string, failedSession domain.SessionID, now time.Time) (string, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "record coordinator decision", func(q *gen.Queries) error {
+		if failedSession != "" {
+			rec, err := q.GetSession(ctx, failedSession)
+			if err != nil {
+				return err
+			}
+			raw, err := q.GetCoordination(ctx)
+			if err != nil {
+				return err
+			}
+			var cfg domain.CoordinationConfig
+			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+				return err
+			}
+			if rec.Kind != domain.KindOrchestrator || rec.ProjectID == nil || *rec.ProjectID != cfg.CoordinatorProjectID || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionFailed {
+				return nil
+			}
+			conversation, err := q.SelectConversationByID(ctx, msg.ConversationID)
+			if err != nil {
+				return err
+			}
+			owner := conversation.CurrentSessionID
+			if owner == nil {
+				owner = conversation.SessionID
+			}
+			if owner == nil || *owner != failedSession {
+				return nil
+			}
+		}
 		old, err := q.GetCoordinatorHumanMessage(ctx, msg.ID)
 		if err == nil {
 			event, eventErr := q.GetWorkspaceEvent(ctx, msg.ID)
@@ -49,7 +113,7 @@ func (s *Store) RecordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if storyID == "" {
+		if storyID == "" && failedSession == "" {
 			rows, err := q.ListWorkspaceStories(ctx)
 			if err != nil {
 				return err
@@ -63,7 +127,7 @@ func (s *Store) RecordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 					return apierr.Invalid("DECISION_STORY_REQUIRED", "Name the story whose work must pause for this decision", nil)
 				}
 			}
-		} else {
+		} else if storyID != "" {
 			row, err := q.GetWorkspaceStory(ctx, storyID)
 			if err != nil {
 				return err

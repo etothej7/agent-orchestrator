@@ -916,3 +916,7 @@ func (r reviewPRRefresher) RefreshPR(ctx context.Context, workerID domain.Sessio
 		return err
 	}
 }
+
+func (c chatLauncher) RecordChatStartupFailure(ctx context.Context, id domain.SessionID) error {
+	return c.svc.RecordStartupFailure(ctx, id)
+}

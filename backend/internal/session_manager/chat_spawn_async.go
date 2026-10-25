@@ -388,6 +388,18 @@ func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, c
 	}
 	if _, err := m.setProvisionState(cleanupCtx, id, domain.SessionProvisionFailed, message); err != nil {
 		m.logger.Error("spawn: record failed start", "sessionID", id, "error", err)
+	} else if !errors.Is(cause, context.Canceled) {
+		m.recordChatStartupFailure(cleanupCtx, id)
+	}
+}
+
+func (m *Manager) recordChatStartupFailure(ctx context.Context, id domain.SessionID) {
+	if recorder, ok := m.chat.(interface {
+		RecordChatStartupFailure(context.Context, domain.SessionID) error
+	}); ok {
+		if err := recorder.RecordChatStartupFailure(ctx, id); err != nil {
+			m.logger.Error("spawn: record actionable startup failure", "sessionID", id, "error", err)
+		}
 	}
 }
 
@@ -545,6 +557,9 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 	var failures []error
 	var retries []domain.SessionRecord
 	for _, rec := range recs {
+		if !rec.IsTerminated && rec.ProvisionState == domain.SessionProvisionFailed {
+			m.recordChatStartupFailure(ctx, rec.ID)
+		}
 		if rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
 			continue
 		}
@@ -552,6 +567,8 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 			"AO restarted before this session finished starting"); err != nil {
 			failures = append(failures, fmt.Errorf("session %s: %w", rec.ID, err))
 			retries = append(retries, rec)
+		} else {
+			m.recordChatStartupFailure(ctx, rec.ID)
 		}
 	}
 	return retries, errors.Join(failures...)

@@ -178,3 +178,17 @@ func (s *Service) isHumanCoordinator(ctx context.Context, project domain.Project
 	cfg, err := store.GetCoordination(ctx)
 	return cfg.CoordinatorProjectID != "" && cfg.CoordinatorProjectID == project, err
 }
+
+// RecordStartupFailure is invoked by lifecycle failure/recovery, not by an agent
+// API. Store validation keeps it actionable and idempotent across restart.
+func (s *Service) RecordStartupFailure(ctx context.Context, id domain.SessionID) error {
+	store, ok := s.store.(interface {
+		RecordCoordinatorStartupFailure(context.Context, domain.SessionID, time.Time) error
+	})
+	if !ok {
+		return nil
+	}
+	ctx, release := coordination.ReadLock(ctx, s.store)
+	defer release()
+	return store.RecordCoordinatorStartupFailure(ctx, id, s.now())
+}

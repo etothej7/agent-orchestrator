@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
 
@@ -170,5 +171,45 @@ func TestCoordinatorHumanHTTPPagesByVisibleItems(t *testing.T) {
 	third := read(second.OldestSequence)
 	if len(third.Messages) != 1 || third.Messages[0].ID != "human-1" || third.HasMoreBefore {
 		t.Fatal(third)
+	}
+}
+
+func TestCoordinatorStartupFailureHTTPIsActionablePrivateAndIdempotent(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.Stop(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.SetSessionProvisionState(ctx, testSession, domain.SessionProvisionProvisioning, "", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.svc.QueueUserMessage(ctx, testSession, ports.ChatUserMessage{Text: "Original queued outcome", Origin: domain.MessageOriginHuman, ClientMessageID: "original-startup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.SetSessionProvisionState(ctx, testSession, domain.SessionProvisionFailed, "PRIVATE_PROVIDER_STARTUP_DETAIL", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := h.svc.RecordStartupFailure(ctx, testSession); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation", nil))
+	body := w.Body.String()
+	if w.Code != 200 || strings.Count(body, "Automatic startup attempts have stopped") != 1 || strings.Contains(body, "PRIVATE_") || !strings.Contains(body, "Original queued outcome") || !strings.Contains(body, `"senderDisplayName":"AO"`) {
+		t.Fatal(w.Code, body)
+	}
+	actual, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || actual.State != domain.TurnStateQueued || actual.ProviderTurnID != "" {
+		t.Fatal(actual, err)
+	}
+	if len(h.conv.sentTexts()) != 0 {
+		t.Fatal("startup notice dispatched a prompt")
 	}
 }

@@ -388,7 +388,9 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && processalive.Alive(d.PID) {
 		return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, lastErr)
 	}
-	return nil, fmt.Errorf("start chat host: %w", lastErr)
+	// A missing descriptor is not proof that the detached child/provider died.
+	// Keep ownership uncertain and expose a bounded, actionable startup failure.
+	return nil, fmt.Errorf("%w: local agent host did not become ready within %s; startup probes stopped. Check local process/network permissions before retrying: %w", ErrOwnershipInconclusive, startupTimeout, lastErr)
 }
 
 // Reconcile terminates compatible authenticated hosts whose durable session no

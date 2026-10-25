@@ -2,6 +2,7 @@ package sessionmanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -213,5 +214,106 @@ func TestAsyncChatSpawnRealDrainFailureStaysRetryable(t *testing.T) {
 	defer retryConversation.mu.Unlock()
 	if len(retryConversation.sent) != 1 || retryConversation.sent[0].Text != "opening brief" {
 		t.Fatalf("explicit retry sent %+v, want original brief once", retryConversation.sent)
+	}
+}
+
+type failedStartupDriver struct {
+	integrationChatDriver
+	fail bool
+}
+
+func (d *failedStartupDriver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+	if d.fail {
+		return nil, fmt.Errorf("%w: local host did not become ready PRIVATE_PROVIDER_SENTINEL", ports.ErrChatRecoveryInconclusive)
+	}
+	return d.integrationChatDriver.Start(ctx, cfg)
+}
+
+func TestCoordinatorStartupFailurePreservesQueueAndPublishesOneActionableNotice(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st := sqlitetest.MustOpenAt(t, dataDir)
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: string(chatTestProject), Path: dataDir, Config: testRoleAgents(), RegisteredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: chatTestProject}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	provider := newIntegrationChatConversation("startup-retry-provider")
+	driver := &failedStartupDriver{integrationChatDriver: integrationChatDriver{harness: domain.HarnessCodex, start: func() ports.ChatConversation { return provider }}, fail: true}
+	var next atomic.Int64
+	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Drivers: integrationChatRegistry{domain.HarnessCodex: driver}, Log: slog.New(slog.DiscardHandler), NewID: func() string { return fmt.Sprintf("startup-notice-%d", next.Add(1)) }, Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, id string) (chatsvc.ConversationRows, error) {
+		rows, err := st.LoadConversationSnapshot(ctx, id)
+		return chatsvc.ConversationRows{Conversation: rows.Conversation, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, err
+	})})
+	t.Cleanup(func() { svc.StopAll(context.Background()) })
+	m := New(Deps{Runtime: &fakeRuntime{}, Agents: fakeAgents{}, Workspace: &fakeWorkspace{path: t.TempDir()}, Store: st, Messenger: &fakeMessenger{}, Chat: realQueueDrainLauncher{integrationChatLauncher{service: svc}}, Lifecycle: lifecycle.New(st, nil), DataDir: dataDir, LookPath: func(string) (string, error) { return "/bin/true", nil }, Logger: slog.New(slog.DiscardHandler)})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	jobs := deferredBackground(m)
+	cfg := asyncChatSpawnConfig("Original outcome: preserve exactly once")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*jobs)[0]()
+	stored, _, err := st.GetSession(ctx, rec.ID)
+	if err != nil || stored.ProvisionState != domain.SessionProvisionFailed {
+		t.Fatal(stored.ProvisionState, err)
+	}
+	conv, err := st.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := st.LoadConversationSnapshot(ctx, conv.ID)
+	if err != nil || len(snap.Turns) != 1 || snap.Turns[0].State != domain.TurnStateQueued || len(snap.Messages) != 2 {
+		t.Fatal("request or failure notice lost", snap.Turns, snap.Messages, err)
+	}
+	originalTurn := snap.Turns[0].ID
+	originalMessage := snap.Messages[0].ID
+	// Startup recovery retries publication without spawning or rewriting the task.
+	for range 2 {
+		if err := m.FailInterruptedProvisioning(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := svc.Snapshot(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := svc.HumanSnapshot(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	if strings.Count(body, "Automatic startup attempts have stopped") != 1 || strings.Contains(body, "PRIVATE_PROVIDER_SENTINEL") || !strings.Contains(body, originalMessage) {
+		t.Fatal(body)
+	}
+	driver.fail = false
+	if _, err := m.ResumeAgentWithMode(ctx, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range (*jobs)[1:] {
+		job()
+	}
+	if err := svc.DrainQueued(ctx, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	conv, err = st.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := st.LoadConversationSnapshot(ctx, conv.ID)
+	if err != nil || len(final.Turns) != 1 || final.Turns[0].ID != originalTurn {
+		t.Fatal("retry replaced task", final.Turns, err)
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.sent) != 1 || provider.sent[0].Text != "Original outcome: preserve exactly once" {
+		t.Fatal(provider.sent)
 	}
 }
