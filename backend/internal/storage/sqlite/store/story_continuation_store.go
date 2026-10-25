@@ -45,6 +45,15 @@ func (s *Store) SaveStoryContinuation(ctx context.Context, rec domain.StoryConti
 // ClaimStoryContinuation linearizes dispatch eligibility with the ledger claim.
 // A question, completion or assignment edit committed after the sweep read wins.
 func (s *Store) ClaimStoryContinuation(ctx context.Context, rec domain.StoryContinuation, storyRevision int64) (bool, error) {
+	return s.writeEligibleStoryContinuation(ctx, rec, storyRevision, nil)
+}
+
+// ResumeStoryContinuation commits the bounded retry and its public audit together.
+func (s *Store) ResumeStoryContinuation(ctx context.Context, rec domain.StoryContinuation, storyRevision int64, audit domain.StoryEvent) (bool, error) {
+	return s.writeEligibleStoryContinuation(ctx, rec, storyRevision, &audit)
+}
+
+func (s *Store) writeEligibleStoryContinuation(ctx context.Context, rec domain.StoryContinuation, storyRevision int64, audit *domain.StoryEvent) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	var n int64
@@ -65,7 +74,10 @@ func (s *Store) ClaimStoryContinuation(ctx context.Context, rec domain.StoryCont
 		} else {
 			n, err = q.UpdateStoryContinuation(ctx, gen.UpdateStoryContinuationParams{StoryID: rec.StoryID, Record: storyJSON(rec), Revision: rec.Revision})
 		}
-		return err
+		if err != nil || n != 1 || audit == nil {
+			return err
+		}
+		return q.CreateWorkspaceEvent(ctx, gen.CreateWorkspaceEventParams{ID: audit.ID, StoryID: audit.StoryID, Record: storyJSON(audit), Request: storyJSON(audit)})
 	})
 	return n == 1, err
 }

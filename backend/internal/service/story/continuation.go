@@ -23,6 +23,7 @@ type ContinuationStore interface {
 	GetStoryContinuation(context.Context, string) (domain.StoryContinuation, bool, error)
 	SaveStoryContinuation(context.Context, domain.StoryContinuation) (bool, error)
 	ClaimStoryContinuation(context.Context, domain.StoryContinuation, int64) (bool, error)
+	ResumeStoryContinuation(context.Context, domain.StoryContinuation, int64, domain.StoryEvent) (bool, error)
 }
 
 // ContinuationSender uses normal idempotent chat delivery.
@@ -208,6 +209,9 @@ func (c *Continuations) block(ctx context.Context, rec domain.StoryContinuation,
 	return err
 }
 func (c *Continuations) deferOrBlock(ctx context.Context, rec domain.StoryContinuation, now time.Time, reason string) error {
+	if rec.NextAt.After(now) {
+		return nil
+	} // CDC from our own ledger write is not a new retry deadline.
 	if rec.WaitingSince.IsZero() {
 		rec.WaitingSince = now
 	}
@@ -370,6 +374,16 @@ func (c *Continuations) Resume(ctx context.Context, storyID, recoveryID string, 
 	rec.WaitingSince = time.Time{}
 	rec.DeliveryAttempts = 0
 	rec.ProgressAttempts = 0
+	retiredTurn := ""
+	if rec.TurnID != "" {
+		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
+		if err == nil && (turn.State == domain.TurnStateInterrupted || turn.State == domain.TurnStateCancelled) {
+			retiredTurn = rec.TurnID
+			rec.TurnID = ""
+			rec.DeliveryID = ""
+			rec.Text = ""
+		}
+	}
 	// A known turn is inspected first. With no receipt, retry only the old key.
 	switch {
 	case rec.TurnID != "":
@@ -379,7 +393,11 @@ func (c *Continuations) Resume(ctx context.Context, storyID, recoveryID string, 
 	default:
 		rec.State = "ready"
 	}
-	saved, err := c.Store.SaveStoryContinuation(ctx, rec)
+	audit := domain.StoryEvent{ID: fmt.Sprintf("automation-recovery-%x", sha256.Sum256([]byte(storyID+"\x00"+recoveryID))), StoryID: storyID, Kind: "automation_recovery", RecipientSessionID: rec.RecipientSessionID, Reference: retiredTurn, Text: "Explicit bounded automation retry authorized; unresolved delivery remains protected.", Result: "authorized", CreatedAt: c.now()}
+	if retiredTurn != "" {
+		audit.Text = "Explicit bounded automation retry authorized after the stopped turn; its original receipt is retained in history."
+	}
+	saved, err := c.Store.ResumeStoryContinuation(ctx, rec, story.Revision, audit)
 	if err != nil {
 		return domain.StoryContinuationStatus{}, err
 	}

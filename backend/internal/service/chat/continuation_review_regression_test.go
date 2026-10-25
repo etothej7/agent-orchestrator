@@ -248,3 +248,192 @@ func TestAskHTTPAtomicallyPausesOwnedStoryUntilDeliveredAnswer(t *testing.T) {
 		t.Fatal("answer receipt did not settle pause", row, h.conv.sentTexts())
 	}
 }
+
+func TestStoppedContinuationAnswerAndExplicitResumeCreatesFreshTurn(t *testing.T) {
+	for _, state := range []domain.TurnState{domain.TurnStateInterrupted, domain.TurnStateCancelled} {
+		t.Run(string(state), func(t *testing.T) {
+			h, c, router := continuationHarness(t, true)
+			ctx := context.Background()
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			old := completeContinuation(t, h, state)
+			// First observe the stopped receipt; next sweep persists its one owned question.
+			for range 2 {
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row, _ := h.st.GetStory(ctx, "s")
+			blocked, _, _ := h.st.GetStoryContinuation(ctx, "s")
+			if row.Question == "" || blocked.State != "blocked" {
+				t.Fatal(row, blocked)
+			}
+			resume := fmt.Sprintf(`{"id":"explicit-stopped-recovery","revision":%d}`, blocked.Revision)
+			post := func(path, body string) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+				return w
+			}
+			if w := post("/api/v1/workspace/stories/s/continuation", resume); w.Code < 400 {
+				t.Fatal("resumed before pending decision answered")
+			}
+			answer := fmt.Sprintf(`{"id":"authorize-retry","storyId":"s","revision":%d,"kind":"answer","questionEventId":%q,"text":"Resume the authorized scope."}`, row.Revision, row.QuestionEventID)
+			if w := post("/api/v1/workspace/commands", answer); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			events, err := c.Stories.Events(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answerTurn domain.ConversationTurn
+			for _, event := range events {
+				if event.ID == "authorize-retry" {
+					answerTurn, err = h.st.TurnByID(ctx, event.Reference)
+				}
+			}
+			if err != nil || answerTurn.ID == "" {
+				t.Fatal(answerTurn, err)
+			}
+			h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: answerTurn.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+			h.awaitSnapshot(t, func(s sqlstore.ConversationSnapshot) bool {
+				for _, turn := range s.Turns {
+					if turn.ID == answerTurn.ID && turn.State == domain.TurnStateCompleted {
+						return true
+					}
+				}
+				return false
+			})
+			for range 2 {
+				if w := post("/api/v1/workspace/stories/s/continuation", resume); w.Code != 200 {
+					t.Fatal(w.Code, w.Body.String())
+				}
+			}
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			current, _, _ := h.st.GetStoryContinuation(ctx, "s")
+			if current.State != "waiting" || current.TurnID == old.TurnID || current.TurnID == answerTurn.ID || len(h.conv.sentTexts()) != 3 {
+				t.Fatal("explicit stopped recovery failed", current, h.conv.sentTexts())
+			}
+			if w := post("/api/v1/workspace/stories/s/continuation", resume); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.conv.sentTexts()) != 3 {
+				t.Fatal("recovery retry duplicated dispatch")
+			}
+			oldTurn, err := h.st.TurnByID(ctx, old.TurnID)
+			if err != nil || oldTurn.State != state {
+				t.Fatal("stopped receipt rewritten", oldTurn, err)
+			}
+			events, err = h.st.StoryEvents(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			audits := 0
+			for _, event := range events {
+				if event.Kind == "automation_recovery" {
+					audits++
+					if event.Reference != old.TurnID || event.Result != "authorized" {
+						t.Fatal(event)
+					}
+				}
+			}
+			if audits != 1 {
+				t.Fatal("missing or duplicate recovery audit", audits)
+			}
+		})
+	}
+}
+
+type unavailableContinuationTurn struct{ *sqlite.Store }
+
+func (s unavailableContinuationTurn) TurnByID(context.Context, string) (domain.ConversationTurn, error) {
+	return domain.ConversationTurn{}, errors.New("temporary read failure")
+}
+
+func TestWaitingContinuationBackoffDoesNotChurnLedgerOrCDC(t *testing.T) {
+	for _, mode := range []string{"running", "queued", "unknown"} {
+		t.Run(mode, func(t *testing.T) {
+			h, c, _ := continuationHarness(t, true)
+			ctx := context.Background()
+			if mode == "queued" {
+				if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "Existing work", ClientMessageID: "existing-work", Origin: domain.MessageOriginHuman}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			initial, _, _ := h.st.GetStoryContinuation(ctx, "s")
+			turn, err := h.st.TurnByID(ctx, initial.TurnID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "queued" && turn.State != domain.TurnStateQueued {
+				t.Fatal("not exercising queue", turn)
+			}
+			if mode == "running" && turn.State != domain.TurnStateRunning {
+				t.Fatal("not exercising running receipt", turn)
+			}
+			if mode == "unknown" {
+				c.Store = unavailableContinuationTurn{h.st}
+			}
+			seq, err := h.st.LatestSeq(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sends := len(h.conv.sentTexts())
+			for range 100 {
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			check, _, _ := h.st.GetStoryContinuation(ctx, "s")
+			after, _ := h.st.LatestSeq(ctx)
+			if check.Revision != initial.Revision || !check.NextAt.Equal(initial.NextAt) || after != seq || len(h.conv.sentTexts()) != sends {
+				t.Fatal("pre-deadline churn", initial, check, seq, after)
+			}
+			h.advance(time.Minute)
+			if err := c.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			due, _, _ := h.st.GetStoryContinuation(ctx, "s")
+			dueSeq, _ := h.st.LatestSeq(ctx)
+			if due.Revision != initial.Revision+1 || dueSeq != seq+1 {
+				t.Fatal("deadline should persist exactly once", due, seq, dueSeq)
+			}
+			for range 100 {
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			check, _, _ = h.st.GetStoryContinuation(ctx, "s")
+			after, _ = h.st.LatestSeq(ctx)
+			if check.Revision != due.Revision || after != dueSeq || len(h.conv.sentTexts()) != sends {
+				t.Fatal("own CDC caused a retry loop", check, dueSeq, after)
+			}
+			if mode == "running" {
+				h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateInterrupted})
+				h.awaitSnapshot(t, func(s sqlstore.ConversationSnapshot) bool {
+					for _, r := range s.Turns {
+						if r.ID == turn.ID && r.State == domain.TurnStateInterrupted {
+							return true
+						}
+					}
+					return false
+				})
+				if err := c.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				check, _, _ = h.st.GetStoryContinuation(ctx, "s")
+				if check.State != "blocked" {
+					t.Fatal("backoff hid stop", check)
+				}
+			}
+		})
+	}
+}
