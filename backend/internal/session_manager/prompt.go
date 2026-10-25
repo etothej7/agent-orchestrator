@@ -338,7 +338,8 @@ Your job is to complete the assigned task in this workspace. For implementation,
 
 Use `+"`ao report`"+` to persist meaningful progress for the active project orchestrator. `+"`AO_SESSION_ID`"+` selects this worker automatically.
 
-- After a meaningful milestone, run `+"`ao report --checkpoint --note <text>`"+`.
+- For informational progress within an unfinished phase, run `+"`ao report --checkpoint --note <text>`"+`.
+- Never use checkpoint for a phase boundary: report done, needs-input or stuck promptly so the owner can dispatch the next phase. Continue within already authorized scope without waiting for a routine confirmation.
 - When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
 - When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
 - When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.

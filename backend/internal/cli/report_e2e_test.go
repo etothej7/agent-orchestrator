@@ -71,7 +71,7 @@ func TestReportRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("persisted report: ok=%v err=%v", ok, err)
 	}
-	if got.SessionID != session.ID || got.ProjectID != session.ProjectID || got.State != domain.ReportDone || got.Note != "real boundary" || got.DeliveryState != domain.ReportPending || !got.AvailableAt.Equal(now.Add(domain.ReportSettlementWindow)) || !got.SettlementDeadline.Equal(got.AvailableAt) || got.RepeatCount != 1 || len(got.Outputs) != 3 || got.Outputs[1].Reference != "artifact-two" || got.Outputs[2].Kind != domain.ReportOutputPRReviewed {
+	if got.SessionID != session.ID || got.ProjectID != session.ProjectID || got.State != domain.ReportDone || got.Note != "real boundary" || got.DeliveryState != domain.ReportPending || !got.AvailableAt.Equal(now) || !got.SettlementDeadline.Equal(now.Add(domain.ReportSettlementWindow)) || got.RepeatCount != 1 || len(got.Outputs) != 3 || got.Outputs[1].Reference != "artifact-two" || got.Outputs[2].Kind != domain.ReportOutputPRReviewed {
 		t.Fatalf("persisted report = %+v", got)
 	}
 	persistedSession, ok, err := reopened.GetSession(ctx, session.ID)

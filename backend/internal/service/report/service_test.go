@@ -62,7 +62,7 @@ func TestCreateDerivesOwnershipAndFixedDeliveryDeadlines(t *testing.T) {
 		{name: "checkpoint batches for one hour", input: CreateInput{State: domain.ReportCheckpoint, Note: "checkpoint"}, available: now.Add(time.Hour)},
 		{name: "needs input is immediate", input: CreateInput{State: domain.ReportNeedsInput, Note: "decision"}, available: now},
 		{name: "stuck is immediate", input: CreateInput{State: domain.ReportStuck, Note: "blocked"}, available: now},
-		{name: "done settles for five minutes", input: CreateInput{State: domain.ReportDone, Note: "finished"}, available: now.Add(5 * time.Minute), settles: now.Add(5 * time.Minute)},
+		{name: "done wakes immediately and retains settlement metadata", input: CreateInput{State: domain.ReportDone, Note: "finished"}, available: now, settles: now.Add(5 * time.Minute)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

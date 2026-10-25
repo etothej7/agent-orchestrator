@@ -47,9 +47,11 @@ user-authorized scope.
 `--pr-created` and `--pr-reviewed` accept complete GitHub PR or GitLab MR URLs.
 
 `--needs-input` requests immediate non-interrupting delivery. `--stuck`
-requests immediate delivery plus a rate-limited interrupt. Informational work
-batches for up to one hour, while the first done report opens a fixed five
-minute settlement window.
+requests immediate delivery plus a rate-limited interrupt. `--done` also delivers
+immediately. Use done/needs-input/stuck at phase boundaries; never checkpoint.
+Informational checkpoints may batch for up to one hour, but cannot delay a
+phase-ending report. Continue already authorized work without waiting for a
+routine confirmation.
 
 **Examples:**
 

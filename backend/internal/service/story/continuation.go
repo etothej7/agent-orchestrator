@@ -125,7 +125,7 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if err != nil {
 		return err
 	}
-	checkpoint := continuationCheckpoint(s, events)
+	checkpoint := string(s.Status) + ":" + continuationCheckpoint(s, events)
 	if rec.State == "waiting" {
 		turn, err := c.Store.TurnByID(ctx, rec.TurnID)
 		if err != nil {
@@ -152,6 +152,19 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	// Do not discard an uncertain in-flight delivery, even when progress changed.
 	if rec.State != "sending" && rec.Checkpoint != checkpoint {
 		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
+	}
+	// A busy owner becoming available is a real eligibility change. Do not
+	// make the next phase wait out the polling backoff. Outstanding/uncertain
+	// receipts still take the protected paths above.
+	if rec.State == "ready" && !rec.WaitingSince.IsZero() && rec.NextAt.After(now) {
+		_, busy, err := c.owner(ctx, s)
+		if err != nil {
+			return err
+		}
+		if !busy {
+			rec.NextAt = time.Time{}
+			rec.WaitingSince = time.Time{}
+		}
 	}
 	if rec.NextAt.After(now) {
 		return nil

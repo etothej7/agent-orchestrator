@@ -224,6 +224,8 @@ func TestBuildSystemPrompt_WorkerRequiresDurableReports(t *testing.T) {
 		"ao report --stuck --note <text>",
 		"ao report --done --note <text>",
 		"Do not file a report for routine commands",
+		"Never use checkpoint for a phase boundary",
+		"Continue within already authorized scope without waiting for a routine confirmation",
 		"applies to `ao report` only",
 		"Keep routine test logs",
 		"Summarize validation in the report note",
