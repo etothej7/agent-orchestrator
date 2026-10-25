@@ -3523,6 +3523,16 @@ func (s *Store) LoadConversationSnapshotPage(
 	beforeSequence int64,
 	limit int64,
 ) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit, 0)
+}
+
+// LoadCoordinatorHumanSnapshotPage applies the public audience before LIMIT so
+// internal turns cannot displace human messages or create empty visible pages.
+func (s *Store) LoadCoordinatorHumanSnapshotPage(ctx context.Context, conversationID string, beforeSequence, limit int64) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit, 1)
+}
+
+func (s *Store) loadConversationSnapshotPage(ctx context.Context, conversationID string, beforeSequence, limit, humanOnly int64) (ConversationSnapshot, error) {
 	conv, err := s.qr.SelectConversationByID(ctx, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationSnapshot{}, ErrConversationNotFound
@@ -3575,6 +3585,7 @@ func (s *Store) LoadConversationSnapshotPage(
 	fetchLimit := limit + 1
 
 	messageRows, err := s.qr.SelectConversationMessagesPage(ctx, gen.SelectConversationMessagesPageParams{
+		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		BeforeSequence: beforeSequence,
 		PageLimit:      fetchLimit,
@@ -3583,6 +3594,7 @@ func (s *Store) LoadConversationSnapshotPage(
 		return ConversationSnapshot{}, fmt.Errorf("select message page: %w", err)
 	}
 	activityRows, err := s.qr.SelectConversationActivitiesPage(ctx, gen.SelectConversationActivitiesPageParams{
+		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		BeforeSequence: beforeSequence,
 		PageLimit:      fetchLimit,
@@ -3619,6 +3631,7 @@ func (s *Store) LoadConversationSnapshotPage(
 	}
 
 	turnRows, err := s.qr.SelectConversationTurnsPage(ctx, gen.SelectConversationTurnsPageParams{
+		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		OldestSequence: oldest,
 		BeforeSequence: beforeSequence,

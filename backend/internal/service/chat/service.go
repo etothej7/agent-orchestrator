@@ -56,6 +56,7 @@ type Service struct {
 	store                  Store
 	reader                 SnapshotReader
 	pageReader             SnapshotPageReader
+	humanPageReader        SnapshotPageReader
 	sessions               SessionReader
 	drivers                ports.ChatDriverRegistry
 	activity               ActivityRecorder
@@ -161,8 +162,10 @@ type Options struct {
 	Store      Store
 	Reader     SnapshotReader
 	PageReader SnapshotPageReader
-	Sessions   SessionReader
-	Drivers    ports.ChatDriverRegistry
+	// HumanPageReader preserves bounded pagination for the quiet coordinator view.
+	HumanPageReader SnapshotPageReader
+	Sessions        SessionReader
+	Drivers         ports.ChatDriverRegistry
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
@@ -212,6 +215,7 @@ func New(opts Options) *Service {
 		store:                  opts.Store,
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
+		humanPageReader:        opts.HumanPageReader,
 		sessions:               opts.Sessions,
 		drivers:                opts.Drivers,
 		activity:               opts.Activity,
@@ -2094,7 +2098,17 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		// old full read. Production always wires PageReader.
 		return s.Snapshot(ctx, id)
 	}
-	rows, err := s.pageReader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
+	reader := s.pageReader
+	if s.humanPageReader != nil {
+		human, err := s.isHumanCoordinator(ctx, record.ProjectID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if human {
+			reader = s.humanPageReader
+		}
+	}
+	rows, err := reader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}

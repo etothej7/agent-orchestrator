@@ -386,6 +386,25 @@ func Run(buildVersion string) error {
 				HasMoreBefore:                    rows.HasMoreBefore,
 			}, nil
 		}),
+		HumanPageReader: chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, conversationID string, beforeSequence, limit int64) (chatsvc.ConversationRows, error) {
+			rows, err := store.LoadCoordinatorHumanSnapshotPage(ctx, conversationID, beforeSequence, limit)
+			if err != nil {
+				return chatsvc.ConversationRows{}, err
+			}
+			return chatsvc.ConversationRows{
+				Conversation:                     rows.Conversation,
+				ActiveBranch:                     rows.ActiveBranch,
+				EditFloorSequence:                rows.EditFloorSequence,
+				NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
+				Turns:                            rows.Turns,
+				Messages:                         rows.Messages,
+				Activities:                       rows.Activities,
+				BranchPoints:                     rows.BranchPoints,
+				BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
+				OldestSequence:                   rows.OldestSequence,
+				HasMoreBefore:                    rows.HasMoreBefore,
+			}, nil
+		}),
 		Drivers: chatDrivers,
 		// The LCM satisfies ActivityRecorder directly: a chat turn is a pure
 		// lifecycle reduction, same as a hook signal from a terminal session.

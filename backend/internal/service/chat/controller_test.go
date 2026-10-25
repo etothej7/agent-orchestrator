@@ -79,7 +79,17 @@ func boundedSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
 	return chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, id string, before, limit int64) (chatsvc.ConversationRows, error) {
 		rows, err := st.LoadConversationSnapshotPage(ctx, id, before, limit)
 		return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch,
-			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, err
+			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities,
+			OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
+	})
+}
+
+func boundedHumanSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
+	return chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, id string, before, limit int64) (chatsvc.ConversationRows, error) {
+		rows, err := st.LoadCoordinatorHumanSnapshotPage(ctx, id, before, limit)
+		return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch,
+			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities,
+			OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
 	})
 }
 
@@ -3227,10 +3237,11 @@ func newHarnessWithConversationAndStoreForHarness(
 	)
 	chatStore := wrapStore(st)
 	svc := chatsvc.New(chatsvc.Options{
-		Store:      chatStore,
-		Reader:     fullSnapshotReader(st),
-		PageReader: boundedSnapshotReader(st),
-		Sessions:   st,
+		Store:           chatStore,
+		Reader:          fullSnapshotReader(st),
+		PageReader:      boundedSnapshotReader(st),
+		HumanPageReader: boundedHumanSnapshotReader(st),
+		Sessions:        st,
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)
 			return nil

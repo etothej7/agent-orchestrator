@@ -930,6 +930,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_turns.* FROM conversation_turns
 JOIN active_path AS path ON path.branch_id = conversation_turns.branch_id
 WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR (EXISTS (SELECT 1 FROM conversation_messages m JOIN coordinator_human_messages h ON h.message_id=m.id WHERE m.turn_id=conversation_turns.id) OR EXISTS (SELECT 1 FROM conversation_activities a WHERE a.turn_id=conversation_turns.id AND a.kind IN ('approval','user_input') AND a.status='pending')))
   AND conversation_turns.promoted_to_turn_id IS NULL
   AND (path.max_sequence IS NULL OR EXISTS (
       SELECT 1 FROM conversation_messages AS lineage_message
@@ -1304,6 +1305,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_messages.* FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
+  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id))
   AND conversation_messages.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (
@@ -1547,6 +1549,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_activities.* FROM conversation_activities
 JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
 WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
+  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR (conversation_activities.kind IN ('approval','user_input') AND conversation_activities.status='pending'))
   AND conversation_activities.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
   AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (

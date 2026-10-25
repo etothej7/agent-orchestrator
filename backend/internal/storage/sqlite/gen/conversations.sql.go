@@ -2151,7 +2151,8 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_activities.id, conversation_activities.conversation_id, conversation_activities.turn_id, conversation_activities.sequence, conversation_activities.revision, conversation_activities.kind, conversation_activities.status, conversation_activities.summary, conversation_activities.detail_json, conversation_activities.request_id, conversation_activities.provider_item_id, conversation_activities.created_at, conversation_activities.updated_at, conversation_activities.command_output, conversation_activities.command_output_truncated, conversation_activities.streamed_text, conversation_activities.streamed_text_truncated, conversation_activities.branch_id FROM conversation_activities
 JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
 WHERE conversation_activities.conversation_id = ?1
-  AND conversation_activities.sequence < ?2
+  AND (CAST(?2 AS INTEGER)=0 OR (conversation_activities.kind IN ('approval','user_input') AND conversation_activities.status='pending'))
+  AND conversation_activities.sequence < ?3
   AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
   AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (
       SELECT discarded.id FROM conversation_turns AS discarded
@@ -2162,17 +2163,23 @@ WHERE conversation_activities.conversation_id = ?1
         )
   ))
 ORDER BY conversation_activities.sequence DESC
-LIMIT ?3
+LIMIT ?4
 `
 
 type SelectConversationActivitiesPageParams struct {
 	ConversationID string
+	HumanOnly      int64
 	BeforeSequence int64
 	PageLimit      int64
 }
 
 func (q *Queries) SelectConversationActivitiesPage(ctx context.Context, arg SelectConversationActivitiesPageParams) ([]ConversationActivity, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationActivitiesPage, arg.ConversationID, arg.BeforeSequence, arg.PageLimit)
+	rows, err := q.db.QueryContext(ctx, selectConversationActivitiesPage,
+		arg.ConversationID,
+		arg.HumanOnly,
+		arg.BeforeSequence,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -3071,7 +3078,8 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = ?1
-  AND conversation_messages.sequence < ?2
+  AND (CAST(?2 AS INTEGER)=0 OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id))
+  AND conversation_messages.sequence < ?3
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (
       SELECT discarded.id FROM conversation_turns AS discarded
@@ -3083,17 +3091,23 @@ WHERE conversation_messages.conversation_id = ?1
         )
   ))
 ORDER BY conversation_messages.sequence DESC
-LIMIT ?3
+LIMIT ?4
 `
 
 type SelectConversationMessagesPageParams struct {
 	ConversationID string
+	HumanOnly      int64
 	BeforeSequence int64
 	PageLimit      int64
 }
 
 func (q *Queries) SelectConversationMessagesPage(ctx context.Context, arg SelectConversationMessagesPageParams) ([]ConversationMessage, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationMessagesPage, arg.ConversationID, arg.BeforeSequence, arg.PageLimit)
+	rows, err := q.db.QueryContext(ctx, selectConversationMessagesPage,
+		arg.ConversationID,
+		arg.HumanOnly,
+		arg.BeforeSequence,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -3529,6 +3543,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_turns.id, conversation_turns.conversation_id, conversation_turns.handled_by_session_id, conversation_turns.provider_turn_id, conversation_turns.controller_generation, conversation_turns.state, conversation_turns.error_message, conversation_turns.requested_at, conversation_turns.started_at, conversation_turns.completed_at, conversation_turns.diff_json, conversation_turns.rolled_back_at, conversation_turns.plan_json, conversation_turns.branch_id, conversation_turns.promotion_started_at, conversation_turns.promoted_to_turn_id, conversation_turns.retry_of_turn_id, conversation_turns.handled_by_review_id, conversation_turns.usage_limit_resets_at, conversation_turns.usage_limit_auto_resume, conversation_turns.usage_limit_resume_error FROM conversation_turns
 JOIN active_path AS path ON path.branch_id = conversation_turns.branch_id
 WHERE conversation_turns.conversation_id = ?1
+  AND (CAST(?2 AS INTEGER)=0 OR (EXISTS (SELECT 1 FROM conversation_messages m JOIN coordinator_human_messages h ON h.message_id=m.id WHERE m.turn_id=conversation_turns.id) OR EXISTS (SELECT 1 FROM conversation_activities a WHERE a.turn_id=conversation_turns.id AND a.kind IN ('approval','user_input') AND a.status='pending')))
   AND conversation_turns.promoted_to_turn_id IS NULL
   AND (path.max_sequence IS NULL OR EXISTS (
       SELECT 1 FROM conversation_messages AS lineage_message
@@ -3547,14 +3562,14 @@ WHERE conversation_turns.conversation_id = ?1
       SELECT turn_id FROM conversation_messages
       WHERE conversation_messages.conversation_id = ?1
         AND turn_id IS NOT NULL
-        AND conversation_messages.sequence >= ?2
-        AND conversation_messages.sequence < ?3
+        AND conversation_messages.sequence >= ?3
+        AND conversation_messages.sequence < ?4
       UNION
       SELECT turn_id FROM conversation_activities
       WHERE conversation_activities.conversation_id = ?1
         AND turn_id IS NOT NULL
-        AND conversation_activities.sequence >= ?2
-        AND conversation_activities.sequence < ?3
+        AND conversation_activities.sequence >= ?3
+        AND conversation_activities.sequence < ?4
     )
   )
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid
@@ -3562,6 +3577,7 @@ ORDER BY conversation_turns.requested_at, conversation_turns.rowid
 
 type SelectConversationTurnsPageParams struct {
 	ConversationID string
+	HumanOnly      int64
 	OldestSequence int64
 	BeforeSequence int64
 }
@@ -3569,7 +3585,12 @@ type SelectConversationTurnsPageParams struct {
 // Turns represented by one bounded timeline page. Active turns are included
 // even before their first item arrives, so the live-turn controls never vanish.
 func (q *Queries) SelectConversationTurnsPage(ctx context.Context, arg SelectConversationTurnsPageParams) ([]ConversationTurn, error) {
-	rows, err := q.db.QueryContext(ctx, selectConversationTurnsPage, arg.ConversationID, arg.OldestSequence, arg.BeforeSequence)
+	rows, err := q.db.QueryContext(ctx, selectConversationTurnsPage,
+		arg.ConversationID,
+		arg.HumanOnly,
+		arg.OldestSequence,
+		arg.BeforeSequence,
+	)
 	if err != nil {
 		return nil, err
 	}
