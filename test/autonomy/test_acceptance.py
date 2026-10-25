@@ -348,5 +348,52 @@ class PersistedFormatTests(unittest.TestCase):
         self.assertIsNone(a.report_delivery_timings(state)[0]['turnStartSeconds'])
 
 
+class DeterministicRemediationTests(unittest.TestCase):
+    def test_real_fixture_stays_failed_until_required_review_change(self):
+        import tempfile, subprocess, sys, os
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='ao-review-fixture-', dir='/private/tmp') as directory:
+            h = a.Harness.__new__(a.Harness)
+            h.root = Path(directory); h.repos = []; h.result = {}
+            h.env = {'PATH':'/usr/bin:/bin', 'HOME':directory, 'GIT_AUTHOR_NAME':'fixture', 'GIT_AUTHOR_EMAIL':'fixture@localhost',
+                     'GIT_COMMITTER_NAME':'fixture', 'GIT_COMMITTER_EMAIL':'fixture@localhost', 'PYTHONDONTWRITEBYTECODE':'1'}
+            h.fixtures()
+            fixture = h.repos[0]; repo = Path(fixture['path'])
+            checker = (repo/'check.py').read_bytes()
+            def check():
+                return subprocess.run([sys.executable, 'check.py', '--story-id', 'labels'], cwd=repo, env=h.env, capture_output=True).returncode
+            self.assertEqual(check(), 1)
+            source = "def normalize(value):\n    return value.strip().lower().replace(' ', '-')\nREVIEW_FIX_APPLIED = False\n"
+            (repo/'feature.py').write_text(source)
+            self.assertEqual(check(), 1)
+            (repo/'feature.py').write_text(source.replace('False', 'True'))
+            self.assertEqual(check(), 0)
+            self.assertEqual((repo/'check.py').read_bytes(), checker)
+
+    def test_chain_requires_failed_inspection_manager_route_new_commit_and_rereview(self):
+        import copy
+        old, final = 'a'*40, 'b'*40
+        at = lambda n: '2026-01-01T00:00:%02dZ' % n
+        events = [dict(id='finding',kind='review_failed',reference=old,senderSessionId='reviewer',createdAt=at(2)),
+                  dict(id='route',kind='handoff',result='delivered',reference='receipt',recipientSessionId='worker',senderSessionId='manager',createdAt=at(3)),
+                  dict(id='impl',kind='implementation',reference=final,senderSessionId='worker',createdAt=at(4)),
+                  dict(id='review',kind='review_passed',reference=final,senderSessionId='reviewer',createdAt=at(6))]
+        checks = [dict(actorId='worker',sha=old,exitCode=1,at=at(1)),dict(actorId='worker',sha=final,exitCode=0,at=at(5))]
+        inspections = [dict(reviewEventId='finding',sha=old,actorId='reviewer'),dict(reviewEventId='review',sha=final,actorId='reviewer')]
+        def chain(e=events,c=checks,i=inspections,sha=final,managers={'manager'},receipts={'route'}):
+            return a.review_remediation_chain(e,c,i,'worker','reviewer',sha,managers,receipts)
+        self.assertEqual(chain()['finalSha'], final)
+        self.assertIsNone(chain(e=[events[0],*events[2:]]))
+        self.assertIsNone(chain(i=inspections[1:]))
+        self.assertIsNone(chain(i=inspections[:1]))
+        self.assertIsNone(chain(sha=old))
+        self.assertIsNone(chain(managers={'other'}))
+        self.assertIsNone(chain(receipts=set()))
+        early = copy.deepcopy(checks); early[1]['at'] = at(2)
+        self.assertIsNone(chain(c=early))
+        passed = copy.deepcopy(checks); passed[0]['exitCode'] = 0
+        self.assertIsNone(chain(c=passed))
+
+
 if __name__ == '__main__':
     unittest.main()

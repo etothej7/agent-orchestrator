@@ -107,6 +107,32 @@ def classify_message(message):
     return 'non_actionable_or_unclassified'
 
 
+def review_remediation_chain(events, checks, inspections, worker, reviewer, final_sha, managers, handoff_ids):
+    if worker == reviewer:
+        return None
+    for finding in events:
+        old_sha, found_at = finding.get('reference', ''), stamp(finding.get('createdAt'))
+        if finding.get('kind') != 'review_failed' or finding.get('senderSessionId') != reviewer or not SHA.fullmatch(old_sha) or old_sha == final_sha or found_at is None:
+            continue
+        baseline = [c for c in checks if c['actorId'] == worker and c['sha'] == old_sha and c['exitCode'] != 0 and stamp(c['at']) is not None and stamp(c['at']) <= found_at]
+        inspected = [i for i in inspections if i.get('reviewEventId') == finding['id'] and i['sha'] == old_sha and i['actorId'] == reviewer]
+        if not baseline or not inspected:
+            continue
+        for handoff in events:
+            routed_at = stamp(handoff.get('createdAt'))
+            if handoff.get('id') not in handoff_ids or handoff.get('senderSessionId') not in managers or handoff.get('kind') not in ('handoff', 'message') or handoff.get('result') != 'delivered' or handoff.get('recipientSessionId') != worker or not handoff.get('reference') or routed_at is None or routed_at < found_at:
+                continue
+            passed = [c for c in checks if c['actorId'] == worker and c['sha'] == final_sha and c['exitCode'] == 0 and stamp(c['at']) is not None and stamp(c['at']) > routed_at]
+            implementations = [e for e in events if e.get('kind') == 'implementation' and e.get('reference') == final_sha and e.get('senderSessionId') == worker and stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) > routed_at]
+            for review in events:
+                reviewed_at = stamp(review.get('createdAt'))
+                final_inspected = any(i.get('reviewEventId') == review.get('id') and i['sha'] == final_sha and i['actorId'] == reviewer for i in inspections)
+                if passed and implementations and final_inspected and review.get('kind') == 'review_passed' and review.get('reference') == final_sha and review.get('senderSessionId') == reviewer and reviewed_at is not None and any(stamp(c['at']) < reviewed_at for c in passed):
+                    return {'findingEventId': finding['id'], 'initialSha': old_sha, 'handoffEventId': handoff['id'],
+                            'handoffReceipt': handoff['reference'], 'finalSha': final_sha, 'reviewEventId': review['id']}
+    return None
+
+
 def report_delivery_timings(state):
     messages = {m.get('client_message_id'): m for m in state['conversation_messages'] if m.get('client_message_id')}
     turns = {t['id']: t for t in state['conversation_turns']}
@@ -542,11 +568,12 @@ class Harness:
 
     def fixtures(self):
         for project, function, broken, contract in [
-            ('acceptance-labels', 'normalize', 'return value', "assert normalize('  HeLLo World  ') == 'hello-world'\nassert normalize('') == ''"),
+            ('acceptance-labels', 'normalize', 'return value', "assert normalize('  HeLLo World  ') == 'hello-world'\nassert normalize('') == ''\nimport feature\nassert feature.REVIEW_FIX_APPLIED is True"),
             ('acceptance-totals', 'total', 'return value', 'assert total(100) == 105\nassert total(0) == 0\nassert total(-4) == 0')]:
             repo = self.root / 'repos' / project
             repo.mkdir(parents=True)
-            (repo / 'feature.py').write_text(f'def {function}(value):\n    {broken}\n')
+            review_fixture = project == 'acceptance-labels'
+            (repo / 'feature.py').write_text(f'def {function}(value):\n    {broken}\n' + ('\nREVIEW_FIX_APPLIED = False\n' if review_fixture else ''))
             check_source = ("import argparse, json, os, subprocess, sys\n"
                 "p=argparse.ArgumentParser();p.add_argument('--story-id', required=True);args=p.parse_args()\n"
                 f"from feature import {function}\n"
@@ -560,12 +587,13 @@ class Harness:
                 'Work on a dedicated local branch/worktree. Run python3 check.py --story-id STORY_ID before editing and again AFTER the final commit. Record the real story ID, never a placeholder. '
                 'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
-                'Never invent evidence. Cap parallelism at four.\n')
+                'Never invent evidence. Cap parallelism at four.\n' +
+                ('DETERMINISTIC TWO-STAGE REVIEW FIXTURE: first fix normalize and commit, but keep REVIEW_FIX_APPLIED=False. Run the standalone check; it must fail at that implementation SHA. Hand that real failing implementation to the separate reviewer, who must inspect it with the standalone git show command and record review_failed for that exact SHA. Manager must deliver a story handoff back to the same developer describing the finding. Only after that delivered finding may the developer set REVIEW_FIX_APPLIED=True, commit a new SHA, run the standalone passing check, and obtain a fresh standalone inspection and review_passed at the new SHA from the same reviewer. Record both implementation SHAs. Do not edit check.py or skip the initial failed review. This deliberate fixture gate is part of the requested acceptance scenario, not a claim of an accidental defect.\n' if review_fixture else ''))
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
             self.git(repo, 'commit', '-m', 'test: seed intentionally failing acceptance contract')
             self.repos.append({'project': project, 'path': str(repo), 'base': self.git(repo, 'rev-parse', 'HEAD'),
-                               'contract': contract, 'function': function, 'checkHash': hashlib.sha256(check_source.encode()).hexdigest()})
+                               'contract': contract, 'function': function, 'requiresReviewRemediation': review_fixture, 'checkHash': hashlib.sha256(check_source.encode()).hexdigest()})
         self.result['fixtures'] = [{k: v for k, v in r.items() if k not in ('contract', 'function')} for r in self.repos]
 
     def bootstrap(self):
@@ -590,7 +618,7 @@ class Harness:
         prompt = ('Please deliver one local-only epic with at least two stories across the registered acceptance-labels '
             'and acceptance-totals repos. Fix normalize in labels to strip surrounding whitespace, lowercase and replace '
             'spaces with hyphens. Fix total in totals to add a five-unit fee to positive values and return zero otherwise. '
-            'Use repository managers, developer workers and separate independent reviewers. Run the existing failing '
+            'Use repository managers, developer workers and separate independent reviewers. Labels is a deliberate two-stage review fixture: first commit the behavior fix keeping REVIEW_FIX_APPLIED=False, record the real failed standalone check and ask the reviewer to inspect and record review_failed at that SHA. The manager must hand the finding back to the same developer before the developer sets REVIEW_FIX_APPLIED=True in a new commit, runs the passing standalone check, and gets same-reviewer re-review of the new SHA. Follow fixture AGENTS.md and never skip or fabricate this chain. Each check and git show proof must be its own standalone command, never batched. Run the existing failing '
             'check.py BEFORE editing, preserve its assertions, remediate failures/findings, commit code, verify each final '
             'SHA and record reviewed evidence-backed Done. No push, merge, publish or installation. Continue without '
             'status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. '
@@ -822,6 +850,7 @@ class Harness:
         turns = {t['id']: t for t in state['conversation_turns']}
         sessions = {r['id']: r for r in state['sessions']}
         provenance = []
+        review_chains = []
         all_events = [event for detail in details for event in detail.get('events', [])]
         for detail in details:
             story = detail['story']
@@ -851,8 +880,12 @@ class Harness:
                     continue
                 text = command.get('rawCommand', command.get('command', ''))
                 tokens = command_tokens(text)
-                if actor == reviewer and after_handoff(activity, reviewer_turns) and invokes_git_show(text, proof['sha']) and command.get('exitCode') == 0 and before_event(activity, proof['reviewAt']) and stamp(activity.get('created_at')) >= (stamp(proof['implementationAt']) or float('inf')):
-                    inspections.append({'activityId': activity['id'], 'turnId': activity['turn_id'], 'sha': proof['sha'], 'actorId': actor})
+                if actor == reviewer and after_handoff(activity, reviewer_turns) and command.get('exitCode') == 0:
+                    for review in events:
+                        sha = review.get('reference', '')
+                        implementations = [e for e in events if e.get('kind') == 'implementation' and e.get('reference') == sha and e.get('senderSessionId') == worker]
+                        if review.get('kind') in ('review_failed', 'review_passed') and review.get('senderSessionId') == reviewer and SHA.fullmatch(sha) and invokes_git_show(text, sha) and before_event(activity, review.get('createdAt')) and any(stamp(activity.get('created_at')) is not None and stamp(e.get('createdAt')) is not None and stamp(activity['created_at']) >= stamp(e['createdAt']) for e in implementations):
+                            inspections.append({'activityId': activity['id'], 'turnId': activity['turn_id'], 'sha': sha, 'actorId': actor, 'reviewEventId': review['id'], 'outcome': review['kind']})
                 if actor != worker or not after_handoff(activity, worker_turns) or not invokes_check(text, story['id']):
                     continue
                 output = activity.get('command_output', '') or command.get('output', '')
@@ -878,8 +911,21 @@ class Harness:
             remediation = any(stamp(p['at']) is not None and stamp(f['at']) is not None and stamp(p['at']) > stamp(f['at']) for p in passed for f in failed)
             provenance.append({'storyId': story['id'], 'workerHandoffs': worker_turns, 'reviewerHandoffs': reviewer_turns,
                                'actorChecks': checks, 'reviewInspections': inspections, 'remediation': remediation,
-                               'valid': bool(proof['valid'] and remediation and inspections and worker != reviewer)})
+                               'valid': bool(proof['valid'] and remediation and any(i['sha'] == proof['sha'] and i['outcome'] == 'review_passed' for i in inspections) and worker != reviewer)})
+            if fixture and fixture.get('requiresReviewRemediation'):
+                chain = review_remediation_chain(events, checks, inspections, worker, reviewer, proof['sha'],
+                                                 {a['sessionId'] for a in story.get('assignments', []) if a['role'] == 'manager'},
+                                                 {r['eventId'] for r in worker_turns.values()})
+                if chain:
+                    try:
+                        self.git(fixture['path'], 'merge-base', '--is-ancestor', chain['initialSha'], chain['finalSha'])
+                    except subprocess.SubprocessError:
+                        chain = None
+                review_chains.append({'storyId': story['id'], 'chain': chain})
         self.result['actorProvenance'] = provenance
+        if any(f.get('requiresReviewRemediation') for f in self.repos):
+            self.result['deterministicReviewRemediation'] = review_chains
+            self.check('deterministic_review_remediation', bool(review_chains) and all(c['chain'] for c in review_chains))
         self.check('per_story_actor_revision_provenance', len(provenance) >= 2 and all(p['valid'] for p in provenance))
         self.check('actual_failure_and_remediation', len(provenance) >= 2 and all(p['remediation'] for p in provenance))
 

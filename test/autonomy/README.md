@@ -126,3 +126,7 @@ are separate gates.
 ## Offline re-score
 
 `python3 test/autonomy/rescore.py ORIGINAL/result.json --output ARTIFACT_DIR/offline-rescore.json` reads the retained scratch DB and Git objects only. It does not launch providers, daemons or checks, and refuses to overwrite the original result. It labels the result as the same-run re-score, reconstructs worker-only concurrency from turn lifetimes, and separates report receipt timing from recipient turn start. Neither proves the next work dispatch. Known shell argv wrappers are unwrapped once; inner proof commands must still be standalone. A failed command with a nonzero exit code is valid failure evidence, never a passing check.
+
+## Deterministic reviewer remediation
+
+The labels fixture deliberately has two stages. Its first implementation must fix the requested behavior while retaining `REVIEW_FIX_APPLIED=False`, so the unchanged check still fails at that commit. A separate reviewer must inspect that SHA and record `review_failed`; the manager must deliver a handoff to the same developer. Only then may the developer change the gate to true in a new commit, run the unchanged passing check, and obtain re-review at the new SHA. The observer requires linked failed and passing command evidence, both reviewer inspections, the delivered manager route, distinct ancestor/final SHAs and final review. This controlled fixture is disclosed in the original request; no driver fabricates a failure, review, message or status. All proof commands must be standalone tool invocations.
