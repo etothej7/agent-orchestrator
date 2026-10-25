@@ -164,6 +164,9 @@ describe("local macOS package identity", () => {
  it("uses the supported ad-hoc identity without weakening strict seal verification", async () => {
   const options = await loadMacSignOptions({ APPLE_SIGNING_IDENTITY: "-" });
   expect(options).toMatchObject({ identity: "-", identityValidation: false, preAutoEntitlements: false, preEmbedProvisioningProfile: false, timestamp: "none", optionsForFile: expect.any(Function) });
+  for (const file of ["Example.app", "Example.app/Contents/Frameworks/Electron Framework.framework", acpNodeWith(thinMachO(CPU_TYPE_ARM64)), acpNodeWith(thinMachO(CPU_TYPE_X86_64))]) {
+   expect(options?.optionsForFile?.(file)).toMatchObject({ hardenedRuntime: false });
+  }
   expect(options).not.toHaveProperty("strictVerify", false);
   expect(options).not.toHaveProperty("continueOnError", true);
  });
@@ -171,6 +174,7 @@ describe("local macOS package identity", () => {
   const options = await loadMacSignOptions({ APPLE_SIGNING_IDENTITY: "Developer ID Application: Test" });
   expect(options).not.toHaveProperty("identityValidation", false);
   expect(options).not.toHaveProperty("preAutoEntitlements", false);
+  expect(options?.optionsForFile?.("Example.app")).not.toHaveProperty("hardenedRuntime", false);
  });
  it.each(["AO_NOTARY_PROFILE", "APPLE_API_KEY", "CSC_LINK"])("rejects %s with local ad-hoc signing", async key => {
   vi.stubEnv("APPLE_SIGNING_IDENTITY", "-");
