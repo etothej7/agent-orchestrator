@@ -258,11 +258,11 @@ func TestPhaseStatusCDCDispatchesWithoutHumanWake(t *testing.T) {
 // No report coordinator is running: only the production story-event CDC runner
 // can deliver this next manager turn. The normal report outbox remains pending.
 func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
-	for _, scenario := range []string{"worker", "reviewer", "busy-worker"} {
+	for _, scenario := range []string{"worker", "reviewer", "busy-worker", "active-worker"} {
 		busy := scenario == "busy-worker"
-		role := strings.TrimPrefix(scenario, "busy-")
+		role := strings.TrimPrefix(strings.TrimPrefix(scenario, "busy-"), "active-")
 		for _, state := range []domain.ReportState{domain.ReportDone, domain.ReportNeedsInput, domain.ReportStuck} {
-			if busy && state != domain.ReportDone {
+			if (busy || scenario == "active-worker") && state != domain.ReportDone {
 				continue
 			}
 			t.Run(scenario+"/"+string(state), func(t *testing.T) {
@@ -370,6 +370,12 @@ func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
 				case msg := <-sender.sent:
 					t.Fatal("checkpoint/unrelated story bypassed backoff", msg.ClientMessageID)
 				case <-time.After(100 * time.Millisecond):
+				}
+				if scenario == "active-worker" {
+					reporter.Activity.State = domain.ActivityActive
+					if err = db.UpdateSession(ctx, reporter); err != nil {
+						t.Fatal(err)
+					}
 				}
 				started := time.Now()
 				input := reportsvc.CreateInput{SessionID: reporter.ID, StoryID: story.ID, ClientReportID: "phase-report", State: state, Note: "actual phase result"}

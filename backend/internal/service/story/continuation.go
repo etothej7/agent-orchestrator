@@ -153,27 +153,23 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 	if rec.State != "sending" && rec.Checkpoint != checkpoint {
 		rec = domain.StoryContinuation{StoryID: s.ID, Revision: rec.Revision, RecoveryID: rec.RecoveryID, Generation: rec.Generation + 1, Checkpoint: checkpoint, State: "ready"}
 	}
-	// Status/report changes wake a settled phase, but are not implementation evidence
-	// and must never reset the bounded no-progress budget.
+	// A new status/report wakes a settled phase, not a new progress budget.
+	// Consume its cursor only with a fresh dispatch, never while the owner is
+	// still busy or an earlier send is uncertain.
+	phaseReportID := rec.PhaseReportID
+	phaseChanged, phaseWake := false, false
 	if rec.State == "ready" {
-		phaseReportID := ""
+		phaseReportID = ""
 		for _, event := range events {
 			if event.Kind == "report" && (event.Result == "done" || event.Result == "needs_input" || event.Result == "stuck") {
 				phaseReportID = event.ID
 			}
 		}
-		phaseChanged := rec.PhaseStatus != s.Status || rec.PhaseReportID != phaseReportID
-		rec.PhaseReportID = phaseReportID
-		rec.PhaseStatus = s.Status
-		if phaseChanged {
-			rec.NextAt = time.Time{}
-		}
+		phaseChanged = rec.PhaseStatus != s.Status || rec.PhaseReportID != phaseReportID
+		phaseWake = (phaseReportID != "" && rec.PhaseReportID != phaseReportID) || (rec.PhaseStatus != "" && rec.PhaseStatus != s.Status)
 	}
-	// A busy owner becoming available is a real eligibility change. Do not
-	// make the next phase wait out the polling backoff. Outstanding/uncertain
-	// receipts still take the protected paths above.
-	if rec.State == "ready" && !rec.WaitingSince.IsZero() && rec.NextAt.After(now) {
-		_, busy, err := c.owner(ctx, s)
+	if rec.State == "ready" && (phaseChanged || !rec.WaitingSince.IsZero()) {
+		_, busy, err := c.owner(ctx, s, phaseWake)
 		if err != nil {
 			return err
 		}
@@ -186,7 +182,7 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		return nil
 	}
 	if rec.State != "sending" {
-		target, busy, err := c.owner(ctx, s)
+		target, busy, err := c.owner(ctx, s, phaseWake)
 		if err != nil {
 			return err
 		}
@@ -196,6 +192,8 @@ func (c *Continuations) reconcile(ctx context.Context, s domain.Story) error {
 		if busy {
 			return c.deferOrBlock(ctx, rec, now, "An assigned agent remains active or blocked without advancing the story. Resolve its provider/permission blocker or change the assignment.")
 		}
+		rec.PhaseStatus = s.Status
+		rec.PhaseReportID = phaseReportID
 		rec.RecipientSessionID = target
 		rec.ProgressAttempts++
 		rec.DeliveryID = fmt.Sprintf("story-continue-%x-%d-%d", sha256.Sum256([]byte(s.ID+"\x00"+checkpoint)), rec.Generation, rec.ProgressAttempts)
@@ -252,7 +250,7 @@ func (c *Continuations) deferOrBlock(ctx context.Context, rec domain.StoryContin
 	return err
 }
 
-func (c *Continuations) owner(ctx context.Context, s domain.Story) (domain.SessionID, bool, error) {
+func (c *Continuations) owner(ctx context.Context, s domain.Story, phaseWake bool) (domain.SessionID, bool, error) {
 	var manager domain.SessionID
 	busy := false
 	for _, a := range s.Assignments {
@@ -265,7 +263,11 @@ func (c *Continuations) owner(ctx context.Context, s domain.Story) (domain.Sessi
 		}
 		// A blocked worker needs its manager to investigate. Do not inject
 		// into a manager's own active turn or permission dialog.
-		busy = busy || session.Activity.State == domain.ActivityActive || session.ProvisionState.IsProvisioning() || (a.Role == "manager" && session.Activity.State == domain.ActivityBlocked)
+		// Phase reports/status transitions are new manager input even if a
+		// worker is still finishing its turn. The recipient's own busy guard remains.
+		if !phaseWake || a.Role == "manager" {
+			busy = busy || session.Activity.State == domain.ActivityActive || session.ProvisionState.IsProvisioning() || (a.Role == "manager" && session.Activity.State == domain.ActivityBlocked)
+		}
 		if a.Role == "manager" {
 			manager = a.SessionID
 		}
