@@ -258,9 +258,14 @@ func TestPhaseStatusCDCDispatchesWithoutHumanWake(t *testing.T) {
 // No report coordinator is running: only the production story-event CDC runner
 // can deliver this next manager turn. The normal report outbox remains pending.
 func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
-	for _, role := range []string{"worker", "reviewer"} {
+	for _, scenario := range []string{"worker", "reviewer", "busy-worker"} {
+		busy := scenario == "busy-worker"
+		role := strings.TrimPrefix(scenario, "busy-")
 		for _, state := range []domain.ReportState{domain.ReportDone, domain.ReportNeedsInput, domain.ReportStuck} {
-			t.Run(role+"/"+string(state), func(t *testing.T) {
+			if busy && state != domain.ReportDone {
+				continue
+			}
+			t.Run(scenario+"/"+string(state), func(t *testing.T) {
 				db, err := sqlite.Open(t.TempDir())
 				if err != nil {
 					t.Fatal(err)
@@ -338,12 +343,17 @@ func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
 					}
 				}
 				before := waitReceipt(first.ClientMessageID)
-				if err = db.SettleTurnByID(ctx, before.TurnID, domain.TurnStateCompleted, "", time.Now()); err != nil {
-					t.Fatal(err)
+				finishManager := func() {
+					if err = db.SettleTurnByID(ctx, before.TurnID, domain.TurnStateCompleted, "", time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					manager.Activity.State = domain.ActivityIdle
+					if err = db.UpdateSession(ctx, manager); err != nil {
+						t.Fatal(err)
+					}
 				}
-				manager.Activity.State = domain.ActivityIdle
-				if err = db.UpdateSession(ctx, manager); err != nil {
-					t.Fatal(err)
+				if !busy {
+					finishManager()
 				}
 				reports := reportsvc.New(reportsvc.Deps{Store: db})
 				checkpoint, err := reports.Create(ctx, reportsvc.CreateInput{SessionID: reporter.ID, StoryID: story.ID, ClientReportID: "checkpoint", State: domain.ReportCheckpoint, Note: "informational"})
@@ -370,12 +380,30 @@ func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
 				if state == domain.ReportDone && !report.AvailableAt.After(started.Add(4*time.Minute)) {
 					t.Fatal("human-facing settlement was bypassed", report)
 				}
+				eligibleAt := started
+				if busy {
+					select {
+					case msg := <-sender.sent:
+						t.Fatal("busy receipt was bypassed", msg.ClientMessageID)
+					case <-time.After(50 * time.Millisecond):
+					}
+					waiting, _, e := db.GetStoryContinuation(ctx, story.ID)
+					if e != nil {
+						t.Fatal(e)
+					}
+					if waiting.TurnID != before.TurnID || waiting.PhaseReportID != "" {
+						t.Fatal("busy receipt/report wake lost", waiting)
+					}
+					eligibleAt = time.Now()
+					finishManager()
+				}
 				var next ports.ChatUserMessage
 				select {
 				case next = <-sender.sent:
 				case <-time.After(2 * time.Second):
 					t.Fatal("story report CDC waited for settlement/human")
 				}
+				dispatchedAt := time.Now()
 				after := waitReceipt(next.ClientMessageID)
 				if after.Generation != before.Generation || after.ProgressAttempts != before.ProgressAttempts+1 || after.PhaseReportID != "report-"+report.ID {
 					t.Fatal("report reset progress budget or lost durable identity", before, after)
@@ -400,7 +428,7 @@ func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
 					t.Fatal("duplicate report dispatched again", extra.ClientMessageID)
 				case <-time.After(50 * time.Millisecond):
 				}
-				t.Logf("%s %s report %s -> manager %s turn %s via CDC in %s; outbox remains pending", role, state, report.ID, manager.ID, after.TurnID, time.Since(started))
+				t.Logf("%s %s report %s -> manager %s turn %s via CDC in %s after eligibility (%s since report); outbox remains pending", scenario, state, report.ID, manager.ID, after.TurnID, dispatchedAt.Sub(eligibleAt), dispatchedAt.Sub(started))
 			})
 		}
 	}

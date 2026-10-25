@@ -4416,50 +4416,58 @@ func turnStateByText(t *testing.T, s store.ConversationSnapshot) map[string]doma
 // finishes. That has to be true of the daemon, not just of the placeholder: a
 // second turn/start against a busy provider is not a thing the agent can run.
 func TestSendWhileBusyQueuesUntilTheTurnEnds(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
+	for _, origin := range []domain.MessageOrigin{domain.MessageOriginHuman, domain.MessageOriginAutomation} {
+		t.Run(string(origin), func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
 
-	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-		Text: "first", ClientMessageID: "c1", Origin: domain.MessageOriginHuman,
-	}); err != nil {
-		t.Fatalf("first Send: %v", err)
-	}
-	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
-	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
-	})
+			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+				Text: "first", ClientMessageID: "c1", Origin: origin,
+			}); err != nil {
+				t.Fatalf("first Send: %v", err)
+			}
+			h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+			})
 
-	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-		Text: "second", ClientMessageID: "c2", Origin: domain.MessageOriginHuman,
-	})
-	if err != nil {
-		t.Fatalf("mid-turn Send: %v", err)
-	}
-	if queued.State != domain.TurnStateQueued {
-		t.Errorf("mid-turn send reported state %q, want queued", queued.State)
-	}
-	if queued.ProviderTurnID != "" {
-		t.Errorf("mid-turn send claimed provider turn %q; it was never dispatched", queued.ProviderTurnID)
-	}
-	if got := h.conv.sentTexts(); len(got) != 1 {
-		t.Fatalf("provider received %v; the second message must wait", got)
-	}
+			queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+				Text: "second", ClientMessageID: "c2", Origin: origin,
+			})
+			if err != nil {
+				t.Fatalf("mid-turn Send: %v", err)
+			}
+			if queued.State != domain.TurnStateQueued {
+				t.Errorf("mid-turn send reported state %q, want queued", queued.State)
+			}
+			if queued.ProviderTurnID != "" {
+				t.Errorf("mid-turn send claimed provider turn %q; it was never dispatched", queued.ProviderTurnID)
+			}
+			if got := h.conv.sentTexts(); len(got) != 1 {
+				t.Fatalf("provider received %v; the second message must wait", got)
+			}
 
-	// The running turn ends, so the queued message goes out on its own.
-	h.conv.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
-		TurnState: domain.TurnStateCompleted,
-	})
+			// The running turn ends, so the queued message goes out on its own.
+			eligibleAt := time.Now()
+			h.conv.emit(ports.ChatEvent{
+				Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+				TurnState: domain.TurnStateCompleted,
+			})
 
-	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["second"] == domain.TurnStateRunning
-	})
-	states := turnStateByText(t, snapshot)
-	if states["first"] != domain.TurnStateCompleted {
-		t.Errorf("first turn = %q, want completed", states["first"])
-	}
-	if got := h.conv.sentTexts(); len(got) != 2 || got[1] != "second" {
-		t.Fatalf("provider received %v, want the queued message dispatched second", got)
+			snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+				return turnStateByText(t, s)["second"] == domain.TurnStateRunning
+			})
+			if elapsed := time.Since(eligibleAt); elapsed > 2*time.Second {
+				t.Fatalf("queue added a fixed delay after completion: %s", elapsed)
+			}
+			states := turnStateByText(t, snapshot)
+			if states["first"] != domain.TurnStateCompleted {
+				t.Errorf("first turn = %q, want completed", states["first"])
+			}
+			if got := h.conv.sentTexts(); len(got) != 2 || got[1] != "second" {
+				t.Fatalf("provider received %v, want the queued message dispatched second", got)
+			}
+		})
 	}
 }
 
