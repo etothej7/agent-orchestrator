@@ -15,6 +15,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within }
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
+import { useCoordinatorJumpStore } from "../stores/coordinator-jump-store";
 import {
 	Sidebar,
 	SIDEBAR_DEFAULT_WIDTH,
@@ -597,6 +598,18 @@ describe("Sidebar", () => {
 				params: { projectId: "overall", sessionId: "coord-1" },
 			});
 			expect(spawnMock).not.toHaveBeenCalled();
+		});
+
+		it("asks the coordinator chat to land on what waits for Ed, only when it actually opens it", async () => {
+			useCoordinatorJumpStore.getState().clear();
+			renderSidebar({ workspaces: [overall], seed: configured });
+			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
+			expect(useCoordinatorJumpStore.getState().requestedAt).toBeDefined();
+			useCoordinatorJumpStore.getState().clear();
+			cleanup();
+			renderSidebar({ workspaces: [], seed: configured });
+			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
+			expect(useCoordinatorJumpStore.getState().requestedAt).toBeUndefined();
 		});
 
 		it("never starts or replaces a coordinator: with none running (or the list not loaded yet) it sends you to Home", async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { apiErrorMessage } from "../lib/api-client";
 import { useNavigateToSession } from "../lib/navigate-to-session";
+import { useCoordinatorJumpStore } from "../stores/coordinator-jump-store";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { newestActiveOrchestrator, type WorkspaceSummary } from "../types/workspace";
 import { useCoordinationQuery } from "./useCoordinationQuery";
@@ -28,6 +29,7 @@ export function useOpenMainCoordinator(workspaces: readonly Pick<WorkspaceSummar
 			const row = workspaces?.find((project) => project.id === projectId);
 			const existing = row && newestActiveOrchestrator(row.sessions);
 			if (existing) {
+				useCoordinatorJumpStore.getState().request();
 				navigate(projectId, existing.id);
 				return "opened";
 			}

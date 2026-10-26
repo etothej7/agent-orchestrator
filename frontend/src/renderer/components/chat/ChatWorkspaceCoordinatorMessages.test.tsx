@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useCoordinatorJumpStore } from "../../stores/coordinator-jump-store";
 import { typeInLexicalEditor } from "../../test/lexical";
 import { chatFixtureEmpty } from "../../lib/chat-fixture";
 import type { ConversationAudienceTag, ConversationItem, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
@@ -165,6 +166,91 @@ describe("the From your coordinator block", () => {
 		expect(screen.queryByRole("region", { name: /From your coordinator/ })).not.toBeInTheDocument();
 		rendered.rerender(view(items(true)));
 		expect(screen.getByRole("region", { name: "From your coordinator: Verified result" })).toBeInTheDocument();
+	});
+
+	it("keeps its place in a long paged page: tell inside the last, completed turn, older history still to load", () => {
+		const { turns, items } = manyEarlierTurns("human");
+		const snap = snapshot([
+			...items.map((item) => ({ ...item, sequence: item.sequence + 290 })),
+			message("u", "ed", 738, "user", "human", "it appears to have restarted", "human"),
+			message("a1", "ed", 739, "assistant", "provider", "You are on the new version.", "human"),
+			tell(742, "human"),
+			message("a2", "ed", 743, "assistant", "provider", "The send printed nothing.", "human"),
+			message("a3", "ed", 745, "assistant", "provider", "The update worked.", "human"),
+		], [...turns, turn("ed", 50, "completed", "human")]);
+		render(view({ ...snap, oldestSequence: 291, hasMoreBefore: true }));
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		expect(block.compareDocumentPosition(screen.getByText("The update worked.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(screen.getByText("it appears to have restarted").compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+});
+
+describe("jumping to what waits for Ed", () => {
+	const items = [
+		message("u", "ed", 10, "user", "human", "Hi", "human"),
+		tell(21, "human"),
+		message("a", "ed", 22, "assistant", "provider", "Done.", "human"),
+	];
+	const snap = () => snapshot(items, [turn("ed", 5, "completed", "human")]);
+	const renderWith = (outOfView: string[], reportVisible = vi.fn()) =>
+		render(<TooltipProvider><ChatWorkspace snapshot={snap()} coordinatorUnread={{ outOfView, reportVisible }} /></TooltipProvider>);
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		useCoordinatorJumpStore.getState().clear();
+	});
+
+	it("shows a pill with the count while something waits outside the viewport, and none otherwise", () => {
+		const rendered = renderWith(["tell"]);
+		expect(screen.getByRole("button", { name: "1 message from your coordinator" })).toBeInTheDocument();
+		rendered.unmount();
+		renderWith([]);
+		expect(screen.queryByRole("button", { name: /from your coordinator/ })).not.toBeInTheDocument();
+	});
+
+	it("pluralizes the pill", () => {
+		renderWith(["tell", "decision-q1"]);
+		expect(screen.getByRole("button", { name: "2 messages from your coordinator" })).toBeInTheDocument();
+	});
+
+	it("scrolls to the oldest and marks it for a moment", async () => {
+		renderWith(["tell"]);
+		await userEvent.click(screen.getByRole("button", { name: "1 message from your coordinator" }));
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		await waitFor(() => expect(block).toHaveClass("ring-2"));
+	});
+
+	it("lands on it when the chat is opened from the coordinator row (a fresh request), once", async () => {
+		useCoordinatorJumpStore.getState().request();
+		renderWith(["tell"]);
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		await waitFor(() => expect(block).toHaveClass("ring-2"));
+		expect(useCoordinatorJumpStore.getState().requestedAt).toBeUndefined();
+	});
+
+	it("ignores a stale request", async () => {
+		useCoordinatorJumpStore.setState({ requestedAt: Date.now() - 60_000 });
+		renderWith(["tell"]);
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(screen.getByRole("region", { name: "From your coordinator: Verified result" })).not.toHaveClass("ring-2");
+	});
+
+	it("reports a block as seen only once it is in the viewport, and unseen when it leaves or unmounts", () => {
+		let callback: IntersectionObserverCallback = () => undefined;
+		const disconnect = vi.fn();
+		vi.stubGlobal("IntersectionObserver", class {
+			constructor(cb: IntersectionObserverCallback) { callback = cb; }
+			observe() {}
+			disconnect = disconnect;
+		});
+		const reportVisible = vi.fn();
+		const rendered = renderWith(["tell"], reportVisible);
+		expect(reportVisible).not.toHaveBeenCalledWith("tell", true);
+		callback([{ intersectionRatio: 0.6 } as IntersectionObserverEntry], {} as IntersectionObserver);
+		expect(reportVisible).toHaveBeenLastCalledWith("tell", true);
+		callback([{ intersectionRatio: 0 } as IntersectionObserverEntry], {} as IntersectionObserver);
+		expect(reportVisible).toHaveBeenLastCalledWith("tell", false);
+		rendered.unmount();
+		expect(disconnect).toHaveBeenCalled();
 	});
 });
 

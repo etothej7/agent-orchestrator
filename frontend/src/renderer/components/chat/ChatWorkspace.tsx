@@ -1,6 +1,9 @@
 import { InternalActivity, isInternalGroup, isInternalItem } from "./InternalActivity";
 import { CoordinatorMessageBlock } from "./CoordinatorMessageBlock";
 import { CoordinatorAskContext, type CoordinatorAskControls, type CoordinatorAskStatus } from "./coordinator-asks";
+import { useJumpToCoordinatorMessage } from "./useJumpToCoordinatorMessage";
+import type { CoordinatorUnread } from "../../hooks/useReadCoordinatorTells";
+import { coordinatorJumpRequested, useCoordinatorJumpStore } from "../../stores/coordinator-jump-store";
 import { isCoordinatorMessage } from "../../lib/coordinator-messages";
 import { refreshCoordinatorBadge } from "../../lib/coordinator-badge";
 import { TurnWorkSummary } from "./TurnWorkSummary";
@@ -40,7 +43,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Lightbulb, Loader2, MessageSquareDot, MessageSquarePlus, TriangleAlert, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Lightbulb, Loader2, MessageSquareDot, MessageSquarePlus, TriangleAlert, Undo2, X } from "lucide-react";
 import { AnimatePresence, motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useChatSelectionPosition } from "../../hooks/useChatSelectionPosition";
@@ -425,6 +428,8 @@ export interface ChatWorkspaceProps {
 	) => void | Promise<unknown>;
 	/** Whether a coordinator question is still open; answered ones read as settled. */
 	askStatusOf?: (message: ConversationMessage) => CoordinatorAskStatus;
+	/** What waits for Ed outside the viewport, and the way blocks report being seen. */
+	coordinatorUnread?: CoordinatorUnread;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
 		requestId: string,
@@ -702,6 +707,7 @@ function ChatWorkspaceContent({
 	excerptsEnabled = false,
 	onSend,
 	askStatusOf,
+	coordinatorUnread,
 	onDecide,
 	onResolveInput,
 	onInterrupt,
@@ -1098,8 +1104,8 @@ function ChatWorkspaceContent({
 		composerFocusRef.current?.focus();
 	}, []);
 	const askControls = useMemo<CoordinatorAskControls>(
-		() => ({ statusOf: askStatusOf, answeringId: answering?.messageId, answer: startAnswering }),
-		[answering?.messageId, askStatusOf, startAnswering],
+		() => ({ statusOf: askStatusOf, answeringId: answering?.messageId, answer: startAnswering, reportVisible: coordinatorUnread?.reportVisible }),
+		[answering?.messageId, askStatusOf, coordinatorUnread?.reportVisible, startAnswering],
 	);
 	// Keep the dispatch target with this composer instance while attachment staging
 	// awaits. A newer queue editor must not redirect an older ordinary send.
@@ -1855,6 +1861,7 @@ function ChatWorkspaceContent({
 									localEchos={localEchos}
 									startup={sessionRole === "orchestrator" ? undefined : startup}
 									arriving={arrivingInChat}
+									coordinatorOutOfView={coordinatorUnread?.outOfView}
 								/>
 							</CoordinatorAskContext.Provider>
 							</ChatHostId.Provider>
@@ -2592,6 +2599,7 @@ export function Timeline({
 	localEchos = [],
 	startup,
 	arriving = false,
+	coordinatorOutOfView,
 }: {
 	onAddToSideChat?: ChatWorkspaceProps["onAddToSideChat"];
 	/** Replaces the default "Add to chat" (write to this draft scope's composer). */
@@ -2630,6 +2638,8 @@ export function Timeline({
 	startup?: ComponentProps<typeof SessionStartup> & { openingTurnId?: string };
 	/** An interface switch is bringing this conversation in; only then does the transcript fade in. */
 	arriving?: boolean;
+	/** Unread results and open questions outside the viewport, oldest first (main coordinator only). */
+	coordinatorOutOfView?: readonly string[];
 }) {
 	const hasTranscript = snapshot.items.length > 0;
 	const arrivedEmpty = useRef(false);
@@ -3530,6 +3540,23 @@ export function Timeline({
 		},
 	});
 	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = virtualized ? undefined : () => false;
+	const jumpToCoordinatorMessage = useJumpToCoordinatorMessage({
+		root: scrollContent,
+		indexOf: useCallback((messageId: string) => groups.findIndex((group) => group.items.some((item) => item.id === messageId)), [groups]),
+		scrollToIndex: useCallback((index: number) => { if (virtualized) virtualizer.scrollToIndex(index, { align: "center" }); }, [virtualized, virtualizer]),
+		hasOlder,
+		loadingOlder,
+		onLoadOlder,
+		stopFollow: releaseFollow,
+	});
+	// Opening the main coordinator lands on the oldest thing that waits for Ed.
+	const jumpRequestedAt = useCoordinatorJumpStore((state) => state.requestedAt);
+	const oldestOutOfView = coordinatorOutOfView?.[0];
+	useEffect(() => {
+		if (!oldestOutOfView || !coordinatorJumpRequested(jumpRequestedAt)) return;
+		// The request stays until the block is reached: the chat may still remount while it opens.
+		jumpToCoordinatorMessage(oldestOutOfView, () => useCoordinatorJumpStore.getState().clear());
+	}, [jumpRequestedAt, jumpToCoordinatorMessage, oldestOutOfView]);
 	const virtualRows = virtualizer.getVirtualItems();
 	const virtualHeight = virtualizer.getTotalSize();
 	renderedVirtualHeight.current = virtualHeight;
@@ -4256,6 +4283,18 @@ export function Timeline({
 				) : null}
 			</div>
 
+			{coordinatorOutOfView && coordinatorOutOfView.length > 0 ? (
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					onClick={() => jumpToCoordinatorMessage(coordinatorOutOfView[0]!)}
+					className="absolute top-3 left-1/2 -translate-x-1/2 gap-1.5 border-border-strong bg-raised text-foreground shadow-sm hover:bg-surface dark:bg-raised dark:hover:bg-surface"
+				>
+					<ArrowUp aria-hidden="true" className="size-3.5" />
+					{t("chat.coordinator.jump", { count: coordinatorOutOfView.length })}
+				</Button>
+			) : null}
 			{!pinned ? (
 				<Button
 					type="button"

@@ -1,5 +1,5 @@
 import { CheckCheck, CircleAlert, MessageSquareDot } from "lucide-react";
-import { useContext } from "react";
+import { useContext, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { coordinatorMessageKind, type CoordinatorMessageKind } from "../../lib/coordinator-messages";
 import type { ConversationMessage } from "../../types/conversation";
@@ -24,8 +24,28 @@ export function CoordinatorMessageBlock({ message }: { message: ConversationMess
 	const open = kind === "ask" ? status?.open ?? true : false;
 	const label = kind === "result" ? t("chat.coordinator.result") : kind === "stopped" ? t("chat.coordinator.stopped") : t("chat.coordinator.ask");
 	const answering = controls?.answeringId === message.id;
+	const element = useRef<HTMLElement>(null);
+	const reportVisible = controls?.reportVisible;
+	useEffect(() => {
+		if (!reportVisible) return;
+		const node = element.current;
+		// Without IntersectionObserver (tests) a mounted block counts as in view.
+		if (!node || typeof IntersectionObserver === "undefined") {
+			reportVisible(message.id, true);
+			return () => reportVisible(message.id, false);
+		}
+		const observer = new IntersectionObserver((entries) => {
+			for (const entry of entries) reportVisible(message.id, entry.intersectionRatio >= 0.25);
+		}, { threshold: [0, 0.25] });
+		observer.observe(node);
+		return () => {
+			observer.disconnect();
+			reportVisible(message.id, false);
+		};
+	}, [message.id, reportVisible]);
 	return (
 		<section
+			ref={element}
 			aria-label={`${t("chat.coordinator.from")}: ${label}`}
 			className="flex min-w-0 flex-col gap-1.5 rounded-md bg-secondary px-3 py-2.5"
 			data-coordinator-message={kind}
