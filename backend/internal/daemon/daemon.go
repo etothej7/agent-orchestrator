@@ -1125,7 +1125,6 @@ func Run(buildVersion string) error {
 	var usageLimitResumeDone <-chan struct{}
 	var storyContinuationsDone <-chan struct{}
 	var standingInstructionsDone <-chan struct{}
-	var askResolutionDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1180,7 +1179,6 @@ func Run(buildVersion string) error {
 		}()
 		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
 		standingInstructionsDone = startStandingInstructions(ctx, done, cdcPipe.Broadcaster, chatSvc, 30*time.Second, 5*time.Minute, 0, log)
-		askResolutionDone = startCoordinatorAskResolution(ctx, done, cdcPipe.Broadcaster, notificationWriter, 500*time.Millisecond, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone
 		go func() {
@@ -1230,9 +1228,6 @@ func Run(buildVersion string) error {
 	stop()
 	if standingInstructionsDone != nil {
 		<-standingInstructionsDone
-	}
-	if askResolutionDone != nil {
-		<-askResolutionDone
 	}
 	if storyContinuationsDone != nil {
 		<-storyContinuationsDone

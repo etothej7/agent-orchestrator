@@ -174,3 +174,37 @@ func TestTellSendsBoundedNoticeAndRetainsIdentity(t *testing.T) {
 		t.Fatal(requests)
 	}
 }
+
+func TestAskResolveSendsTheAskIDAndNoteAndNeedsAnID(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "coordinator")
+	if _, _, err := executeCLI(t, Deps{}, "ask", "resolve"); err == nil || ExitCode(err) != 2 {
+		t.Fatal("resolve without an id accepted", err)
+	}
+	cfg := setConfigEnv(t)
+	var requests []resolveHumanDecisionAPIRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/telemetry/cli-invoked" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.Path != "/api/v1/sessions/coordinator/conversation/human-decisions/resolve" {
+			t.Error(r.URL.Path)
+		}
+		var req resolveHumanDecisionAPIRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, req)
+		_, _ = io.WriteString(w, `{"id":"decision-scope"}`)
+	}))
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	for range 2 {
+		if _, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "ask", "resolve", "--id", "scope", "--note", "Ed chose Blue"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(requests) != 2 || requests[0] != requests[1] || requests[0].ID != "scope" || requests[0].Note != "Ed chose Blue" {
+		t.Fatal(requests)
+	}
+}

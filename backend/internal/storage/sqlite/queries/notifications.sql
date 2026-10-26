@@ -186,31 +186,23 @@ SET dismissed_at = CURRENT_TIMESTAMP,
 WHERE id = ?
   AND dismissed_at IS NULL;
 
--- A coordinator question is answered when Ed writes in that conversation after
--- it: a human request, or his own steer into a running turn. The question's
--- message id is carried by the notification's source key. The resolver runs on
--- conversation changes, so this holds for every way Ed can reply.
--- name: ResolveAnsweredCoordinatorAsks :many
+-- A coordinator question closes only when it is answered explicitly: Ed's reply
+-- names it, or the coordinator records it answered. An unrelated message never
+-- does. The question's message id is carried by the notification's source key.
+-- name: ResolveCoordinatorAsk :many
 UPDATE notifications
-SET resolved_at = sqlc.arg(resolved_at)
+SET resolved_at = sqlc.arg(resolved_at), resolution = sqlc.arg(resolution), resolution_note = sqlc.arg(resolution_note)
 WHERE type = 'coordinator_message'
   AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND source_key = sqlc.arg(source_key)
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND EXISTS (
-    SELECT 1 FROM conversation_messages ask
-    WHERE ask.id = substr(notifications.source_key, 21)
-      AND (
-        EXISTS (
-          SELECT 1 FROM coordinator_human_messages h
-          JOIN conversation_messages reply ON reply.id = h.message_id
-          WHERE h.purpose = 'human_request' AND reply.conversation_id = ask.conversation_id AND reply.sequence > ask.sequence)
-        OR EXISTS (
-          SELECT 1 FROM conversation_activities s
-          WHERE s.conversation_id = ask.conversation_id AND s.sequence > ask.sequence AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')='')
-      )
-  )
 RETURNING *;
+
+-- name: GetCoordinatorAskNotification :one
+SELECT * FROM notifications
+WHERE type = 'coordinator_message' AND source_key = ?
+LIMIT 1;
 
 -- name: CountUnresolvedCoordinatorAsks :one
 SELECT COUNT(*)

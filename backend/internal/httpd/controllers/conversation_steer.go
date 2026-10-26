@@ -49,9 +49,14 @@ func (c *ConversationsController) steerOrSend(w http.ResponseWriter, r *http.Req
 			attachmentErr.code, attachmentErr.message, nil)
 		return
 	}
+	session := domain.SessionID(chi.URLParam(r, "sessionId"))
+	askID, proceed := c.askReplyTarget(w, r, session, req.ReplyToAskID)
+	if !proceed {
+		return
+	}
 	result, err := svc.SteerOrSend(
 		r.Context(),
-		domain.SessionID(chi.URLParam(r, "sessionId")),
+		session,
 		ports.ChatUserMessage{
 			Text: req.Text, Content: content, ClientMessageID: req.ClientMessageID,
 			SenderSessionID: req.SenderSessionID, Origin: domain.MessageOriginHuman,
@@ -60,6 +65,9 @@ func (c *ConversationsController) steerOrSend(w http.ResponseWriter, r *http.Req
 	)
 	if err != nil {
 		writeSteerError(w, r, err)
+		return
+	}
+	if !c.finishAskReply(w, r, askID) {
 		return
 	}
 	response := SteerOrSendConversationResponse{Duplicate: result.Duplicate}
@@ -116,7 +124,12 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := c.Svc.Steer(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
+	session := domain.SessionID(chi.URLParam(r, "sessionId"))
+	askID, proceed := c.askReplyTarget(w, r, session, req.ReplyToAskID)
+	if !proceed {
+		return
+	}
+	result, err := c.Svc.Steer(r.Context(), session,
 		ports.ChatUserMessage{
 			Text:            req.Text,
 			Content:         content,
@@ -126,6 +139,9 @@ func (c *ConversationsController) steer(w http.ResponseWriter, r *http.Request) 
 		})
 	if err != nil {
 		writeSteerError(w, r, err)
+		return
+	}
+	if !c.finishAskReply(w, r, askID) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, SteerConversationResponse{

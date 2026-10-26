@@ -602,38 +602,27 @@ func TestCoordinatorNoticeDedupeAndStopCap(t *testing.T) {
 	if !errors.As(err, &limited) || limited.Code != "COORDINATOR_NOTICE_RATE_LIMITED" || !strings.Contains(limited.Message, "Retry after") {
 		t.Fatal("stop cap missing or silent", err)
 	}
-	// Questions: identical while unanswered, askable again once Ed has responded.
+	// Questions: identical while open, askable again once answered explicitly. An
+	// unrelated message from Ed does not count as an answer.
+	manager := notify.New(notify.Deps{Store: h.st})
+	svc = chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, Notifier: manager, Now: h.now})
 	q1 := record("q-1", "scope_question", "Blue or Green?")
 	if q2 := record("q-2", "scope_question", "Blue or Green?"); q2 != q1 {
 		t.Fatal("identical unanswered question was repeated")
 	}
 	h.advance(time.Second)
-	if _, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-answer", Origin: domain.MessageOriginHuman, Text: "Blue.", ClientMessageID: "ed-answer"}, "ed-answer-turn", h.now()); err != nil {
+	if _, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-unrelated", Origin: domain.MessageOriginHuman, Text: "Unrelated.", ClientMessageID: "ed-unrelated"}, "ed-unrelated-turn", h.now()); err != nil {
 		t.Fatal(err)
 	}
 	h.advance(time.Second)
-	if q3 := record("q-3", "scope_question", "Blue or Green?"); q3 == q1 {
-		t.Fatal("an answered question could not be asked again")
+	if q3 := record("q-3", "scope_question", "Blue or Green?"); q3 != q1 {
+		t.Fatal("an unrelated message let an open question be asked again")
 	}
-	// Answering by steering into a running turn is an answer too.
-	q4 := record("q-4", "scope_question", "Ship it today?")
-	if q5 := record("q-5", "scope_question", "Ship it today?"); q5 != q4 {
-		t.Fatal("identical unanswered question was repeated")
-	}
-	h.advance(time.Second)
-	conv := h.ctrl.ConversationID()
-	if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "batch", Origin: domain.MessageOriginAutomation, Text: "Reports", ClientMessageID: "report-batch:steer"}, "batch-turn", h.now()); err != nil {
+	if _, err := svc.ResolveHumanDecision(ctx, testSession, "q-1", "answered"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.st.BindTurnToProvider(ctx, "batch-turn", "batch-provider", h.now()); err != nil {
-		t.Fatal(err)
-	}
-	h.advance(time.Second)
-	if err := h.st.UpsertActivity(ctx, conv, "batch-provider", domain.ConversationActivity{ID: "steer-answer", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(`{"event":"steer","text":"Yes, today.","origin":"human"}`), ProviderItemID: "ao-steer:answer"}, h.now()); err != nil {
-		t.Fatal(err)
-	}
-	if q6 := record("q-6", "scope_question", "Ship it today?"); q6 == q4 {
-		t.Fatal("a question answered by a steer was swallowed on re-ask")
+	if q4 := record("q-4", "scope_question", "Blue or Green?"); q4 == q1 {
+		t.Fatal("an explicitly answered question could not be asked again")
 	}
 }
 
@@ -644,10 +633,11 @@ func (r *recordedNotificationEvents) Publish(_ context.Context, event domain.Not
 	return nil
 }
 
-// A coordinator question (ao ask) keeps its notification open until Ed writes in
-// that conversation (a message or a steer) or dismisses it; results and stops
-// are one-time facts and never become open items.
-func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
+// A coordinator question (ao ask) stays open until it is answered explicitly: Ed
+// names it (the Answer control), the coordinator records it, or he dismisses it.
+// An unrelated message or steer never closes it; results and stops are one-time
+// facts and never become open items.
+func TestCoordinatorAskNotificationsStayOpenUntilExplicitlyAnswered(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
@@ -662,7 +652,7 @@ func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
 			t.Fatal(id, err)
 		}
 	}
-	unresolved := func() (ids []string, asks int64) {
+	open := func() (keys []string, asks int64) {
 		t.Helper()
 		rows, err := h.st.ListNotifications(ctx, domain.NotificationListUnresolved, time.Time{}, "", 50)
 		if err != nil {
@@ -672,86 +662,210 @@ func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
 			if row.Type != domain.NotificationCoordinatorMessage || !domain.IsCoordinatorAskPurpose(row.Purpose) {
 				t.Fatal("only coordinator questions may be open items", row)
 			}
-			ids = append(ids, row.SourceKey)
+			keys = append(keys, row.SourceKey)
 		}
 		total, err := h.st.CountUnresolvedNotifications(ctx)
-		if err != nil || int(total) != len(ids) {
-			t.Fatal("unresolved count disagrees with the list", total, ids, err)
+		if err != nil || int(total) != len(keys) {
+			t.Fatal("unresolved count disagrees with the list", total, keys, err)
 		}
 		asks, err = h.st.CountUnresolvedCoordinatorAsks(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ids, asks
+		return keys, asks
 	}
 	record("ask-1", "scope_question", "Blue or Green?")
+	record("ask-2", "blocking_decision", "May I stop the labels work?")
+	record("ask-3", "completion_decision", "Is this done?")
 	record("result-1", "verified_result", "Labels verified at abc123.")
 	record("stop-1", "stopped_work", "Totals work stopped.")
-	if ids, asks := unresolved(); len(ids) != 1 || asks != 1 {
-		t.Fatal("the question must be open and the notices must not be", ids, asks)
+	if keys, asks := open(); len(keys) != 3 || asks != 3 {
+		t.Fatal("three questions must be open and the notices must not be", keys, asks)
 	}
-	// Nothing from Ed yet: the resolver leaves the question open.
-	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if ids, _ := unresolved(); len(ids) != 1 {
-		t.Fatal("question closed before Ed replied", ids)
-	}
-	// Ed replies in the coordinator conversation: the question closes and the
-	// closure is published; the notices were never open and are untouched.
-	h.advance(time.Second)
-	if _, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-reply", Origin: domain.MessageOriginHuman, Text: "Blue.", ClientMessageID: "ed-reply"}, "ed-reply-turn", h.now()); err != nil {
-		t.Fatal(err)
-	}
-	events.events = nil
-	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if ids, asks := unresolved(); len(ids) != 0 || asks != 0 {
-		t.Fatal("answered question stayed open", ids, asks)
-	}
-	if len(events.events) != 1 || events.events[0].Kind != domain.NotificationResolved || events.events[0].Record.Purpose != "scope_question" {
-		t.Fatal("resolution was not published", events.events)
-	}
-	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil || len(events.events) != 1 {
-		t.Fatal("resolution is not idempotent", err, len(events.events))
-	}
-	// A second question closes when Ed steers a running turn instead of sending.
-	record("ask-2", "blocking_decision", "May I stop the labels work?")
+
+	// Unrelated traffic from Ed, by message or by steer, never closes a question.
 	h.advance(time.Second)
 	conv := h.ctrl.ConversationID()
+	if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-unrelated", Origin: domain.MessageOriginHuman, Text: "Unrelated: how is the build?", ClientMessageID: "ed-unrelated"}, "ed-unrelated-turn", h.now()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "batch", Origin: domain.MessageOriginAutomation, Text: "Reports", ClientMessageID: "report-batch:x"}, "batch-turn", h.now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.st.BindTurnToProvider(ctx, "batch-turn", "batch-provider", h.now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+	if err := h.st.UpsertActivity(ctx, conv, "batch-provider", domain.ConversationActivity{ID: "steer-ed", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(`{"event":"steer","text":"Something else.","origin":"human"}`), ProviderItemID: "ao-steer:ed"}, h.now()); err != nil {
 		t.Fatal(err)
 	}
-	if ids, _ := unresolved(); len(ids) != 1 {
-		t.Fatal("an automation message answered the question", ids)
+	if keys, asks := open(); len(keys) != 3 || asks != 3 {
+		t.Fatal("an unrelated message or steer closed a question", keys, asks)
 	}
-	if err := h.st.UpsertActivity(ctx, conv, "batch-provider", domain.ConversationActivity{ID: "steer-ed", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(`{"event":"steer","text":"Yes, stop it.","origin":"human"}`), ProviderItemID: "ao-steer:ed"}, h.now()); err != nil {
+
+	// The Answer control names the question: the message id, or the bare ask id.
+	messageID, err := svc.ResolveAskReference(ctx, testSession, "decision-ask-1")
+	if err != nil || messageID != "decision-ask-1" {
+		t.Fatal("reply reference not recognised", messageID, err)
+	}
+	if bare, err := svc.ResolveAskReference(ctx, testSession, "ask-1"); err != nil || bare != messageID {
+		t.Fatal("bare ask id not recognised", bare, err)
+	}
+	for _, bad := range []string{"", "ed-unrelated", "decision-result-1", "decision-stop-1", "decision-nope", "ask-1 "} {
+		if bad == "ask-1 " {
+			continue // surrounding whitespace is trimmed and still names the question
+		}
+		if _, err := svc.ResolveAskReference(ctx, testSession, bad); err == nil {
+			t.Fatalf("reference %q must not name an open question", bad)
+		}
+	}
+	events.events = nil
+	if err := svc.ResolveAskReply(ctx, messageID); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+	if keys, asks := open(); len(keys) != 2 || asks != 2 {
+		t.Fatal("the answered question stayed open or others closed", keys, asks)
+	}
+	if len(events.events) != 1 || events.events[0].Kind != domain.NotificationResolved || events.events[0].Record.Resolution != domain.NotificationResolutionAnswered || events.events[0].Record.Purpose != "scope_question" {
+		t.Fatal("resolution was not published as answered", events.events)
+	}
+	// Replaying the reply is idempotent: nothing more is closed or published.
+	if err := svc.ResolveAskReply(ctx, messageID); err != nil || len(events.events) != 1 {
+		t.Fatal("reply replay is not idempotent", err, len(events.events))
+	}
+
+	// The coordinator records a free-text answer with a note; a replay is a no-op.
+	if _, err := svc.ResolveHumanDecision(ctx, testSession, "ask-2", "Ed said yes, stop it."); err != nil {
 		t.Fatal(err)
 	}
-	if ids, _ := unresolved(); len(ids) != 0 {
-		t.Fatal("a human steer did not answer the question", ids)
+	if _, err := svc.ResolveHumanDecision(ctx, testSession, "ask-2", "again"); err != nil {
+		t.Fatal("coordinator resolve replay must be idempotent", err)
 	}
+	if keys, _ := open(); len(keys) != 1 {
+		t.Fatal("the coordinator-resolved question stayed open", keys)
+	}
+	rows, err := h.st.ListNotifications(ctx, domain.NotificationListAll, time.Time{}, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.SourceKey == "coordinator-message:decision-ask-2" && (row.Resolution != domain.NotificationResolutionCoordinator || row.ResolutionNote != "Ed said yes, stop it." || !row.Resolved()) {
+			t.Fatal("coordinator resolution not recorded", row)
+		}
+	}
+	if len(events.events) != 2 {
+		t.Fatal("the replay published again", len(events.events))
+	}
+	// A message that is not a question cannot be resolved through the coordinator path.
+	if _, err := svc.ResolveHumanDecision(ctx, testSession, "result-1", ""); err == nil {
+		t.Fatal("a result notice was resolved like a question")
+	}
+
 	// Dismissal also takes a question off the open list.
-	record("ask-3", "completion_decision", "Is this done?")
-	rows, err := h.st.ListNotifications(ctx, domain.NotificationListUnresolved, time.Time{}, "", 10)
-	if err != nil || len(rows) != 1 {
-		t.Fatal(rows, err)
+	remaining, err := h.st.ListNotifications(ctx, domain.NotificationListUnresolved, time.Time{}, "", 10)
+	if err != nil || len(remaining) != 1 {
+		t.Fatal(remaining, err)
 	}
-	if _, found, err := h.st.DeleteNotification(ctx, rows[0].ID); err != nil || !found {
+	if _, found, err := h.st.DeleteNotification(ctx, remaining[0].ID); err != nil || !found {
 		t.Fatal(found, err)
 	}
-	if ids, asks := unresolved(); len(ids) != 0 || asks != 0 {
-		t.Fatal("a dismissed question stayed open", ids, asks)
+	if keys, asks := open(); len(keys) != 0 || asks != 0 {
+		t.Fatal("a dismissed question stayed open", keys, asks)
+	}
+}
+
+// Over HTTP: only a reply that names a question, or the coordinator's own resolve
+// call, closes it. An unrelated send leaves every question open.
+func TestCoordinatorAskResolutionOverHTTP(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct{ id, purpose, text string }{
+		{"ask-a", "scope_question", "Blue or Green?"},
+		{"ask-b", "blocking_decision", "May I stop?"},
+		{"ask-c", "completion_decision", "Done?"},
+	} {
+		if _, err := h.svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: q.id, Purpose: q.purpose, Question: q.text, WhyBlocked: "needed"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	post := func(path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+string(testSession)+path, strings.NewReader(body)))
+		return w
+	}
+	openCount := func() int64 {
+		t.Helper()
+		n, err := h.st.CountUnresolvedCoordinatorAsks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	stored := func(clientID string) bool {
+		t.Helper()
+		_, found, err := h.st.ConversationMessageByClientID(ctx, h.ctrl.ConversationID(), clientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	// An unrelated send closes nothing.
+	if w := post("/conversation/messages", `{"text":"Unrelated question about the build","clientMessageId":"unrelated-1"}`); w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if openCount() != 3 {
+		t.Fatal("an unrelated message closed a question", openCount())
+	}
+
+	// A reply naming an unknown or non-question id is refused before anything is sent.
+	for _, ref := range []string{"nope", "unrelated-1", "decision-nope"} {
+		w := post("/conversation/messages", `{"text":"Answer","clientMessageId":"bad-`+ref+`","replyToAskId":"`+ref+`"}`)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "INVALID_ASK_REFERENCE") {
+			t.Fatalf("reference %q: %d %s", ref, w.Code, w.Body.String())
+		}
+		if stored("bad-" + ref) {
+			t.Fatalf("a refused reply to %q was stored", ref)
+		}
+	}
+	if openCount() != 3 {
+		t.Fatal("a refused reply closed a question", openCount())
+	}
+
+	// The Answer control: the reply is delivered and exactly that question closes.
+	w := post("/conversation/messages", `{"text":"Blue, please.","clientMessageId":"answer-a","replyToAskId":"decision-ask-a"}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if !stored("answer-a") || openCount() != 2 {
+		t.Fatal("the reply was not stored or the wrong question closed", stored("answer-a"), openCount())
+	}
+	// Retrying the same reply (same client message id) neither sends nor closes more.
+	if w := post("/conversation/messages", `{"text":"Blue, please.","clientMessageId":"answer-a","replyToAskId":"decision-ask-a"}`); w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if openCount() != 2 {
+		t.Fatal("a replayed reply changed state", openCount())
+	}
+
+	// The coordinator records a free-text answer through the resolve endpoint.
+	if w := post("/conversation/human-decisions/resolve", `{"id":"ask-b","note":"Ed said stop"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "decision-ask-b") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if openCount() != 1 {
+		t.Fatal("the coordinator's resolve did not close the question", openCount())
+	}
+	if w := post("/conversation/human-decisions/resolve", `{"id":"ask-b"}`); w.Code != http.StatusOK || openCount() != 1 {
+		t.Fatal("resolve replay is not idempotent", w.Code, openCount())
+	}
+	if w := post("/conversation/human-decisions/resolve", `{"id":"unrelated-1"}`); w.Code != http.StatusBadRequest {
+		t.Fatal("resolve accepted a message that is not a question", w.Code, w.Body.String())
+	}
+	if w := post("/conversation/human-decisions/resolve", `{}`); w.Code != http.StatusBadRequest {
+		t.Fatal("resolve accepted an empty id", w.Code)
 	}
 }
 

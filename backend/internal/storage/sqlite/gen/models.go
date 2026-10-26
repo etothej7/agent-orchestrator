@@ -464,19 +464,21 @@ type ModelUsageEvent struct {
 }
 
 type Notification struct {
-	ID          string
-	SessionID   domain.SessionID
-	ProjectID   *domain.ProjectID
-	PRURL       string
-	Type        domain.NotificationType
-	Title       string
-	Body        string
-	Status      domain.NotificationStatus
-	CreatedAt   time.Time
-	ResolvedAt  sql.NullTime
-	DismissedAt sql.NullTime
-	SourceKey   string
-	Purpose     string
+	ID             string
+	SessionID      domain.SessionID
+	ProjectID      *domain.ProjectID
+	PRURL          string
+	Type           domain.NotificationType
+	Title          string
+	Body           string
+	Status         domain.NotificationStatus
+	CreatedAt      time.Time
+	ResolvedAt     sql.NullTime
+	DismissedAt    sql.NullTime
+	SourceKey      string
+	Purpose        string
+	Resolution     string
+	ResolutionNote string
 }
 
 type PR struct {

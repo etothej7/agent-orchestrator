@@ -79,6 +79,11 @@ ao tell --id label-stopped --kind stopped --message 'Totals work stopped: the fi
 
 Retain `--id` on retry; a retry never notifies twice. `ao tell` never pauses a story.
 
+A question stays open until it is answered explicitly: the human uses the Answer
+control on it, or the coordinator records it with `ao ask resolve --id <ask-id>
+[--note '<what was answered>']` after a free-text answer. An unrelated message never
+closes it. Resolving is idempotent and only for the coordinator's own questions.
+
 Only the overall coordinator can use `ao ask` and `ao tell`. Include `--story <story-id>`
 for adopted work: the decision and its requester-owned story pause are persisted
 atomically, and normal answer delivery resolves that exact question. An unscoped

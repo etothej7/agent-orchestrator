@@ -2242,9 +2242,14 @@ type NotificationResponse struct {
 	// Purpose is set only for coordinator_message notifications: the ao ask
 	// purposes (scope_question, blocking_decision, completion_decision) or the
 	// ao tell purposes (verified_result, stopped_work).
-	Purpose   string    `json:"purpose,omitempty" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
-	Status    string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
-	CreatedAt time.Time `json:"createdAt"`
+	Purpose string `json:"purpose,omitempty" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
+	// Resolution says how a resolved coordinator question was closed: answered (the
+	// reply named it) or coordinator (the coordinator recorded it answered).
+	Resolution string `json:"resolution,omitempty" enum:"answered,coordinator"`
+	// ResolutionNote is the coordinator's optional note when it recorded the answer.
+	ResolutionNote string    `json:"resolutionNote,omitempty"`
+	Status         string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
+	CreatedAt      time.Time `json:"createdAt"`
 	// ResolvedAt is set by AO when the underlying issue goes away (the session
 	// received its input, the PR stopped waiting on a merge). Absent means the
 	// issue is still open. There is no user-facing action that sets it.
@@ -2692,6 +2697,10 @@ type SendConversationMessageRequest struct {
 	Excerpts        []ConversationExcerptReferenceRequest `json:"excerpts,omitempty"`
 	// Continuation marks the user's request to continue an interrupted task.
 	Continuation bool `json:"continuation,omitempty"`
+	// ReplyToAskID answers one open coordinator question (the Answer control): the
+	// id of the question's conversation message (decision-<id>) or the bare ask id.
+	// An unknown or non-question id is rejected before anything is sent.
+	ReplyToAskID string `json:"replyToAskId,omitempty"`
 }
 
 // ConversationExcerptReferenceRequest attaches verified selected transcript
@@ -2798,6 +2807,8 @@ type SteerConversationRequest struct {
 	// RecoverOnly reads the saved result for ClientMessageID without contacting the
 	// provider. Native image bytes need not be resent after a renderer restart.
 	RecoverOnly bool `json:"recoverOnly,omitempty"`
+	// ReplyToAskID answers one open coordinator question, as on a send.
+	ReplyToAskID string `json:"replyToAskId,omitempty"`
 }
 
 // SteerConversationResponse reports the turn the guidance joined.
@@ -3932,6 +3943,14 @@ type HumanDecisionRequest struct {
 	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
 	Question   string `json:"question"`
 	WhyBlocked string `json:"whyBlocked,omitempty"`
+}
+
+// ResolveHumanDecisionRequest records that Ed answered one of the coordinator's questions.
+type ResolveHumanDecisionRequest struct {
+	// ID is the question's ask id (as given to ao ask --id) or its message id.
+	ID string `json:"id"`
+	// Note is an optional short note, for example a summary of the answer.
+	Note string `json:"note,omitempty"`
 }
 
 // HumanDecisionResponse identifies the durable human-facing decision.
