@@ -232,7 +232,7 @@ export function NotificationRuntime() {
 				continue; // Reconnecting to a host must not replay its existing inbox.
 			}
 			for (const notification of host.data.notifications) {
-				if (previousIds.has(notification.id) || !isBellNotification(notification)) continue;
+				if (previousIds.has(notification.id) || notification.type === "coordinator_message") continue;
 				const id = `${REMOTE_NOTIFICATION_PREFIX}${notificationKey(host.hostId, notification.id)}`;
 				shownRemoteNotifications.current.set(id, notification);
 				if (shownRemoteNotifications.current.size > 256) {
@@ -377,7 +377,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const visibleUnreadIds = useMemo(() => {
 		const ids = new Set<string>();
 		for (const item of getCachedNotifications(unreadQuery.data)) {
-			if (item.status === "unread" && isBellNotification(item)) ids.add(item.id);
+			// Dropped routine types are still acknowledged on open so the server count does not drift;
+			// coordinator messages are not: only seeing them in the chat clears them.
+			if (item.status === "unread" && item.type !== "coordinator_message") ids.add(item.id);
 		}
 		for (const item of notifications) {
 			if (item.status === "unread") ids.add(item.id);

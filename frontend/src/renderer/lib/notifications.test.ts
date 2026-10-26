@@ -977,6 +977,13 @@ describe("coordinator message helpers", () => {
 		expect(getBellUnreadCount(cache([coordinator("stopped_work", "unread")], 1))).toBe(0);
 	});
 
+	it("lists only needs_input and ready_to_merge; routine progress and coordinator messages are dropped", () => {
+		const types = ["needs_input", "ready_to_merge", "review_changes_requested", "review_completed", "pr_merged", "pr_closed_unmerged", "coordinator_message"] as const;
+		expect(types.filter((type) => isBellNotification({ type }))).toEqual(["needs_input", "ready_to_merge"]);
+		const unread = types.map((type) => notification({ id: type, type, status: "unread" }));
+		expect(getBellUnreadCount(cache(unread, unread.length))).toBe(2);
+	});
+
 	it("badge = open questions (from the daemon) + unread results and stops", () => {
 		const items = [coordinator("verified_result", "unread"), coordinator("stopped_work", "read"), coordinator("blocking_decision", "unread"), notification({ id: "agent", status: "unread" })];
 		expect(getCoordinatorBadgeCount(cache(items, 3, 2))).toBe(3);

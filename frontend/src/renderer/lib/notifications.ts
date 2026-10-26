@@ -474,17 +474,26 @@ export function getCachedNotifications(cache: NotificationsCache | undefined): N
 }
 
 /**
- * What the bell lists. A coordinator message (`ao tell` / `ao ask`) lives in the chat and on the
- * Dock badge, never in the bell, so nothing in the bell asks for attention on its behalf.
+ * Types the bell does not list (client filter; the daemon still creates them). A coordinator message
+ * lives in the chat and on the Dock badge; the rest are routine progress. Only `needs_input` and
+ * `ready_to_merge` stay, as quiet rows that alert nothing.
  */
+const NOT_IN_BELL: ReadonlySet<string> = new Set([
+	"coordinator_message",
+	"review_changes_requested",
+	"review_completed",
+	"pr_merged",
+	"pr_closed_unmerged",
+]);
+
 export function isBellNotification(notification: Pick<NotificationDTO, "type">): boolean {
-	return notification.type !== "coordinator_message";
+	return !NOT_IN_BELL.has(notification.type);
 }
 
-/** The unread count the bell shows: the server's total minus the coordinator messages it carries. */
+/** The unread count the bell shows: the server's total minus the cached unread rows the bell does not list. */
 export function getBellUnreadCount(cache: NotificationsCache | undefined): number {
-	const coordinatorUnread = getCachedNotifications(cache).filter((item) => !isBellNotification(item) && item.status === "unread").length;
-	return Math.max(0, getCachedUnreadCount(cache) - coordinatorUnread);
+	const hidden = getCachedNotifications(cache).filter((item) => !isBellNotification(item) && item.status === "unread").length;
+	return Math.max(0, getCachedUnreadCount(cache) - hidden);
 }
 
 /** Coordinator results and stops Ed has not seen in the chat yet. */
@@ -599,7 +608,7 @@ export function createNotificationsTransport(
 				const inserted = mergeUnreadNotification(queryClient, event.notification);
 				mergeRecentNotification(queryClient, event.notification);
 				// A coordinator message never reaches the OS: no banner, bounce or sound (see isBellNotification).
-				if (inserted && isBellNotification(event.notification)) {
+				if (inserted && event.notification.type !== "coordinator_message") {
 					void aoBridge.notifications.show({
 						id: event.notification.id,
 						title: event.notification.title,

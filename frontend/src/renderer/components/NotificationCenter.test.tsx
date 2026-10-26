@@ -725,6 +725,25 @@ describe("NotificationCenter", () => {
 			}
 		});
 
+		it("also drops routine progress types from the bell and its unread number, keeping needs_input and ready_to_merge", async () => {
+			const routine = (type: NotificationDTO["type"]): NotificationDTO => ({
+				...allNotifications[0], id: `ntf_${type}`, type, title: `Routine ${type}`, body: "", status: "unread",
+			});
+			const dropped = ["review_changes_requested", "review_completed", "pr_merged", "pr_closed_unmerged"] as const;
+			const all = notificationQueryResult("all");
+			all.data.pages[0].notifications = [...dropped.map(routine), ...allNotifications];
+			const unread = notificationQueryResult("unread");
+			unread.data.pages[0].notifications = [...dropped.map(routine), ...unreadNotifications];
+			unread.data.pages[0].unreadCount = unreadNotifications.length + dropped.length;
+			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? all : status === "unread" ? unread : notificationQueryResult(status)));
+			renderNotificationCenter();
+			expect(screen.getByRole("button", { name: `${unreadNotifications.length} unread notifications` })).toBeInTheDocument();
+			await clickOpen();
+			for (const type of dropped) expect(screen.queryByText(`Routine ${type}`)).not.toBeInTheDocument();
+			expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
+			expect(within(screen.getByRole("list")).getAllByRole("listitem")).toHaveLength(allNotifications.length);
+		});
+
 		it("does not count them in the bell's unread number", async () => {
 			withCoordinatorMessages();
 			renderNotificationCenter();
@@ -856,7 +875,7 @@ describe("NotificationCenter", () => {
 	// A PR outcome describes work that already finished — there's no paused
 	// agent to resume, so a terminated session behind one should stay directly
 	// viewable instead of gated behind restore.
-	it("opens a terminated session directly for a PR-outcome notification, with no restore option", async () => {
+	it("opens a terminated session directly for a PR notification that is not waiting on input, with no restore option", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) =>
 			status === "all"
 				? {
@@ -871,7 +890,7 @@ describe("NotificationCenter", () => {
 											sessionId: "sess-dead",
 											projectId: "proj-1",
 											prUrl: "https://github.com/acme/app/pull/9",
-											type: "pr_merged",
+											type: "ready_to_merge",
 											title: "PR #9 merged",
 											body: "The agent session has ended.",
 											status: "read",
@@ -892,7 +911,7 @@ describe("NotificationCenter", () => {
 
 		expect(screen.queryByRole("button", { name: "Restore session" })).not.toBeInTheDocument();
 
-		await userEvent.click(screen.getByText("The agent session has ended."));
+		await userEvent.click(screen.getByText(/PR from session Old PR is ready to merge/));
 		expect(restoreSessionMock).not.toHaveBeenCalled();
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
