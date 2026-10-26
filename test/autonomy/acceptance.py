@@ -446,7 +446,7 @@ def idle_wake_evidence(state, details, links, bound=30, idle_gate=10, now=None, 
         cursor_ok = cursor.get('storyId') == story['id'] and any(
             e['id'] == cursor.get('phaseReportId') and stamp(e['createdAt']) <= at for e in phase_events)
         timing = recipient_turn_latency(state, manager, report['created_at'], turn['id'], bound)
-        wakes.append(dict(timing, deliveryId=key, messageId=message['id'], cursorLinked=cursor_ok,
+        wakes.append(dict(timing, deliveryIdHash=digest(key), messageId=message['id'], cursorLinked=cursor_ok,
                           outboxBatchExplainsTurn=bool(batch) and batch.get('turn_id') == turn['id'],
                           passed=timing.get('passed', False) and timing.get('recipientState') == 'idle'
                           and cursor_ok and not (batch and batch.get('turn_id') == turn['id'])))
@@ -909,7 +909,7 @@ class Harness:
                 'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n' +
-                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and report Done. Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. ' if self.idle_wake else '') +
+                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and report Done. Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. MANAGER TIMING NOTE (timing test): the manager ends its turn immediately after the developer assignment handoff is delivered and does not wait, poll or sleep; AO wakes it when the developer reports. ' if self.idle_wake else '') +
                 ('DETERMINISTIC TWO-STAGE REVIEW FIXTURE: first fix normalize and commit, but keep REVIEW_FIX_APPLIED=False. Run the standalone check; it must fail at that implementation SHA. Hand that real failing implementation to the separate reviewer, who must inspect it with the standalone git show command and record review_failed for that exact SHA. Manager must deliver a story handoff back to the same developer describing the finding. Only after that delivered finding may the developer set REVIEW_FIX_APPLIED=True, commit a new SHA, run the standalone passing check, and obtain a fresh standalone inspection and review_passed at the new SHA from the same reviewer. Record both implementation SHAs. Do not edit check.py or skip the initial failed review. This deliberate fixture gate is part of the requested acceptance scenario, not a claim of an accidental defect.\n' if review_fixture else ''))
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
@@ -1124,7 +1124,9 @@ class Harness:
     def evaluate_idle_wake(self, state, details):
         """Targeted idle-manager CDC wake run: scored on its own gates, never as the full scenario."""
         evidence = idle_wake_evidence(state, details, self.cursor_links, self.args.max_dispatch_latency, main=self.main, now=float('inf'))
-        self.result['scenario'] = 'idle-wake'
+        self.result.update(scenario='idle-wake', kind='targeted_idle_wake_not_acceptance', autonomyAccepted=False,
+                           controlledConditions=['manager instructed to end its turn after assigning the developer', 'developer runs sleep 45 before editing',
+                                                 'developer sends no report before final Done', 'single story, single repo, no nudges'])
         self.result['idleWake'] = evidence
         self.check('idle_manager_before_done', evidence.get('failure') != 'manager_not_idle_before_done' and bool(evidence.get('managerPriorTurnCount')) and not evidence.get('managerBusyTurnIds'),
                    idleGateSeconds=evidence['idleGateSeconds'], managerIdleSeconds=evidence.get('managerIdleSeconds'))
@@ -1440,7 +1442,8 @@ class Harness:
         path = output / 'result.json'
         path.write_text(json.dumps(self.result, indent=2) + '\n')
         path.chmod(0o600)
-        lines = ['# Story 6 runtime acceptance', '', '**' + ('PASS' if self.result['passed'] else 'NOT ACCEPTED') + '**', '',
+        lines = ['# Story 6 runtime acceptance' if not self.idle_wake else '# TARGETED idle-manager CDC wake run (not an acceptance result)', '',
+                 '**' + (('PASS' if self.result['passed'] else 'NOT ACCEPTED') if not self.idle_wake else ('TARGETED GATES PASSED' if self.result['passed'] else 'TARGETED GATES NOT MET') + ' — controlled conditions; autonomy not accepted') + '**', '',
                  f'Mode: {self.args.mode}. Binary SHA256: `{self.result.get("binary", {}).get("sha256", "unknown")}`.',
                  'One-request observation only; no fabricated transitions. Static review is separate from this run.', '',
                  '| Assertion | Result |', '|---|---|']
