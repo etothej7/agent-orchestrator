@@ -239,7 +239,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// The chat is the tab in front: not a file, terminal or reviewer tab.
 	const chatInFront = !workspaceFileActive && !workspaceActiveTabKey && !reviewerTarget && !reviewerChatSelected && !shellTarget;
 	// Results and stops count on the Dock badge until they are seen here, in the focused window.
-	useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items);
+	const coordinatorUnread = useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items, askStatusOf);
 	// Sending is the switch, so a pick is dropped once another tab comes forward: a message
 	// typed on coming back could otherwise go to an agent no longer meant.
 	useEffect(() => {
@@ -636,6 +636,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				busy={commands.busy}
 				excerptsEnabled
 				askStatusOf={askStatusOf}
+				coordinatorUnread={!hostId && session.kind === "orchestrator" ? coordinatorUnread : undefined}
 				onSend={async (text, attachments, clientMessageId, excerpts, replyToAskId) => {
 					// Only claim /btw and /side where side chats can open. Elsewhere the
 					// text goes to the agent as typed (it may be the harness's own skill),

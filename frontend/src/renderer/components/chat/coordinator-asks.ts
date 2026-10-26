@@ -9,6 +9,8 @@ export interface CoordinatorAskControls {
 	/** The question the composer is currently answering. */
 	answeringId?: string;
 	answer(message: ConversationMessage): void;
+	/** A coordinator block entered or left the viewport; it counts as seen once it has been in view. */
+	reportVisible?(messageId: string, visible: boolean): void;
 }
 
 export const CoordinatorAskContext = createContext<CoordinatorAskControls | undefined>(undefined);

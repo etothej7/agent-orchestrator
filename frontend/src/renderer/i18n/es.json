@@ -3594,5 +3594,8 @@
 	"chat.coordinator.answered": "Answered",
 	"chat.coordinator.resolvedByCoordinator": "Resolved by the coordinator",
 	"chat.coordinator.answering": "Answering: {{question}}",
-	"chat.coordinator.stopAnswering": "Stop answering this question"
+	"chat.coordinator.stopAnswering": "Stop answering this question",
+	"chat.coordinator.jump_one": "{{count}} message from your coordinator",
+	"chat.coordinator.jump_other": "{{count}} messages from your coordinator",
+	"chat.coordinator.jump_many": "{{count}} messages from your coordinator"
 }
