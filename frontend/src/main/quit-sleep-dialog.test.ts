@@ -5,7 +5,7 @@ describe("sleep dialog", () => {
 	it("uses Ed's wording, verbatim", () => {
 		expect(SLEEP_DIALOG_TITLE).toBe("Your Mac will go to sleep and lock");
 		expect(SLEEP_DIALOG_BODY).toBe(
-			"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+			"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator.\n\nWe recommend keeping Agent Orchestrator running so your agents keep working. To keep your Mac awake, leave it plugged in.",
 		);
 	});
 

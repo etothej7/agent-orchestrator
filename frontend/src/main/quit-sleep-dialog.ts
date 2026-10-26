@@ -5,8 +5,10 @@
 export const SLEEP_DIALOG_ENABLED = true;
 
 export const SLEEP_DIALOG_TITLE = "Your Mac will go to sleep and lock";
-export const SLEEP_DIALOG_BODY =
-	"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.";
+export const SLEEP_DIALOG_BODY = [
+	"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator.",
+	"We recommend keeping Agent Orchestrator running so your agents keep working. To keep your Mac awake, leave it plugged in.",
+].join("\n\n");
 
 /** The part of the daemon's awake state this dialog reads (GET /api/v1/awake). */
 export interface AwakeStateForQuit {
