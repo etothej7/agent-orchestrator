@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
+	NODE_VERSION,
 	archiveExtraction,
 	createWorkDirectory,
 	npmInvocation,
@@ -23,9 +24,9 @@ import {
 	patchClaudeSteerSettlement,
 	pruneNodeDistribution,
 	runtimeSourceFiles,
+	verifyNodeArchive,
 } from "./build-acp-runtime-helpers.mjs";
 
-const NODE_VERSION = "22.23.2";
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(scriptsDir, "..");
 const sourceDir = join(frontendRoot, "acp-runtime");
@@ -114,15 +115,8 @@ for (const name of nativeClaudePackages) {
 
 const workDir = createWorkDirectory(outDir);
 try {
-	const [sums, archive] = await Promise.all([
-		download(`${baseURL}/SHASUMS256.txt`),
-		download(`${baseURL}/${archiveName}`),
-	]);
-	const expectedLine = sums.toString("utf8").split(/\r?\n/).find((line) => line.endsWith(`  ${archiveName}`));
-	if (!expectedLine) throw new Error(`${archiveName} is absent from Node's SHASUMS256.txt`);
-	const expected = expectedLine.split(/\s+/)[0];
-	const actual = createHash("sha256").update(archive).digest("hex");
-	if (actual !== expected) throw new Error(`Node archive checksum mismatch: expected ${expected}, got ${actual}`);
+	const archive = await download(`${baseURL}/${archiveName}`);
+	verifyNodeArchive(archiveName, archive);
 
 	const archivePath = join(workDir, archiveName);
 	writeFileSync(archivePath, archive);
