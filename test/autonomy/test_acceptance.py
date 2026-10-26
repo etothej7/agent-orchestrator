@@ -1,3 +1,4 @@
+import copy
 import unittest
 import acceptance as a
 
@@ -531,6 +532,59 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
         history['batch']['recipientSessionId']='old'
         state['sessions'].append({'id':'old'})
         self.assertFalse(a.phase_latencies(state,details,history,30)[0]['passed'])
+
+    def test_in_turn_revision_linked_action_and_fail_closed_negatives(self):
+        state = self.state(True)
+        state['conversation_messages'] = []
+        sha = 'a' * 40
+        events = [dict(id='impl', storyId='s', kind='implementation', reference=sha,
+                       senderSessionId='w', createdAt='2025-12-31T23:59:59Z'),
+                  dict(id='report', storyId='s', kind='report', reference='r', result='done',
+                       senderSessionId='w', createdAt='2026-01-01T00:00:00Z'),
+                  dict(id='action', storyId='s', kind='in_review', reference=sha, result='recorded',
+                       senderSessionId='m', createdAt='2026-01-01T00:01:00Z')]
+        details = [{'story': {'id':'s', 'assignments':[{'role':'manager','sessionId':'m'}, {'role':'worker','sessionId':'w'}]}, 'events':events}]
+        row = a.phase_latencies(state, details, {}, 30)[0]
+        self.assertTrue(row['passed'])
+        self.assertEqual(row['correlation'], 'in_turn_durable_action')
+        self.assertEqual(row['actionEventId'], 'action')
+        self.assertEqual(row['seconds'], 60)  # no bound on the manager's own turn
+        for changes in [dict(storyId='wrong'), dict(kind='assignment'), dict(senderSessionId='other'),
+                        dict(reference='b'*40), dict(createdAt='2025-12-31T23:59:59Z'),
+                        dict(createdAt='2026-01-01T00:03:00Z')]:
+            changed = copy.deepcopy(details)
+            changed[0]['events'][-1].update(changes)
+            self.assertFalse(a.phase_latencies(state, changed, {}, 30)[0]['passed'], changes)
+        late = copy.deepcopy(state)
+        late['conversation_messages'] = self.state()['conversation_messages']
+        late['conversation_turns'][0]['started_at'] = '2026-01-01T00:05:00Z'
+        no_action = copy.deepcopy(details); no_action[0]['events'].pop()
+        self.assertFalse(a.phase_latencies(late, no_action, {}, 30)[0]['passed'])
+
+    def test_in_turn_handoff_requires_revision_message_and_recipient(self):
+        state = self.state(True); state['conversation_messages'] = []
+        state['conversation_turns'].append(dict(id='reviewturn', handled_by_session_id='reviewer'))
+        state['conversation_messages'].append(dict(id='handoff-message',turn_id='reviewturn',role='user',
+            sender_session_id='m',text='Review ' + 'a'*40,created_at='2026-01-01T00:01:00Z'))
+        details = [{'story':{'id':'s','assignments':[{'role':'manager','sessionId':'m'},{'role':'reviewer','sessionId':'reviewer'}]},'events':[
+            dict(id='impl',storyId='s',kind='implementation',reference='a'*40,senderSessionId='w',createdAt='2025-12-31T23:59:59Z'),
+            dict(id='report',storyId='s',kind='report',reference='r',result='done',senderSessionId='w',createdAt='2026-01-01T00:00:00Z'),
+            dict(id='handoff',storyId='s',kind='handoff',reference='reviewturn',deliveryKind='turn',result='delivered',senderSessionId='m',recipientSessionId='reviewer',createdAt='2026-01-01T00:01:00Z')]}]
+        self.assertTrue(a.phase_latencies(state,details,{},30)[0]['passed'])
+        state['conversation_messages'][0]['text']='Unrelated task'
+        self.assertFalse(a.phase_latencies(state,details,{},30)[0]['passed'])
+        state['conversation_messages'][0]['text']='Review '+'a'*40
+        state['conversation_turns'][-1]['handled_by_session_id']='other'
+        self.assertFalse(a.phase_latencies(state,details,{},30)[0]['passed'])
+
+    def test_in_turn_ready_requires_later_same_revision_done(self):
+        state = self.state(True); state['reports'] = []; state['conversation_messages'] = []
+        details = [{'story': {'id':'s','assignments':[{'role':'manager','sessionId':'m'}]}, 'events':[
+            dict(id='ready',storyId='s',kind='ready_for_approval',reference='a'*40,senderSessionId='m',createdAt='2026-01-01T00:00:00Z'),
+            dict(id='done',storyId='s',kind='done',reference='a'*40,result='recorded',senderSessionId='m',createdAt='2026-01-01T00:01:00Z')]}]
+        self.assertTrue(a.phase_latencies(state,details,{},30)[0]['passed'])
+        details[0]['events'][1]['reference']='b'*40
+        self.assertFalse(a.phase_latencies(state,details,{},30)[0]['passed'])
 
     def test_done_excluded_only_without_other_ready_story(self):
         state = self.state();state['reports']=[]

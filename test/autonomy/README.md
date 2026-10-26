@@ -138,3 +138,19 @@ For each phase-ending report and Review/Ready/Done transition, correlate the res
 The remediation verifier also reads `feature.py` from both fixed Git SHAs, requires an unambiguous literal False-to-True gate change, and runs the original behavioral assertions against each revision inside the existing scratch sandbox. Initial behavior must already be fixed with the gate False; final behavior must remain correct with it True. Source hashes and stage results are recorded. The offline re-score never executes those sources and cannot award a new pass for this behavior gate.
 
 Unclaimed phase reports need not wait for the human/report outbox: an exact `phaseReportId` continuation cursor, matching story, registered assigned manager and actual target turn establish the CDC route even when the report recipient is null. Done with eligible backlog work follows the next story in the same epic and that story’s assigned manager, not a stopped source story or a forced main-coordinator recipient. Source and dispatched story IDs are recorded separately; wrong-story/actor/cursor matches fail.
+
+## Revised in-turn acceptance contract
+
+After the final 66b trial, agent-orchestrator-1 authorized credit for durable,
+manager-authored, same-story phase actions performed within the manager turn
+already running at the trigger. The scorer requires revision-linked phase
+progression: implementation to review routing, failed review to worker remediation,
+passed review to Ready, or Ready to Done. An In Review trigger requires an
+intervening review outcome at that revision before the next manager action.
+Handoffs require a delivered new-turn receipt, the expected recipient role and
+an attributable manager message containing that revision. It records trigger,
+evidence/action IDs, manager/turn, revision and trigger-to-action seconds; no
+bound is imposed on the manager's own turn duration. Unrelated actions and late
+report batches cannot substitute for this proof. Out-of-turn bounds are unchanged.
+Any retained-run re-score must disclose this post-run contract change and its
+authorizer, preserve the original result, and distinguish it from a new run.

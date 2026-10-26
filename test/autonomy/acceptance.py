@@ -211,6 +211,75 @@ def recipient_turn_latency(state, recipient, receipt_at, target_id, bound):
     return row
 
 
+def in_turn_phase_action(state, detail, signal):
+    """Credit revision-linked phase work inside the already-running manager turn."""
+    receipt = stamp(signal['receiptAt'])
+    events = sorted([e for e in detail.get('events', []) if e.get('storyId') == signal['storyId']
+                     and stamp(e.get('createdAt')) is not None], key=lambda e: (stamp(e['createdAt']), e['id']))
+    trigger = next((e for e in events if e['id'] == signal.get('eventId')), None)
+    if not trigger:
+        return None
+    managers = {a['sessionId'] for a in detail['story'].get('assignments', []) if a['role'] == 'manager'}
+    roles = {a['sessionId']: a['role'] for a in detail['story'].get('assignments', [])}
+    if signal['sourceKind'] == 'report':
+        if signal['phase'] != 'done':
+            return None
+        anchors = [e for e in events if e.get('kind') in ('implementation', 'review_failed', 'review_passed')
+                   and e.get('senderSessionId') == trigger.get('senderSessionId') and stamp(e['createdAt']) <= receipt]
+        if not anchors:
+            return None
+        anchor = anchors[-1]
+    else:
+        anchor = trigger
+    revision = anchor.get('reference', '')
+    if not SHA.fullmatch(revision):
+        return None
+    for action in events:
+        at = stamp(action['createdAt'])
+        manager = action.get('senderSessionId')
+        if at <= receipt or manager not in managers or manager not in {s['id'] for s in state['sessions']}:
+            continue
+        turns = [t for t in state['conversation_turns'] if t.get('handled_by_session_id') == manager
+                 and stamp(t.get('started_at')) is not None and stamp(t['started_at']) <= receipt
+                 and (stamp(t.get('completed_at')) is None or stamp(t['completed_at']) >= at)]
+        if len(turns) != 1:
+            continue
+        phase = anchor['kind']
+        evidence = anchor
+        if phase == 'in_review':
+            outcomes = [e for e in events if e.get('kind') in ('review_failed', 'review_passed')
+                        and e.get('reference') == revision and receipt < stamp(e['createdAt']) < at
+                        and roles.get(e.get('senderSessionId')) == 'reviewer']
+            if not outcomes:
+                continue
+            evidence = outcomes[-1]
+            phase = evidence['kind']
+        expected_status = {'implementation': 'in_review', 'review_passed': 'ready_for_approval',
+                           'ready_for_approval': 'done'}.get(phase)
+        linked = action.get('kind') == expected_status and action.get('reference') == revision and action.get('result') == 'recorded'
+        recipient_role = {'implementation': 'reviewer', 'review_failed': 'worker'}.get(phase)
+        message_id = None
+        if recipient_role and action.get('kind') == 'handoff' and action.get('result') == 'delivered' and roles.get(action.get('recipientSessionId')) == recipient_role:
+            # Only a concrete new-turn handoff with an attributable revision is
+            # scored here; ambiguous steering receipts remain fail-closed.
+            target = next((t for t in state['conversation_turns'] if t['id'] == action.get('reference')
+                           and t.get('handled_by_session_id') == action.get('recipientSessionId')), None)
+            shared = [e for e in records(state, 'workspace_story_events') if e.get('kind') == 'handoff' and e.get('reference') == action.get('reference')] if 'workspace_story_events' in state else [action]
+            messages = [m for m in state['conversation_messages'] if m.get('turn_id') == action.get('reference')
+                        and m.get('role') == 'user' and m.get('sender_session_id') == manager
+                        and revision in re.findall(r'\b[0-9a-f]{40}\b', m.get('text', ''))
+                        and stamp(m.get('created_at')) is not None and abs(stamp(m['created_at']) - at) <= 2]
+            if target and action.get('deliveryKind') == 'turn' and len(shared) == 1 and len(messages) == 1:
+                linked, message_id = True, messages[0]['id']
+        if linked:
+            return dict(matched=True, passed=True, correlation='in_turn_durable_action', recipientState='busy',
+                        recipientSessionId=manager, currentTurnId=turns[0]['id'], actionEventId=action['id'],
+                        actionKind=action['kind'], actionAt=action['createdAt'], actionMessageId=message_id,
+                        phaseEvidenceEventId=evidence['id'], revision=revision,
+                        seconds=round(at-receipt, 3), latencyBoundSeconds=None)
+    return None
+
+
 def phase_latencies(state, details, history, bound, main=None):
     """Correlate real phase signals; report receipt alone is never a start."""
     events = [e for d in details for e in d.get('events', [])]
@@ -268,6 +337,10 @@ def phase_latencies(state, details, history, bound, main=None):
                 results.append(dict(row, required=False, excludedReason='completed_story_no_ready_work'))
                 continue
             row['nextReadyStoryIds'] = ready
+        action = in_turn_phase_action(state, detail, signal) if not terminal else None
+        if action:
+            results.append(dict(row, **action))
+            continue
         candidates = []
         batch = messages.get(signal.get('batchKey'))
         if not terminal and signal.get('recipientSessionId') and batch and stamp(batch.get('created_at')) is not None and stamp(batch['created_at']) >= receipt:
