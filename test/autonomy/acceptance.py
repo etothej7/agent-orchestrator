@@ -388,6 +388,84 @@ def phase_latencies(state, details, history, bound, main=None):
     return results
 
 
+def idle_wake_evidence(state, details, links, bound=30, idle_gate=10, now=None, main=None, observe_after=45, grace=15):
+    """Score one idle-manager CDC wake (targeted run, not part of the full scenario).
+
+    The first worker Done report of a story is the trigger. The assigned manager must
+    have had no running turn for at least idle_gate seconds before it. PASS requires a
+    manager turn that starts at/after the trigger within bound seconds, carried by a
+    story-continue CDC delivery whose phase cursor names a worker phase report of that
+    story. The ordinary report outbox batch cannot satisfy it. IDs/timestamps only.
+    """
+    out = {'decided': False, 'passed': False, 'idleGateSeconds': idle_gate, 'boundSeconds': bound}
+    now = time.time() if now is None else now
+    sessions = {s['id'] for s in state['sessions']}
+    for detail in details:
+        story = detail['story']
+        roles = {a['sessionId']: a['role'] for a in story.get('assignments', [])}
+        workers = {sid for sid, role in roles.items() if role == 'worker'}
+        reports = sorted([r for r in state['reports'] if r.get('story_id') == story['id'] and r.get('state') == 'done'
+                          and r.get('session_id') in workers and stamp(r.get('created_at')) is not None],
+                         key=lambda r: stamp(r['created_at']))
+        if reports:
+            break
+    else:
+        return dict(out, failure='no_worker_done_report')
+    report = reports[0]
+    receipt = stamp(report['created_at'])
+    managers = [sid for sid, role in roles.items() if role == 'manager' and sid in sessions]
+    manager = managers[0] if len(managers) == 1 else (main if not managers else None)
+    event = next((e for e in detail.get('events', []) if e.get('kind') == 'report' and e.get('reference') == report['id']), None)
+    out.update(storyId=story['id'], reportId=report['id'], reportEventId=event['id'] if event else None,
+               receiptAt=report['created_at'], managerSessionId=manager)
+    if not manager or not event:
+        return dict(out, decided=True, failure='missing_manager_or_report_event')
+    manager_turns = [t for t in state['conversation_turns'] if t.get('handled_by_session_id') == manager and stamp(t.get('started_at')) is not None]
+    prior = [t for t in manager_turns if stamp(t['started_at']) <= receipt]
+    busy = [t['id'] for t in prior if stamp(t.get('completed_at')) is None or stamp(t['completed_at']) > receipt - idle_gate]
+    ended = [stamp(t['completed_at']) for t in prior if stamp(t.get('completed_at')) is not None]
+    out.update(managerPriorTurnCount=len(prior), managerBusyTurnIds=busy,
+               managerIdleSeconds=round(receipt - max(ended), 3) if ended and not busy else None)
+    if not prior or busy:
+        # Precondition not met: the run measures nothing about an idle manager.
+        return dict(out, decided=True, failure='manager_not_idle_before_done')
+    phase_events = [e for e in detail.get('events', []) if e.get('kind') == 'report' and e.get('result') in ('done', 'needs_input', 'stuck')
+                    and e.get('senderSessionId') in workers and stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) >= receipt]
+    messages = {m['client_message_id']: m for m in state['conversation_messages'] if m.get('client_message_id')}
+    turns = {t['id']: t for t in state['conversation_turns']}
+    batch = messages.get(report.get('delivery_batch_id'))
+    wakes = []
+    for key, message in messages.items():
+        turn = turns.get(message.get('turn_id'), {})
+        if not key.startswith('story-continue-') or turn.get('handled_by_session_id') != manager:
+            continue
+        started, at = stamp(turn.get('started_at')), stamp(message.get('created_at'))
+        if started is None or started < receipt or at is None or at < receipt:
+            continue
+        cursor = links.get(key, {})
+        cursor_ok = cursor.get('storyId') == story['id'] and any(
+            e['id'] == cursor.get('phaseReportId') and stamp(e['createdAt']) <= at for e in phase_events)
+        timing = recipient_turn_latency(state, manager, report['created_at'], turn['id'], bound)
+        wakes.append(dict(timing, deliveryId=key, messageId=message['id'], cursorLinked=cursor_ok,
+                          outboxBatchExplainsTurn=bool(batch) and batch.get('turn_id') == turn['id'],
+                          passed=timing.get('passed', False) and timing.get('recipientState') == 'idle'
+                          and cursor_ok and not (batch and batch.get('turn_id') == turn['id'])))
+    out['reportBatchTurnId'] = batch.get('turn_id') if batch else None
+    if not wakes:
+        return dict(out, decided=now > receipt + bound + grace, failure='no_cdc_wake_turn_yet' if now <= receipt + bound + grace else 'no_cdc_wake_turn')
+    wake = min(wakes, key=lambda w: (not w['passed'], w.get('seconds', float('inf'))))
+    started = stamp(wake.get('turnStartedAt'))
+    action = next(iter(sorted([e for e in detail.get('events', []) if e.get('senderSessionId') == manager and e.get('kind') != 'report'
+                               and stamp(e.get('createdAt')) is not None and stamp(e['createdAt']) > started],
+                              key=lambda e: (stamp(e['createdAt']), e['id']))), None)
+    out.update(wake=wake, passed=wake['passed'],
+               nextManagerAction=dict(eventId=action['id'], kind=action['kind'], seconds=round(stamp(action['createdAt']) - started, 3)) if action else None)
+    out['decided'] = bool(action) or now >= started + observe_after
+    if not wake['passed']:
+        out['failure'] = 'wake_failed_idle_cdc_or_bound'
+    return out
+
+
 def midflow_actor_ids(state, details, main):
     if len(details) < 2 or not any(d['story']['status'] != 'done' for d in details):
         return []
@@ -533,6 +611,8 @@ def live_owned_processes(current, historical, token):
 
 
 class Harness:
+    idle_wake = False
+
     def __init__(self, args):
         self.args = args
         self.root = Path(tempfile.mkdtemp(prefix='ao-acceptance-', dir=args.scratch_parent)).resolve()
@@ -547,7 +627,9 @@ class Harness:
         self.token = uuid.uuid4().hex
         self.daemon = None
         self.owned = {}
-        self.project_ids = ['acceptance-labels', 'acceptance-totals']
+        self.idle_wake = args.scenario == 'idle-wake'
+        self.project_ids = ['acceptance-idle'] if self.idle_wake else ['acceptance-labels', 'acceptance-totals']
+        self.cursor_links = {}
         self.repos = []
         self.main = ''
         self.mutations = []
@@ -804,9 +886,11 @@ class Harness:
                                        stderr=subprocess.DEVNULL)
 
     def fixtures(self):
-        for project, function, broken, contract in [
-            ('acceptance-labels', 'normalize', 'return value', "assert normalize('  HeLLo World  ') == 'hello-world'\nassert normalize('') == ''\nimport feature\nassert feature.REVIEW_FIX_APPLIED is True"),
-            ('acceptance-totals', 'total', 'return value', 'assert total(100) == 105\nassert total(0) == 0\nassert total(-4) == 0')]:
+        specs = [('acceptance-labels', 'normalize', 'return value', "assert normalize('  HeLLo World  ') == 'hello-world'\nassert normalize('') == ''\nimport feature\nassert feature.REVIEW_FIX_APPLIED is True"),
+                 ('acceptance-totals', 'total', 'return value', 'assert total(100) == 105\nassert total(0) == 0\nassert total(-4) == 0')]
+        if self.idle_wake:
+            specs = [('acceptance-idle', 'shout', 'return value', "assert shout('hi') == 'HI!'\nassert shout('') == '!'")]
+        for project, function, broken, contract in specs:
             repo = self.root / 'repos' / project
             repo.mkdir(parents=True)
             review_fixture = project == 'acceptance-labels'
@@ -825,6 +909,7 @@ class Harness:
                 'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n' +
+                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and report Done. ' if self.idle_wake else '') +
                 ('DETERMINISTIC TWO-STAGE REVIEW FIXTURE: first fix normalize and commit, but keep REVIEW_FIX_APPLIED=False. Run the standalone check; it must fail at that implementation SHA. Hand that real failing implementation to the separate reviewer, who must inspect it with the standalone git show command and record review_failed for that exact SHA. Manager must deliver a story handoff back to the same developer describing the finding. Only after that delivered finding may the developer set REVIEW_FIX_APPLIED=True, commit a new SHA, run the standalone passing check, and obtain a fresh standalone inspection and review_passed at the new SHA from the same reviewer. Record both implementation SHAs. Do not edit check.py or skip the initial failed review. This deliberate fixture gate is part of the requested acceptance scenario, not a claim of an accidental defect.\n' if review_fixture else ''))
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
@@ -852,7 +937,20 @@ class Harness:
         self.result['mainSessionId'] = self.main
 
     def intake(self):
-        prompt = ('Please deliver one local-only epic with at least two stories across the registered acceptance-labels '
+        if self.idle_wake:
+            prompt = ('Please deliver one local-only story in the registered acceptance-idle repo: fix shout so shout(value) returns value uppercased plus an exclamation mark. '
+                'Use the repository manager and one separate developer worker; follow the repo AGENTS.md exactly, including its slow-task step and standalone check commands. '
+                'Manager instruction for this timing test: after you assign the developer and the assignment handoff is delivered, END your turn immediately. '
+                'Do not wait, poll, sleep, or check on the developer; AO will wake you when the developer reports. '
+                'The developer must record real evidence and report Done through AO story commands. No push, merge, publish or installation. '
+                'Continue without status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. At most one active worker. '
+                'Internal test sentinel ' + PRIVATE + ': keep this out of all human-facing responses and notifications.')
+        else:
+            prompt = self.full_intake_prompt()
+        self.send_intake(prompt)
+
+    def full_intake_prompt(self):
+        return ('Please deliver one local-only epic with at least two stories across the registered acceptance-labels '
             'and acceptance-totals repos. Fix normalize in labels to strip surrounding whitespace, lowercase and replace '
             'spaces with hyphens. Fix total in totals to add a five-unit fee to positive values and return zero otherwise. '
             'Use repository managers, developer workers and separate independent reviewers. Labels is a deliberate two-stage review fixture: first commit the behavior fix keeping REVIEW_FIX_APPLIED=False, record the real failed standalone check and ask the reviewer to inspect and record review_failed at that SHA. The manager must hand the finding back to the same developer before the developer sets REVIEW_FIX_APPLIED=True in a new commit, runs the passing standalone check, and gets same-reviewer re-review of the new SHA. Follow fixture AGENTS.md and never skip or fabricate this chain. Each check and git show proof must be its own standalone command, never batched. Run the existing failing '
@@ -862,6 +960,8 @@ class Harness:
             'You may make local technical decisions and create/reuse actors. At most four active workers. '
             'Scope-answer policy: ' + json.dumps(self.args.answers) + '. '
             'Internal test sentinel ' + PRIVATE + ': keep this out of all human-facing responses and notifications.')
+
+    def send_intake(self, prompt):
         self.result['intakeRequestHash'] = digest(prompt)
         self.result['intakeStartedAt'] = time.time()
         code, response = self.api('POST', f'/api/v1/sessions/{self.main}/conversation/messages',
@@ -884,6 +984,8 @@ class Harness:
                 self.continuation_history[c['deliveryId']] = c
                 key = (c['storyId'], c.get('generation'), c.get('checkpoint'), c.get('recipientSessionId'))
                 self.logical_deliveries[key].add(c['deliveryId'])
+                if c.get('phaseReportId'):  # the cursor is cleared once a wake settles
+                    self.cursor_links.setdefault(c['deliveryId'], {'storyId': c['storyId'], 'phaseReportId': c['phaseReportId']})
         for m in state['conversation_messages']:
             if m.get('client_message_id'):
                 self.observed_dispatches[m['id']] = {k: m.get(k) for k in ('id', 'turn_id', 'client_message_id', 'conversation_id', 'created_at', 'sender_session_id')}
@@ -1018,6 +1120,17 @@ class Harness:
         self.check('report_dispatch_latency_bounded', bool(required) and all(r.get('passed') for r in required))
         self.check('report_dispatch_latency_observed', any(r.get('passed') for r in required))
         self.verify_code(state, details, evidence)
+
+    def evaluate_idle_wake(self, state, details):
+        """Targeted idle-manager CDC wake run: scored on its own gates, never as the full scenario."""
+        evidence = idle_wake_evidence(state, details, self.cursor_links, self.args.max_dispatch_latency, main=self.main, now=float('inf'))
+        self.result['scenario'] = 'idle-wake'
+        self.result['idleWake'] = evidence
+        self.check('idle_manager_before_done', evidence.get('failure') != 'manager_not_idle_before_done' and bool(evidence.get('managerPriorTurnCount')) and not evidence.get('managerBusyTurnIds'),
+                   idleGateSeconds=evidence['idleGateSeconds'], managerIdleSeconds=evidence.get('managerIdleSeconds'))
+        self.check('cdc_wake_within_bound_not_outbox', evidence['passed'], boundSeconds=evidence['boundSeconds'], failure=evidence.get('failure'))
+        self.check('public_privacy', not self.public_errors, reasons=sorted(self.public_errors))
+        self.result['reportDeliverySeconds'] = report_delivery_timings(state)
 
     def latencies(self, details):
         result = []
@@ -1229,6 +1342,12 @@ class Harness:
         while time.monotonic() - start < self.args.duration:
             last = self.observe()
             state, board, details, _ = last
+            if self.idle_wake:
+                self.idle_evidence = idle_wake_evidence(state, details, self.cursor_links, self.args.max_dispatch_latency, main=self.main)
+                if self.idle_evidence['decided']:
+                    break
+                time.sleep(self.args.poll)
+                continue
             working_actors = midflow_actor_ids(state, details, self.main)
             if not restarted and time.monotonic() - start >= self.args.restart_after and (self.args.mode == 'mechanics' or working_actors):
                 before_actors = sorted(s['id'] for s in state['sessions'])
@@ -1249,17 +1368,21 @@ class Harness:
         if last:
             last = self.observe()
             state, board, details, continuations = last
-            self.evaluate(*last)
+            if self.idle_wake:
+                self.evaluate_idle_wake(state, details)
+            else:
+                self.evaluate(*last)
             self.result['providerTurns'] = [{
                 'turnId': t['id'], 'actorId': t.get('handled_by_session_id'), 'state': t.get('state'),
                 'startedAt': t.get('started_at'), 'completedAt': t.get('completed_at'),
                 'providerTurnRecorded': bool(t.get('provider_turn_id'))
             } for t in state['conversation_turns']]
-            self.check('restart_recovery', restarted and self.result['restart']['midFlow'] and
-                       set(before_actors) <= {s['id'] for s in state['sessions']} and
-                       set(before_message_ids) <= {m['id'] for m in state['conversation_messages']} and
-                       bool(details) and all(d['story']['status'] == 'done' for d in details))
-            self.check('restart_mechanics', restarted)
+            if not self.idle_wake:
+                self.check('restart_recovery', restarted and self.result['restart']['midFlow'] and
+                           set(before_actors) <= {s['id'] for s in state['sessions']} and
+                           set(before_message_ids) <= {m['id'] for m in state['conversation_messages']} and
+                           bool(details) and all(d['story']['status'] == 'done' for d in details))
+                self.check('restart_mechanics', restarted)
         intakes = [m for m in self.mutations if m['method'] == 'POST' and m['route'].endswith('/conversation/messages')]
         self.check('exactly_one_intake_no_nudges', len(intakes) == 1 and all(m['route'].endswith('/conversation/messages') or m['route'] == '/api/v1/workspace/commands' for m in self.mutations if m['at'] >= self.result.get('intakeStartedAt', float('inf'))))
         self.result['mutationAudit'] = self.mutations
@@ -1335,6 +1458,7 @@ def main():
     binary.add_argument('--daemon', type=Path)
     binary.add_argument('--app', type=Path, help='Resolve bundled daemon only; never launch the GUI')
     parser.add_argument('--mode', choices=('mechanics', 'real'), default='mechanics')
+    parser.add_argument('--scenario', choices=('full', 'idle-wake'), default='full', help='idle-wake: one targeted idle-manager CDC wake measurement')
     parser.add_argument('--agent', default='codex')
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--pass-env', action='append', default=[])

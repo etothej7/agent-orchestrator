@@ -154,3 +154,16 @@ bound is imposed on the manager's own turn duration. Unrelated actions and late
 report batches cannot substitute for this proof. Out-of-turn bounds are unchanged.
 Any retained-run re-score must disclose this post-run contract change and its
 authorizer, preserve the original result, and distinguish it from a new run.
+
+## Targeted idle-manager CDC wake run (`--scenario idle-wake`)
+
+One real intake for a single story in a single `acceptance-idle` repo, run with the same confinement and no nudges. It measures only whether an **idle** manager is woken by story CDC (a `story-continue-*` delivery), not by the ordinary report outbox batch. It is not the full scenario and cannot yield a full acceptance.
+
+The intake tells the manager to end its turn right after assigning the developer (a controlled condition, disclosed in the result) and the repo AGENTS.md makes the developer run a `sleep 45` first so Done lands well after the manager has idled. Scoring (`idle_wake_evidence`, IDs/timestamps only):
+
+- Trigger: the first worker Done report of the story.
+- Precondition: the assigned manager had no running turn for at least 10 s before it. If not met, the run is invalid for this question (`manager_not_idle_before_done`).
+- PASS: a manager turn starts at/after the trigger within 30 s, carried by a `story-continue-*` message whose continuation phase cursor names a worker phase report of that story, and the report's outbox batch turn is not that turn.
+- Recorded, not required: the manager's next durable same-story action after the wake and its latency.
+
+The run stops as soon as the wake and a next manager action (or 45 s) are observed, or 15 s after the 30 s bound with no wake.

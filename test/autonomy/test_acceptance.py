@@ -632,6 +632,48 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
         self.assertTrue(self.trigger(*self.scenario('review_failed', handoff, message_at='2026-01-01T00:01:02Z'))['passed'], '2 s boundary')
         self.assertFalse(self.trigger(*self.scenario('review_failed', handoff, message_at='2026-01-01T00:01:03Z'))['passed'], 'message outside 2 s')
 
+    def idle_case(self, manager_end='2026-01-01T00:00:20Z', wake_at='2026-01-01T00:01:08Z', cursor='rev', batch_turn=None, wake_actor='m'):
+        state = {'sessions': [{'id': 'm'}, {'id': 'w'}],
+                 'conversation_turns': [dict(id='t0', conversation_id='c', handled_by_session_id='m', started_at='2026-01-01T00:00:00Z', completed_at=manager_end),
+                                        dict(id='wake', conversation_id='c', handled_by_session_id=wake_actor, started_at=wake_at)],
+                 'conversation_activities': [],
+                 'conversation_messages': [dict(id='wm', conversation_id='c', turn_id='wake', client_message_id='story-continue-x', created_at=wake_at)],
+                 'reports': [dict(id='r', story_id='s', session_id='w', state='done', delivery_batch_id='batch', created_at='2026-01-01T00:01:00Z')]}
+        if batch_turn:
+            state['conversation_messages'].append(dict(id='bm', conversation_id='c', turn_id=batch_turn, client_message_id='batch', created_at='2026-01-01T00:06:00Z'))
+        details = [{'story': {'id': 's', 'assignments': [{'role': 'manager', 'sessionId': 'm'}, {'role': 'worker', 'sessionId': 'w'}]}, 'events': [
+            dict(id='rev', storyId='s', kind='report', reference='r', result='done', senderSessionId='w', createdAt='2026-01-01T00:01:00Z'),
+            dict(id='act', storyId='s', kind='in_review', senderSessionId='m', createdAt='2026-01-01T00:01:20Z')]}]
+        links = {'story-continue-x': {'storyId': 's', 'phaseReportId': cursor}}
+        return state, details, links
+
+    def test_idle_manager_cdc_wake_requires_idle_gate_link_and_bound(self):
+        out = a.idle_wake_evidence(*self.idle_case(), now=1e12)
+        self.assertTrue(out['passed'] and out['decided'])
+        self.assertEqual((out['managerIdleSeconds'], out['wake']['seconds'], out['wake']['recipientState']), (40, 8, 'idle'))
+        self.assertEqual((out['nextManagerAction']['eventId'], out['nextManagerAction']['seconds']), ('act', 12))
+        busy = a.idle_wake_evidence(*self.idle_case(manager_end='2026-01-01T00:00:55Z'), now=1e12)
+        self.assertEqual((busy['passed'], busy['decided'], busy['failure']), (False, True, 'manager_not_idle_before_done'))
+        gate = a.idle_wake_evidence(*self.idle_case(manager_end='2026-01-01T00:00:50Z'), now=1e12)
+        self.assertTrue(gate['passed'], 'exactly 10 s idle is enough')
+        for label, kwargs in [('over bound', dict(wake_at='2026-01-01T00:01:31Z')), ('wrong cursor', dict(cursor='other')),
+                              ('wake handled by someone else', dict(wake_actor='w')), ('before the trigger', dict(wake_at='2026-01-01T00:00:59Z')),
+                              ('outbox batch is the wake turn', dict(batch_turn='wake'))]:
+            self.assertFalse(a.idle_wake_evidence(*self.idle_case(**kwargs), now=1e12)['passed'], label)
+
+    def test_idle_wake_wrong_story_cursor_and_outbox_only_fail_and_wait_for_deadline(self):
+        state, details, links = self.idle_case()
+        links['story-continue-x']['storyId'] = 'other'
+        self.assertFalse(a.idle_wake_evidence(state, details, links, now=1e12)['passed'])
+        # The late ordinary batch must not stand in for a CDC wake.
+        state, details, links = self.idle_case(batch_turn='later')
+        state['conversation_turns'].append(dict(id='later', conversation_id='c', handled_by_session_id='m', started_at='2026-01-01T00:06:00Z'))
+        state['conversation_messages'] = [m for m in state['conversation_messages'] if m['id'] != 'wm']
+        early = a.idle_wake_evidence(state, details, links, now=a.stamp('2026-01-01T00:01:10Z'))
+        self.assertEqual((early['decided'], early['passed']), (False, False))
+        late = a.idle_wake_evidence(state, details, links, now=a.stamp('2026-01-01T00:02:00Z'))
+        self.assertEqual((late['decided'], late['passed'], late['failure']), (True, False, 'no_cdc_wake_turn'))
+
     def test_in_turn_ready_requires_later_same_revision_done(self):
         state = self.state(True); state['reports'] = []; state['conversation_messages'] = []
         details = [{'story': {'id':'s','assignments':[{'role':'manager','sessionId':'m'}]}, 'events':[
