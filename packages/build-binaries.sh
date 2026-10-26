@@ -24,13 +24,25 @@ TARGETS=(
   "ao-linux-x64:linux:x64:linux:amd64:ao"
 )
 
-echo "Building ao binaries from ${BACKEND_DIR}/cmd/ao"
+# Shipped binaries are built with this Go release or a later stable one, using
+# the toolchain installed here (GOTOOLCHAIN=local below): never one downloaded
+# on the fly.
+REQUIRED_GO="1.27.3"
+go_version="$(GOTOOLCHAIN=local go env GOVERSION)"
+go_version="${go_version#go}"
+if [[ ! "${go_version}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || \
+   [[ "$(printf '%s\n%s\n' "${REQUIRED_GO}" "${go_version}" | sort -V | head -n1)" != "${REQUIRED_GO}" ]]; then
+  echo "Go ${REQUIRED_GO}+ (stable) required, found '${go_version}' - upgrade at https://go.dev/dl/" >&2
+  exit 1
+fi
+
+echo "Building ao binaries from ${BACKEND_DIR}/cmd/ao (go${go_version})"
 for t in "${TARGETS[@]}"; do
   IFS=":" read -r pkg npm_os npm_arch goos goarch bin <<<"$t"
   out="${SCRIPT_DIR}/${pkg}/bin/${bin}"
   mkdir -p "${SCRIPT_DIR}/${pkg}/bin"
   echo "  -> ${pkg} (GOOS=${goos} GOARCH=${goarch}) -> bin/${bin}"
-  (cd "${BACKEND_DIR}" && CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+  (cd "${BACKEND_DIR}" && CGO_ENABLED=0 GOTOOLCHAIN=local GOOS="${goos}" GOARCH="${goarch}" \
     go build -o "${out}" ./cmd/ao)
   chmod 0755 "${out}"
 done

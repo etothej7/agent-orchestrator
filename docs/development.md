@@ -106,6 +106,12 @@ cd backend
 go build ./...
 ```
 
+Packaged daemons (`frontend/scripts/build-daemon.mjs`) and the npm platform
+binaries (`packages/build-binaries.sh`) are built with the Go installed on the
+machine (`GOTOOLCHAIN=local`) and require Go 1.27.3 or a later stable release,
+even though `backend/go.mod` still declares 1.27.1. They fail instead of
+downloading a toolchain.
+
 ### Run the daemon
 
 ```bash
