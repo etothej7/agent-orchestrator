@@ -45,6 +45,12 @@ func (t NotificationType) NeedsResolution() bool {
 	return t == NotificationNeedsInput || t == NotificationReadyToMerge
 }
 
+// How a coordinator question was closed.
+const (
+	NotificationResolutionAnswered    = "answered"
+	NotificationResolutionCoordinator = "coordinator"
+)
+
 // IsCoordinatorAskPurpose reports whether a coordinator_message purpose is a
 // question or decision that needs Ed (ao ask), as opposed to a result or stop
 // notice (ao tell). Such a notification stays open until Ed replies or dismisses
@@ -119,6 +125,12 @@ type NotificationRecord struct {
 	// its input, or the PR stopped waiting on a merge. Zero means still open.
 	// Only AO writes it; there is no user-facing "resolve" action.
 	ResolvedAt time.Time
+	// Resolution says how a resolved coordinator question was closed:
+	// NotificationResolutionAnswered (Ed's reply named it) or
+	// NotificationResolutionCoordinator (the coordinator recorded it answered).
+	// ResolutionNote is the coordinator's optional note. Both are empty otherwise.
+	Resolution     string
+	ResolutionNote string
 	// Purpose says why a coordinator_message was sent: scope_question,
 	// blocking_decision, completion_decision (ao ask) or verified_result,
 	// stopped_work (ao tell). Empty for every other notification type.

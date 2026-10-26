@@ -77,7 +77,7 @@ const createNotification = `-- name: CreateNotification :one
 INSERT INTO notifications (
     id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key, purpose
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
 type CreateNotificationParams struct {
@@ -123,6 +123,8 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 		&i.DismissedAt,
 		&i.SourceKey,
 		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
 	)
 	return i, err
 }
@@ -224,8 +226,37 @@ func (q *Queries) DismissNotification(ctx context.Context, id string) (int64, er
 	return result.RowsAffected()
 }
 
+const getCoordinatorAskNotification = `-- name: GetCoordinatorAskNotification :one
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note FROM notifications
+WHERE type = 'coordinator_message' AND source_key = ?
+LIMIT 1
+`
+
+func (q *Queries) GetCoordinatorAskNotification(ctx context.Context, sourceKey string) (Notification, error) {
+	row := q.db.QueryRowContext(ctx, getCoordinatorAskNotification, sourceKey)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ProjectID,
+		&i.PRURL,
+		&i.Type,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+		&i.DismissedAt,
+		&i.SourceKey,
+		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
+	)
+	return i, err
+}
+
 const getNotificationBySourceKey = `-- name: GetNotificationBySourceKey :one
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose FROM notifications WHERE source_key = ? LIMIT 1
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note FROM notifications WHERE source_key = ? LIMIT 1
 `
 
 func (q *Queries) GetNotificationBySourceKey(ctx context.Context, sourceKey string) (Notification, error) {
@@ -245,12 +276,14 @@ func (q *Queries) GetNotificationBySourceKey(ctx context.Context, sourceKey stri
 		&i.DismissedAt,
 		&i.SourceKey,
 		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
 	)
 	return i, err
 }
 
 const getNotificationForDismissal = `-- name: GetNotificationForDismissal :one
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE id = ?
   AND dismissed_at IS NULL
@@ -275,12 +308,14 @@ func (q *Queries) GetNotificationForDismissal(ctx context.Context, id string) (N
 		&i.DismissedAt,
 		&i.SourceKey,
 		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
 	)
 	return i, err
 }
 
 const getOpenNotificationByDedupe = `-- name: GetOpenNotificationByDedupe :one
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE session_id = ?
   AND type = ?
@@ -312,12 +347,14 @@ func (q *Queries) GetOpenNotificationByDedupe(ctx context.Context, arg GetOpenNo
 		&i.DismissedAt,
 		&i.SourceKey,
 		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
 	)
 	return i, err
 }
 
 const listNotificationsPage = `-- name: ListNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE dismissed_at IS NULL
   AND (
@@ -358,6 +395,8 @@ func (q *Queries) ListNotificationsPage(ctx context.Context, arg ListNotificatio
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -373,7 +412,7 @@ func (q *Queries) ListNotificationsPage(ctx context.Context, arg ListNotificatio
 }
 
 const listOpenReadyToMergeNotifications = `-- name: ListOpenReadyToMergeNotifications :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE type = 'ready_to_merge'
   AND resolved_at IS NULL
@@ -406,6 +445,8 @@ func (q *Queries) ListOpenReadyToMergeNotifications(ctx context.Context) ([]Noti
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -421,7 +462,7 @@ func (q *Queries) ListOpenReadyToMergeNotifications(ctx context.Context) ([]Noti
 }
 
 const listUnreadNotificationsPage = `-- name: ListUnreadNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE status = 'unread'
   AND dismissed_at IS NULL
@@ -463,6 +504,8 @@ func (q *Queries) ListUnreadNotificationsPage(ctx context.Context, arg ListUnrea
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -478,7 +521,7 @@ func (q *Queries) ListUnreadNotificationsPage(ctx context.Context, arg ListUnrea
 }
 
 const listUnresolvedNotificationsPage = `-- name: ListUnresolvedNotificationsPage :many
-SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
@@ -525,6 +568,8 @@ func (q *Queries) ListUnresolvedNotificationsPage(ctx context.Context, arg ListU
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -560,7 +605,7 @@ SET status = 'read'
 WHERE id = ?
   AND status = 'unread'
   AND dismissed_at IS NULL
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
 func (q *Queries) MarkNotificationRead(ctx context.Context, id string) (Notification, error) {
@@ -580,39 +625,40 @@ func (q *Queries) MarkNotificationRead(ctx context.Context, id string) (Notifica
 		&i.DismissedAt,
 		&i.SourceKey,
 		&i.Purpose,
+		&i.Resolution,
+		&i.ResolutionNote,
 	)
 	return i, err
 }
 
-const resolveAnsweredCoordinatorAsks = `-- name: ResolveAnsweredCoordinatorAsks :many
+const resolveCoordinatorAsk = `-- name: ResolveCoordinatorAsk :many
 UPDATE notifications
-SET resolved_at = ?1
+SET resolved_at = ?1, resolution = ?2, resolution_note = ?3
 WHERE type = 'coordinator_message'
   AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND source_key = ?4
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND EXISTS (
-    SELECT 1 FROM conversation_messages ask
-    WHERE ask.id = substr(notifications.source_key, 21)
-      AND (
-        EXISTS (
-          SELECT 1 FROM coordinator_human_messages h
-          JOIN conversation_messages reply ON reply.id = h.message_id
-          WHERE h.purpose = 'human_request' AND reply.conversation_id = ask.conversation_id AND reply.sequence > ask.sequence)
-        OR EXISTS (
-          SELECT 1 FROM conversation_activities s
-          WHERE s.conversation_id = ask.conversation_id AND s.sequence > ask.sequence AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')='')
-      )
-  )
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
-// A coordinator question is answered when Ed writes in that conversation after
-// it: a human request, or his own steer into a running turn. The question's
-// message id is carried by the notification's source key. The resolver runs on
-// conversation changes, so this holds for every way Ed can reply.
-func (q *Queries) ResolveAnsweredCoordinatorAsks(ctx context.Context, resolvedAt sql.NullTime) ([]Notification, error) {
-	rows, err := q.db.QueryContext(ctx, resolveAnsweredCoordinatorAsks, resolvedAt)
+type ResolveCoordinatorAskParams struct {
+	ResolvedAt     sql.NullTime
+	Resolution     string
+	ResolutionNote string
+	SourceKey      string
+}
+
+// A coordinator question closes only when it is answered explicitly: Ed's reply
+// names it, or the coordinator records it answered. An unrelated message never
+// does. The question's message id is carried by the notification's source key.
+func (q *Queries) ResolveCoordinatorAsk(ctx context.Context, arg ResolveCoordinatorAskParams) ([]Notification, error) {
+	rows, err := q.db.QueryContext(ctx, resolveCoordinatorAsk,
+		arg.ResolvedAt,
+		arg.Resolution,
+		arg.ResolutionNote,
+		arg.SourceKey,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -634,6 +680,8 @@ func (q *Queries) ResolveAnsweredCoordinatorAsks(ctx context.Context, resolvedAt
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -655,7 +703,7 @@ WHERE pr_url = ?2
   AND type = ?3
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
 type ResolvePRNotificationsByTypeParams struct {
@@ -687,6 +735,8 @@ func (q *Queries) ResolvePRNotificationsByType(ctx context.Context, arg ResolveP
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -708,7 +758,7 @@ WHERE session_id = ?2
   AND type = ?3
   AND resolved_at IS NULL
   AND dismissed_at IS NULL
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
 type ResolveSessionNotificationsByTypeParams struct {
@@ -740,6 +790,8 @@ func (q *Queries) ResolveSessionNotificationsByType(ctx context.Context, arg Res
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}
@@ -765,7 +817,7 @@ WHERE type = 'needs_input'
     WHERE is_terminated = TRUE
        OR activity_state NOT IN ('waiting_input', 'blocked')
   )
-RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose, resolution, resolution_note
 `
 
 // Restart reconciliation: a resolution transition observed while the daemon was
@@ -794,6 +846,8 @@ func (q *Queries) ResolveStaleNeedsInputNotifications(ctx context.Context, resol
 			&i.DismissedAt,
 			&i.SourceKey,
 			&i.Purpose,
+			&i.Resolution,
+			&i.ResolutionNote,
 		); err != nil {
 			return nil, err
 		}

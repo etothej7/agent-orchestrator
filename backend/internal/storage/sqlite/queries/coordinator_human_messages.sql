@@ -46,16 +46,3 @@ SELECT message_id, created_at FROM coordinator_notice_keys WHERE dedupe_key = ?;
 -- name: UpsertCoordinatorNoticeKey :exec
 INSERT INTO coordinator_notice_keys(dedupe_key, message_id, created_at) VALUES(?, ?, ?)
 ON CONFLICT(dedupe_key) DO UPDATE SET message_id = excluded.message_id, created_at = excluded.created_at;
-
--- An answered question may be asked again: a newer human request, or Ed's own
--- steer into a running turn, means the earlier ask was seen and responded to.
--- This is the same notion of "Ed replied" the answer resolver uses.
--- name: CoordinatorHumanRequestedSince :one
-SELECT EXISTS (
-    SELECT 1 FROM coordinator_human_messages h
-    JOIN conversation_messages m ON m.id=h.message_id
-    WHERE h.purpose = 'human_request' AND m.conversation_id = sqlc.arg(conversation_id) AND m.created_at > sqlc.arg(since)
-) OR EXISTS (
-    SELECT 1 FROM conversation_activities s
-    WHERE s.conversation_id = sqlc.arg(conversation_id) AND s.created_at > sqlc.arg(since) AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
-);

@@ -18,6 +18,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
+	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -3241,6 +3242,7 @@ func newHarnessWithConversationAndStoreForHarness(
 		Reader:          fullSnapshotReader(st),
 		PageReader:      boundedSnapshotReader(st),
 		HumanPageReader: boundedHumanSnapshotReader(st),
+		Notifier:        notify.New(notify.Deps{Store: st}),
 		Sessions:        st,
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)

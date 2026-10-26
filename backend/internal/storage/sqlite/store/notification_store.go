@@ -398,6 +398,9 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 		ResolvedAt: timeFromNull(row.ResolvedAt),
 		SourceKey:  row.SourceKey,
 		Purpose:    row.Purpose,
+
+		Resolution:     row.Resolution,
+		ResolutionNote: row.ResolutionNote,
 	}
 }
 
@@ -409,21 +412,32 @@ func notificationsFromGen(rows []gen.Notification) []domain.NotificationRecord {
 	return out
 }
 
-// ResolveAnsweredCoordinatorAsks closes coordinator questions Ed has since
-// replied to and returns the rows it changed so they can be published.
-func (s *Store) ResolveAnsweredCoordinatorAsks(ctx context.Context, at time.Time) ([]domain.NotificationRecord, error) {
-	// The resolver wakes on every conversation change; take the single writer
-	// only when a question is actually open.
-	if open, err := s.CountUnresolvedCoordinatorAsks(ctx); err != nil || open == 0 {
-		return nil, err
-	}
+// ResolveCoordinatorAsk closes the one open coordinator question whose message is
+// askMessageID and returns the rows it changed for publication. It is idempotent:
+// a question already resolved or dismissed changes nothing.
+func (s *Store) ResolveCoordinatorAsk(ctx context.Context, askMessageID, resolution, note string, at time.Time) ([]domain.NotificationRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.ResolveAnsweredCoordinatorAsks(ctx, nullTime(at))
+	rows, err := s.qw.ResolveCoordinatorAsk(ctx, gen.ResolveCoordinatorAskParams{
+		ResolvedAt: nullTime(at), Resolution: resolution, ResolutionNote: note, SourceKey: "coordinator-message:" + askMessageID,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("resolve answered coordinator asks: %w", err)
+		return nil, fmt.Errorf("resolve coordinator ask %s: %w", askMessageID, err)
 	}
 	return notificationsFromGen(rows), nil
+}
+
+// CoordinatorAskMessage reports the conversation and purpose of a coordinator
+// message that addresses the human, or false when no such message exists.
+func (s *Store) CoordinatorAskMessage(ctx context.Context, messageID string) (conversationID, purpose string, found bool, err error) {
+	row, err := s.qr.GetCoordinatorHumanMessage(ctx, messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("read coordinator message %s: %w", messageID, err)
+	}
+	return row.ConversationID, row.Purpose, true, nil
 }
 
 // CountUnresolvedCoordinatorAsks counts coordinator questions still waiting on Ed.

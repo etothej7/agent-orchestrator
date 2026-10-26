@@ -26,7 +26,7 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 			t.Fatal("manager prompt advertises a worker-only creation key")
 		}
 	}
-	for _, want := range []string{"Reaching Ed (the human)", "ao ask --id", "ao tell --id", "--kind result|stopped", "Never use it for progress", "At most three --kind result notices", "shown to Ed only when it answers a message Ed typed"} {
+	for _, want := range []string{"Reaching Ed (the human)", "ao ask --id", "ao tell --id", "--kind result|stopped", "Never use it for progress", "At most three --kind result notices", "ao ask resolve --id", "An unrelated message from Ed never closes it", "shown to Ed only when it answers a message Ed typed"} {
 		if !strings.Contains(overall, want) {
 			t.Fatalf("overall coordinator lacks the human-contact rule %q", want)
 		}

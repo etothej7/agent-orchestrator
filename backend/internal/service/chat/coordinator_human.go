@@ -25,6 +25,96 @@ type HumanNotifier interface {
 	Notify(context.Context, ports.NotificationIntent) error
 }
 
+// askReferenceStore reads coordinator messages that address the human.
+type askReferenceStore interface {
+	CoordinatorAskMessage(ctx context.Context, messageID string) (conversationID, purpose string, found bool, err error)
+}
+
+// askResolver closes a coordinator question's notification and publishes it.
+type askResolver interface {
+	ResolveCoordinatorAsk(ctx context.Context, askMessageID, resolution, note string) error
+}
+
+// ResolveAskReference finds the coordinator question a reply or a resolve names.
+// ref is the question's conversation message id (decision-<id>) or the bare id the
+// coordinator gave ao ask. Only an ask-purpose message in this session's own
+// coordinator conversation qualifies; anything else is rejected, so an unrelated
+// or foreign id can never close a question.
+func (s *Service) ResolveAskReference(ctx context.Context, id domain.SessionID, ref string) (string, error) {
+	invalid := func() error {
+		return apierr.Invalid("INVALID_ASK_REFERENCE", "Name an open question of this coordinator conversation", nil)
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" || len(ref) > 256 {
+		return "", invalid()
+	}
+	rec, err := s.requireChatSession(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	human, err := s.isHumanCoordinator(ctx, rec.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	reader, ok := s.store.(askReferenceStore)
+	if !human || !ok {
+		return "", invalid()
+	}
+	conversation, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range []string{ref, "decision-" + ref} {
+		conversationID, purpose, found, err := reader.CoordinatorAskMessage(ctx, candidate)
+		if err != nil {
+			return "", err
+		}
+		if found && conversationID == conversation.ID && domain.IsCoordinatorAskPurpose(purpose) {
+			return candidate, nil
+		}
+	}
+	return "", invalid()
+}
+
+// ResolveAskReply closes a question Ed answered with the Answer control. It is
+// idempotent, so a retried reply cannot publish a second closure.
+func (s *Service) ResolveAskReply(ctx context.Context, askMessageID string) error {
+	resolver, ok := s.notifier.(askResolver)
+	if !ok {
+		return nil
+	}
+	return resolver.ResolveCoordinatorAsk(ctx, askMessageID, domain.NotificationResolutionAnswered, "")
+}
+
+// ResolveHumanDecision lets the coordinator record that Ed answered its question,
+// for example after a free-text answer. It resolves only questions of its own
+// conversation and returns the question's message id.
+func (s *Service) ResolveHumanDecision(ctx context.Context, id domain.SessionID, ref, note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if len(note) > 1000 {
+		return "", apierr.Invalid("INVALID_HUMAN_DECISION", "A resolution note is at most 1000 characters", nil)
+	}
+	rec, err := s.requireChatSession(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if rec.Kind != domain.KindOrchestrator || rec.IsTerminated || rec.Activity.State == domain.ActivityExited {
+		return "", apierr.Invalid("COORDINATOR_REQUIRED", "Only the active overall coordinator can resolve its questions", nil)
+	}
+	messageID, err := s.ResolveAskReference(ctx, id, ref)
+	if err != nil {
+		return "", err
+	}
+	resolver, ok := s.notifier.(askResolver)
+	if !ok {
+		return messageID, nil
+	}
+	if err := resolver.ResolveCoordinatorAsk(ctx, messageID, domain.NotificationResolutionCoordinator, note); err != nil {
+		return "", err
+	}
+	return messageID, nil
+}
+
 // HumanDecision is a deliberate message to the human: a blocking question or
 // decision, or a bounded notice of a verified result or stopped work. It is
 // never a status notification.

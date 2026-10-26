@@ -149,25 +149,25 @@ func (m *Manager) Resolve(ctx context.Context, res Resolution) error {
 	return m.publishResolved(ctx, resolved)
 }
 
-// ResolveAnsweredCoordinatorAsks closes the coordinator questions Ed has since
-// replied to and publishes the rows it changed. The answer is a durable fact in
-// the coordinator conversation, so this is safe to run on any change and again
-// after a restart.
-func (m *Manager) ResolveAnsweredCoordinatorAsks(ctx context.Context) error {
+// ResolveCoordinatorAsk closes the open coordinator question whose message is
+// askMessageID and publishes the rows it changed. A question closes only because
+// it was answered explicitly (see domain.NotificationResolution*); resolving one
+// that is already closed does nothing, so a retry never publishes twice.
+func (m *Manager) ResolveCoordinatorAsk(ctx context.Context, askMessageID, resolution, note string) error {
 	if m == nil || m.store == nil {
 		return errors.New("notify: store is required")
 	}
 	resolver, ok := m.store.(interface {
-		ResolveAnsweredCoordinatorAsks(context.Context, time.Time) ([]domain.NotificationRecord, error)
+		ResolveCoordinatorAsk(context.Context, string, string, string, time.Time) ([]domain.NotificationRecord, error)
 	})
 	if !ok {
 		return nil
 	}
 	m.barrier.Lock()
 	defer m.barrier.Unlock()
-	resolved, err := resolver.ResolveAnsweredCoordinatorAsks(ctx, m.clock().UTC())
+	resolved, err := resolver.ResolveCoordinatorAsk(ctx, askMessageID, resolution, note, m.clock().UTC())
 	if err != nil {
-		return fmt.Errorf("notify resolve coordinator asks: %w", err)
+		return fmt.Errorf("notify resolve coordinator ask: %w", err)
 	}
 	return m.publishResolved(ctx, resolved)
 }

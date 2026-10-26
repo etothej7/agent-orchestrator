@@ -6733,6 +6733,57 @@ paths:
       summary: Record an explicit human blocking question
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/human-decisions/resolve:
+    post:
+      operationId: resolveHumanDecision
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveHumanDecisionRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanDecisionResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Record that the human answered one of the coordinator's questions
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve:
     post:
       operationId: resolveSessionConversationInput
@@ -18269,6 +18320,13 @@ components:
           - verified_result
           - stopped_work
           type: string
+        resolution:
+          enum:
+          - answered
+          - coordinator
+          type: string
+        resolutionNote:
+          type: string
         resolvedAt:
           format: date-time
           type:
@@ -19047,6 +19105,15 @@ components:
       required:
       - action
       type: object
+    ResolveHumanDecisionRequest:
+      properties:
+        id:
+          type: string
+        note:
+          type: string
+      required:
+      - id
+      type: object
     RestoreArtifactVersionRequest:
       properties:
         path:
@@ -19283,6 +19350,8 @@ components:
           items:
             $ref: '#/components/schemas/ConversationExcerptReferenceRequest'
           type: array
+        replyToAskId:
+          type: string
         resources:
           items:
             $ref: '#/components/schemas/ConversationResourceContentRequest'
@@ -21213,6 +21282,8 @@ components:
           type: string
         recoverOnly:
           type: boolean
+        replyToAskId:
+          type: string
         senderSessionId:
           type: string
         text:

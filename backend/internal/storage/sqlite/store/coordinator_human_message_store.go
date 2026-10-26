@@ -149,13 +149,15 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 			dedupeKey = coordinatorNoticeKey(purpose, dedupeStory, msg.Text)
 			prior, err := q.GetCoordinatorNoticeKey(ctx, dedupeKey)
 			if err == nil && !prior.CreatedAt.Before(now.Add(-CoordinatorDedupeWindow)) {
+				// A question may be asked again once it was answered explicitly
+				// (resolved) or dismissed; an unrelated message never counts.
 				answered := false
 				if !notice {
-					replied, err := q.CoordinatorHumanRequestedSince(ctx, gen.CoordinatorHumanRequestedSinceParams{ConversationID: msg.ConversationID, Since: prior.CreatedAt})
-					if err != nil {
+					state, err := q.GetCoordinatorAskNotification(ctx, "coordinator-message:"+prior.MessageID)
+					if err != nil && !errors.Is(err, sql.ErrNoRows) {
 						return err
 					}
-					answered = replied.Valid && replied.Bool
+					answered = err == nil && (state.ResolvedAt.Valid || state.DismissedAt.Valid)
 				}
 				if !answered {
 					recordedID = prior.MessageID // already announced; reach the human once

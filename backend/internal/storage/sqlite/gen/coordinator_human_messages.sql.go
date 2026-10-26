@@ -13,32 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-const coordinatorHumanRequestedSince = `-- name: CoordinatorHumanRequestedSince :one
-SELECT EXISTS (
-    SELECT 1 FROM coordinator_human_messages h
-    JOIN conversation_messages m ON m.id=h.message_id
-    WHERE h.purpose = 'human_request' AND m.conversation_id = ?1 AND m.created_at > ?2
-) OR EXISTS (
-    SELECT 1 FROM conversation_activities s
-    WHERE s.conversation_id = ?1 AND s.created_at > ?2 AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
-)
-`
-
-type CoordinatorHumanRequestedSinceParams struct {
-	ConversationID string
-	Since          time.Time
-}
-
-// An answered question may be asked again: a newer human request, or Ed's own
-// steer into a running turn, means the earlier ask was seen and responded to.
-// This is the same notion of "Ed replied" the answer resolver uses.
-func (q *Queries) CoordinatorHumanRequestedSince(ctx context.Context, arg CoordinatorHumanRequestedSinceParams) (sql.NullBool, error) {
-	row := q.db.QueryRowContext(ctx, coordinatorHumanRequestedSince, arg.ConversationID, arg.Since)
-	var column_1 sql.NullBool
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const getCoordinatorHumanMessage = `-- name: GetCoordinatorHumanMessage :one
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation, h.purpose FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id WHERE h.message_id=?

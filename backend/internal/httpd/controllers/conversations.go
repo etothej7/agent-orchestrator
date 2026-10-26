@@ -124,6 +124,7 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/chat-view", c.setChatView)
 	r.Get("/sessions/{sessionId}/conversation", c.snapshot)
 	r.Post("/sessions/{sessionId}/conversation/human-decisions", c.humanDecision)
+	r.Post("/sessions/{sessionId}/conversation/human-decisions/resolve", c.resolveHumanDecision)
 	r.Post("/sessions/{sessionId}/conversation/messages", c.send)
 	r.Post("/sessions/{sessionId}/conversation/prompt-suggestion", c.promptSuggestion)
 	r.Post("/sessions/{sessionId}/conversation/approvals/{requestId}/resolve", c.resolve)
@@ -983,9 +984,17 @@ func (c *ConversationsController) send(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", invalid.code, invalid.message, nil)
 		return
 	}
-	turn, err := c.Svc.Send(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), message)
+	session := domain.SessionID(chi.URLParam(r, "sessionId"))
+	askID, proceed := c.askReplyTarget(w, r, session, req.ReplyToAskID)
+	if !proceed {
+		return
+	}
+	turn, err := c.Svc.Send(r.Context(), session, message)
 	if err != nil {
 		writeConversationError(w, r, err)
+		return
+	}
+	if !c.finishAskReply(w, r, askID) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, sendConversationMessageResponse(turn))
