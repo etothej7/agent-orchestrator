@@ -80,6 +80,7 @@ import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { ScriptRunPanel } from "../ScriptRunPanel";
 import { HumanMessageEditor } from "./HumanMessageEditor";
+import { splitMessageLists, type MessageBlock } from "../../lib/chat-message-lists";
 import { RenderFrame } from "./RenderFrame";
 import { ConversationBranchNavigator } from "./ConversationBranchNavigator";
 import { ConversationContentItems } from "./ConversationContentItems";
@@ -543,6 +544,67 @@ function ProseWithInlineImages({
 	);
 }
 
+/**
+ * The words a person sent, drawn as typed except that "- a" and "1. b" lines read
+ * as lists. Text with no list renders exactly as it always has; only the drawing
+ * changes, never the text the agent received. See `lib/chat-message-lists.ts`.
+ */
+function HumanMessageBody({
+	body,
+	attachments,
+	sessionId,
+	apiBaseUrl,
+}: {
+	body: string;
+	attachments: string[];
+	sessionId: string;
+	apiBaseUrl: string | null;
+}) {
+	const blocks = useMemo(() => splitMessageLists(body), [body]);
+	const renderText = (text: string) => <SessionLinkedText text={text} />;
+	const prose = (text: string) => (
+		<ProseWithInlineImages text={text} attachments={attachments} sessionId={sessionId} apiBaseUrl={apiBaseUrl} renderText={renderText} />
+	);
+	const only = blocks.length === 1 ? blocks[0] : undefined;
+	if (only?.kind === "text") {
+		return (
+			<p data-chat-message-body="" className="break-words whitespace-pre-wrap text-pretty">
+				{prose(only.text)}
+			</p>
+		);
+	}
+	const render = (list: MessageBlock[], key: string): ReactNode =>
+		list.map((block, index) => {
+			const blockKey = `${key}.${index}`;
+			if (block.kind === "text") {
+				return (
+					<p key={blockKey} className="break-words whitespace-pre-wrap text-pretty">
+						{prose(block.text)}
+					</p>
+				);
+			}
+			const Tag = block.ordered ? "ol" : "ul";
+			return (
+				<Tag
+					key={blockKey}
+					start={block.ordered && block.start !== 1 ? block.start : undefined}
+					className={cn("my-1 ml-5 space-y-0.5 first:mt-0 last:mb-0", block.ordered ? "list-decimal" : "list-disc")}
+				>
+					{block.items.map((item, itemIndex) => (
+						<li key={itemIndex} className="min-w-0 break-words pl-0.5 text-pretty marker:text-muted-foreground">
+							{render(item, `${blockKey}.${itemIndex}`)}
+						</li>
+					))}
+				</Tag>
+			);
+		});
+	return (
+		<div data-chat-message-body="" className="break-words">
+			{render(blocks, "b")}
+		</div>
+	);
+}
+
 function StagedAttachmentItems({
 	paths,
 	sessionId,
@@ -760,15 +822,7 @@ export function HumanMessage({
 						/>
 					) : null}
 					{body ? (
-						<p data-chat-message-body="" className="break-words whitespace-pre-wrap text-pretty">
-							<ProseWithInlineImages
-								text={body}
-								attachments={attachments}
-								sessionId={sessionId}
-								apiBaseUrl={apiBaseUrl}
-								renderText={(text) => <SessionLinkedText text={text} />}
-							/>
-						</p>
+						<HumanMessageBody body={body} attachments={attachments} sessionId={sessionId} apiBaseUrl={apiBaseUrl} />
 					) : null}
 					<StagedAttachmentItems
 						paths={attachments}

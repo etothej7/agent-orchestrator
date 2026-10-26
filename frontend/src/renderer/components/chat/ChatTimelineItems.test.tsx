@@ -502,6 +502,67 @@ describe("HumanMessage", () => {
 		rerender(<HumanMessage message={human()} sessionId="s1" queued />);
 		expect(container.querySelector(".cursor-chat-human-message")).toHaveAttribute("data-queued");
 	});
+
+	describe("lists in a sent message", () => {
+		const body = (container: HTMLElement) => container.querySelector("[data-chat-message-body]") as HTMLElement;
+
+		it("draws a message without a list exactly as before, newlines kept", () => {
+			const text = "first line\nsecond line\n\n**not bold** <b>not html</b> 5 * 3";
+			const { container } = render(<HumanMessage message={human({ text })} sessionId="s1" />);
+			const paragraph = body(container);
+			expect(paragraph.tagName).toBe("P");
+			expect(paragraph.className).toContain("whitespace-pre-wrap");
+			expect(paragraph.textContent).toBe(text);
+			expect(paragraph.querySelector("ul, ol, b, strong")).toBeNull();
+		});
+
+		it("draws dash and numbered lines as real lists with prose around them", () => {
+			const { container } = render(
+				<HumanMessage message={human({ text: "Please do:\n- alpha\n- beta\n\n1. one\n2. two\nThanks" })} sessionId="s1" />,
+			);
+			const content = body(container);
+			expect([...content.querySelectorAll("ul > li")].map((li) => li.textContent)).toEqual(["alpha", "beta"]);
+			expect([...content.querySelectorAll("ol > li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+			expect([...content.querySelectorAll(":scope > p")].map((p) => p.textContent)).toEqual(["Please do:", "Thanks"]);
+			expect(content.textContent).not.toContain("- alpha");
+		});
+
+		it("numbers an ordered list from its first number and nests an indented list", () => {
+			const { container } = render(<HumanMessage message={human({ text: "3. c\n   - inner\n4. d" })} sessionId="s1" />);
+			const ordered = body(container).querySelector("ol");
+			expect(ordered).toHaveAttribute("start", "3");
+			expect(ordered?.querySelector(":scope > li > ul > li")?.textContent).toBe("inner");
+		});
+
+		it("never renders markup or script from a list item", () => {
+			const { container } = render(
+				<HumanMessage
+					message={human({ text: "- <script>window.__pwned = 1</script><img src=x onerror=alert(1)>\n- [x](javascript:alert(1)) **b**" })}
+					sessionId="s1"
+				/>,
+			);
+			const content = body(container);
+			expect(content.querySelector("script, img, a, strong, b")).toBeNull();
+			expect(content.textContent).toContain("<script>window.__pwned = 1</script><img src=x onerror=alert(1)>");
+			expect(content.textContent).toContain("[x](javascript:alert(1)) **b**");
+			expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+		});
+
+		it("lets a long list item wrap instead of overflowing", () => {
+			const long = "word ".repeat(200).trim();
+			const { container } = render(<HumanMessage message={human({ text: `- ${long}\n- short` })} sessionId="s1" />);
+			const item = body(container).querySelector("li");
+			expect(item?.className).toContain("break-words");
+			expect(item?.className).toContain("min-w-0");
+			expect(item?.textContent).toBe(long);
+		});
+
+		it("is render-only: the message text the agent receives is the stored text", () => {
+			const message = human({ text: "- a\n1. b" });
+			render(<HumanMessage message={message} sessionId="s1" />);
+			expect(message.text).toBe("- a\n1. b");
+		});
+	});
 });
 
 describe("ProviderSwitchMarker", () => {
