@@ -284,6 +284,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					import: async () => ({ sourceName: "", entries: [] }),
 					onImportProgress: () => () => undefined,
 				},
+				coordinatorBadge: { refresh: () => undefined },
 				notifications: {
 					show: async () => undefined,
 					setBadge: async (_count: number) => undefined,
@@ -1173,6 +1174,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					import: async () => ({ sourceName: "", entries: [] }),
 					onImportProgress: () => () => undefined,
 				},
+				coordinatorBadge: { refresh: () => undefined },
 				notifications: {
 					show: async () => undefined,
 					setBadge: async (_count: number) => undefined,

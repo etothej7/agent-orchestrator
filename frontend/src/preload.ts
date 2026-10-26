@@ -629,6 +629,10 @@ const api = {
 			};
 		},
 	},
+	coordinatorBadge: {
+		/** Re-read the Dock badge now (a result was just read, or a question answered). */
+		refresh: () => ipcRenderer.send("coordinator-badge:refresh"),
+	},
 	notifications: {
 		show: (notification: { id: string; title: string; body?: string; type?: string; purpose?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,

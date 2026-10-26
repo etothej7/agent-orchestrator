@@ -207,6 +207,8 @@ export interface ConversationMessage {
 	senderDisplayName?: string;
 	/** The sender's idempotency key. Lets the local echo and this row share one identity. */
 	clientMessageId?: string;
+	/** Why the daemon kept this message for the human, e.g. `human_request`, or `verified_result` for `ao tell`. */
+	purpose?: string;
 	/** Present only on the coordinator's unfiltered view: `internal` is what the default view hides. */
 	audience?: ConversationAudienceTag;
 	createdAt: string;

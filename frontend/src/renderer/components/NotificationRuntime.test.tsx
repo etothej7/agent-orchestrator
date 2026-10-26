@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { NotificationDTO, NotificationsCache } from "../lib/notifications";
 import { NotificationRuntime } from "./NotificationCenter";
@@ -31,10 +31,16 @@ const notifications: NotificationDTO[] = [
 	},
 ];
 
-const unreadCache: NotificationsCache = {
-	pages: [{ notifications, nextCursor: undefined, unreadCount: notifications.length, unresolvedCount: notifications.length, unresolvedAskCount: 0 }],
+const coordinator = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, status: "read" | "unread"): NotificationDTO => ({
+	id, sessionId: "coord", projectId: "overall", prUrl: "", type: "coordinator_message", purpose, title: id, body: id, status,
+	createdAt: "2026-06-16T12:00:00Z", target: { kind: "session", sessionId: "coord" },
+});
+
+const cacheWith = (extra: NotificationDTO[], unresolvedAskCount: number): NotificationsCache => ({
+	pages: [{ notifications: [...notifications, ...extra], nextCursor: undefined, unreadCount: notifications.length + extra.length, unresolvedCount: notifications.length + unresolvedAskCount, unresolvedAskCount }],
 	pageParams: [""],
-};
+});
+let unreadCache: NotificationsCache = cacheWith([], 0);
 
 const { setBadge } = vi.hoisted(() => ({ setBadge: vi.fn() }));
 
@@ -70,15 +76,17 @@ function renderRuntimeOnly() {
 	);
 }
 
-describe("NotificationRuntime badge sync", () => {
-	it("syncs the launcher badge without the notification bell being mounted", async () => {
+describe("NotificationRuntime badge", () => {
+	it("leaves the launcher badge to the desktop's main process, which keeps it right with no window", async () => {
 		setBadge.mockClear();
+		unreadCache = cacheWith([
+			coordinator("tell-unread", "verified_result", "unread"),
+			coordinator("ask-open", "blocking_decision", "unread"),
+		], 1);
 
 		renderRuntimeOnly();
+		await new Promise((resolve) => setTimeout(resolve, 50));
 
-		// The badge must update purely from the always-mounted runtime, independent
-		// of NotificationCenter, which Linux hides from the topbar and only mounts
-		// on the sessions board.
-		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(notifications.length));
+		expect(setBadge).not.toHaveBeenCalled();
 	});
 });

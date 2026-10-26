@@ -1,6 +1,5 @@
 import { AppLink } from "./AppLink";
 import { useQueryClient } from "@tanstack/react-query";
-import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { useParams } from "@tanstack/react-router";
 import {
@@ -28,7 +27,6 @@ import {
 	useNotificationsQuery,
 } from "../hooks/useNotificationsQuery";
 import { useRestoreSession } from "../hooks/useRestoreSession";
-import { useOpenMainCoordinator } from "../hooks/useOpenMainCoordinator";
 import { useRemoteWorkspaces, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { WorkspaceSummary } from "../types/workspace";
 import { aoBridge } from "../lib/bridge";
@@ -37,7 +35,8 @@ import { LOCAL_HOST, parseRefKey, refKey, sessionUiKey, type HostId } from "../l
 import {
 	createNotificationsTransport,
 	getCachedNotifications,
-	getCachedUnreadCount,
+	getBellUnreadCount,
+	isBellNotification,
 	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	type NotificationDTO,
@@ -132,13 +131,10 @@ function useSessionTerminationLookup(
  * workspace observer here means streamed workspace activity cannot wake the
  * always-mounted bell while its panel is closed.
  */
-type MainCoordinatorOpener = Pick<ReturnType<typeof useOpenMainCoordinator>, "open" | "projectId">;
-
 function NotificationWorkspaceState({
 	children,
 }: {
 	children: (state: {
-		mainCoordinator: MainCoordinatorOpener;
 		retryWorkspace: () => void;
 		loadedRemoteSessionIds: Set<string>;
 		sessionMeta: Map<string, SessionMeta>;
@@ -148,7 +144,6 @@ function NotificationWorkspaceState({
 	}) => ReactNode;
 }) {
 	const workspaceQuery = useWorkspaceQuery();
-	const mainCoordinator = useOpenMainCoordinator(workspaceQuery.data);
 	const remoteWorkspaces = useRemoteWorkspaces();
 	const retryWorkspace = useCallback(() => {
 		void workspaceQuery.refetch();
@@ -184,15 +179,15 @@ function NotificationWorkspaceState({
 		}
 		return ids;
 	}, [remoteWorkspaces.data, remoteWorkspaces.failedHostIds, remoteWorkspaces.loadedSessionHostIds]);
-	return <>{children({ mainCoordinator, retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError: workspaceError || remoteWorkspaces.failedHostIds.length > 0 })}</>;
+	return <>{children({ retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError: workspaceError || remoteWorkspaces.failedHostIds.length > 0 })}</>;
 }
 
 export function NotificationRuntime() {
 	const queryClient = useQueryClient();
 	const { openPrimary } = useNotificationTargetNavigation();
-	const unreadQuery = useNotificationsQuery("unread");
+	// Keeps the unread cache the live stream merges into warm for the bell.
+	useNotificationsQuery("unread");
 	const remoteUnread = useRemoteNotificationHosts("unread");
-	const unreadCount = getCachedUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount;
 	const params = useParams({ strict: false }) as { hostId?: string; sessionId?: string };
 	const routeRef = useRef(params);
 	routeRef.current = params;
@@ -216,12 +211,8 @@ export function NotificationRuntime() {
 	);
 	useEffect(() => connectRemoteNotificationStreams(queryClient), [queryClient]);
 
-	// Keep the OS launcher badge in sync here rather than in NotificationCenter:
-	// NotificationRuntime is always mounted in the shell, whereas the notification
-	// bell is absent from the Linux topbar and only mounts on the sessions board.
-	useEffect(() => {
-		void aoBridge.notifications.setBadge(unreadCount);
-	}, [unreadCount]);
+	// The launcher/Dock badge is owned by the desktop's main process (main/coordinator-badge.ts):
+	// with the window closed there is no renderer to keep it right.
 
 	useEffect(() => {
 		for (const host of remoteUnread.hosts) {
@@ -233,7 +224,7 @@ export function NotificationRuntime() {
 				continue; // Reconnecting to a host must not replay its existing inbox.
 			}
 			for (const notification of host.data.notifications) {
-				if (previousIds.has(notification.id)) continue;
+				if (previousIds.has(notification.id) || notification.type === "coordinator_message") continue;
 				const id = `${REMOTE_NOTIFICATION_PREFIX}${notificationKey(host.hostId, notification.id)}`;
 				shownRemoteNotifications.current.set(id, notification);
 				if (shownRemoteNotifications.current.size > 256) {
@@ -316,13 +307,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const clearAll = useClearAllNotificationsMutation();
 	const clearOne = useClearNotificationMutation();
 	const restoreSession = useRestoreSession();
-	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
+	const notifications = useMemo(() => getCachedNotifications(allQuery.data).filter(isBellNotification), [allQuery.data]);
 	const remoteItems = useMemo(() => remoteAll.hosts.map((host) => {
 		const seen = new Set<string>();
 		const unread = remoteUnread.hosts.find((item) => item.hostId === host.hostId)?.data;
 		const items = [unread, host.data, ...(remoteOlderPages[host.hostId] ?? [])].filter((page): page is NotificationsPage => Boolean(page)).flatMap((page) =>
 			page.notifications.filter((notification) => {
-				if (seen.has(notification.id)) return false;
+				if (seen.has(notification.id) || !isBellNotification(notification)) return false;
 				seen.add(notification.id);
 				return true;
 			}),
@@ -359,7 +350,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 			hostId: host.hostId, label: host.label, notification,
 		}))),
 	].sort((a, b) => b.notification.createdAt.localeCompare(a.notification.createdAt)), [notifications, remoteItems]);
-	const unreadCount = getCachedUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0);
+	const unreadCount = getBellUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0);
 	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const navigateToSession = useNavigateToSession();
@@ -378,7 +369,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const visibleUnreadIds = useMemo(() => {
 		const ids = new Set<string>();
 		for (const item of getCachedNotifications(unreadQuery.data)) {
-			if (item.status === "unread") ids.add(item.id);
+			// Dropped routine types are still acknowledged on open so the server count does not drift;
+			// coordinator messages are not: only seeing them in the chat clears them.
+			if (item.status === "unread" && item.type !== "coordinator_message") ids.add(item.id);
 		}
 		for (const item of notifications) {
 			if (item.status === "unread") ids.add(item.id);
@@ -508,17 +501,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 		setAckRetryNonce((nonce) => nonce + 1);
 	};
 
-	const openSessionAndDismiss = useCallback((notification: NotificationDTO, hostId: HostId, mainCoordinator?: MainCoordinatorOpener) => {
-		setPanelOpen(false);
-		// A coordinator message belongs to the main conversation, not to whichever session sent it:
-		// that session may have ended or been replaced. Open the running coordinator, else the sender.
-		if (notification.type === "coordinator_message" && hostId === LOCAL_HOST && mainCoordinator?.projectId === notification.projectId) {
-			void mainCoordinator.open().then((outcome) => {
-				if (outcome !== "opened") openSession(notification, hostId);
-			});
-			return;
-		}
+	const openSessionAndDismiss = useCallback((notification: NotificationDTO, hostId: HostId) => {
 		openSession(notification, hostId);
+		setPanelOpen(false);
 	}, [openSession, setPanelOpen]);
 
 	const restoreThenOpen = useCallback(async (
@@ -721,7 +706,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 					</button>
 				</div>
 				<NotificationWorkspaceState>
-					{({ mainCoordinator, retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
+					{({ retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
 						<>
 							{markReadError ? (
 					<div
@@ -838,7 +823,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 									highlighted={highlightedIds.has(key) || notification.status === "unread"}
 									key={key}
 									notification={notification}
-									onOpenSession={() => openSessionAndDismiss(notification, hostId, mainCoordinator)}
+									onOpenSession={() => openSessionAndDismiss(notification, hostId)}
 									onRestore={() => restoreAndOpen(notification, hostId)}
 									onClear={() => handleClear(notification, hostId)}
 									clearing={clearingNotificationIds.has(key)}
@@ -958,14 +943,12 @@ const NotificationItem = memo(function NotificationItem({
 	terminated: boolean;
 }) {
 	const { t } = useTranslation();
-	const Icon = notificationIcon(notification.type, notification.purpose);
+	const Icon = notificationIcon(notification.type);
 	const sessionId = notification.target.sessionId || notification.sessionId;
 	const canOpenSession = Boolean(sessionId) && sessionsReady && (!terminated || !offerRestore);
 	const copy = notificationCopy(notification, sessionName);
 	const titleLink = notificationPRTitleLink(notification, copy.title);
 	const showSessionMeta = Boolean(sessionName) && !notificationMentions(copy, sessionName ?? "");
-	// A coordinator message names what it is, so a decision to make reads differently from a result to note.
-	const purposeLabel = notification.type === "coordinator_message" ? coordinatorPurposeLabel(notification.purpose, t) : undefined;
 	const openRow = () => {
 		if (canOpenSession) onOpenSession(notification);
 	};
@@ -995,7 +978,7 @@ const NotificationItem = memo(function NotificationItem({
 				<div
 					className={cn(
 						"grid size-notification-icon shrink-0 place-items-center transition-transform duration-fast group-hover:brightness-110 group-active:scale-90",
-						notificationIconClass(notification.type, notification.purpose),
+						notificationIconClass(notification.type),
 					)}
 				>
 					<Icon className="size-5" strokeWidth={2} aria-hidden="true" />
@@ -1039,10 +1022,8 @@ const NotificationItem = memo(function NotificationItem({
 							{copy.body}
 						</p>
 					) : null}
-					{purposeLabel || hostLabel || projectName || showSessionMeta ? (
+					{hostLabel || projectName || showSessionMeta ? (
 						<p className="mt-1 flex min-w-0 items-center gap-1.5 text-caption leading-none text-passive">
-							{purposeLabel ? <span className={cn("shrink-0 font-medium", isCoordinatorAsk(notification.purpose) ? "text-warning" : "text-muted-foreground")}>{purposeLabel}</span> : null}
-							{purposeLabel && (hostLabel || projectName || showSessionMeta) ? <span aria-hidden="true">·</span> : null}
 							{hostLabel ? <span className="shrink-0 font-medium text-muted-foreground">{hostLabel}</span> : null}
 							{hostLabel && (projectName || showSessionMeta) ? <span aria-hidden="true">·</span> : null}
 							{projectName ? (
@@ -1329,33 +1310,8 @@ function notificationMentions(notification: NotificationCopy, value: string): bo
 	return `${notification.title}\n${notification.body}`.toLocaleLowerCase().includes(needle);
 }
 
-/** The `ao ask` purposes: the coordinator needs something from Ed. The others tell him a result or that work stopped. */
-function isCoordinatorAsk(purpose?: string): boolean {
-	return purpose === "scope_question" || purpose === "blocking_decision" || purpose === "completion_decision";
-}
-
-function coordinatorPurposeLabel(purpose: string | undefined, t: TFunction): string | undefined {
-	switch (purpose) {
-		case "scope_question":
-			return t("notify.purposeScopeQuestion");
-		case "blocking_decision":
-			return t("notify.purposeBlockingDecision");
-		case "completion_decision":
-			return t("notify.purposeCompletionDecision");
-		case "verified_result":
-			return t("notify.purposeVerifiedResult");
-		case "stopped_work":
-			return t("notify.purposeStoppedWork");
-		default:
-			return undefined;
-	}
-}
-
-function notificationIcon(type: string, purpose?: string) {
+function notificationIcon(type: string) {
 	switch (type) {
-		case "coordinator_message":
-			if (purpose === "verified_result") return CheckCheck;
-			return purpose === "stopped_work" ? CircleAlert : MessageSquareDot;
 		case "needs_input":
 			return MessageSquareDot;
 		case "review_feedback":
@@ -1380,10 +1336,8 @@ function notificationIcon(type: string, purpose?: string) {
 // Bare colored glyph per type (no tile). Merged uses GitHub's PR-merged purple;
 // the accent token is a near-black surface color in this theme and reads as
 // invisible, so it must not be used for a glyph.
-function notificationIconClass(type: string, purpose?: string): string {
+function notificationIconClass(type: string): string {
 	switch (type) {
-		case "coordinator_message":
-			return purpose === "verified_result" ? "text-success" : "text-warning";
 		case "needs_input":
 		case "review_feedback":
 			return "text-warning";

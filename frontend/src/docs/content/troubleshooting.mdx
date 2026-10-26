@@ -5,9 +5,9 @@ description: Diagnose desktop, daemon, agent, session, GitHub, preview, and mobi
 
 ## Start with the desktop app
 
-The desktop app owns the local daemon. First quit completely and reopen Orchestrator, then confirm the project and selected session still appear. On macOS, use the menu-bar tray's **Quit AO Completely** action for this restart. The app discovers or restarts its daemon and reconnects live event and terminal streams.
+The desktop app owns the local daemon. First quit completely and reopen Orchestrator, then confirm the project and selected session still appear. On macOS, **Quit** or **Cmd+Q** quits Orchestrator completely; the menu-bar tray's **Quit AO Completely** does the same. The app discovers or restarts its daemon and reconnects live event and terminal streams.
 
-On macOS, closing the window or using **Quit / Cmd+Q** destroys the desktop window but leaves Orchestrator in the Dock and menu-bar tray. Its daemon and enabled mobile/remote access keep running while the Mac stays awake and reachable. Click the Dock icon or **Show Agent Orchestrator** in the tray to reopen the window. Existing unsaved-draft warnings still apply; desktop browser previews and browser automation stop until the window reopens. Windows and Linux quit behavior is unchanged.
+On macOS, closing the window destroys the desktop window but leaves Orchestrator running in the Dock and menu-bar tray. Its daemon and enabled mobile/remote access keep running while the Mac stays awake and reachable. Click the Dock icon or **Show Agent Orchestrator** in the tray to reopen the window. **Quit** and **Cmd+Q** are different: they exit Orchestrator, and its daemon stops shortly afterwards. Existing unsaved-draft warnings apply to both. If your agents are still working, or Stay Awake is keeping a closed-lid Mac awake, quitting first asks whether to **Keep Running** or **Quit Anyway** (only when you press Quit or Cmd+Q, or use the tray; never for a scripted quit, a logout, a system shutdown or an update restart); desktop browser previews and browser automation stop until the window reopens.
 
 If you use the optional CLI, `ao status` and `ao doctor` provide additional local diagnostics:
 

@@ -44,6 +44,8 @@ import {
 	applyResolvedNotification,
 	clearAllNotifications,
 	createNotificationsTransport,
+	getBellUnreadCount,
+	isBellNotification,
 	deleteNotification,
 	fetchNotificationsPage,
 	getCachedNotifications,
@@ -584,7 +586,7 @@ describe("createNotificationsTransport", () => {
 		});
 	});
 
-	it("surfaces a coordinator ask live, carrying its purpose to the desktop alert, and holds it unresolved until AO resolves it", () => {
+	it("surfaces a coordinator ask live without any desktop alert, and holds it unresolved until AO resolves it", () => {
 		const qc = queryClient();
 		createNotificationsTransport(qc).connect();
 		const source = EventSourceStub.instances[0];
@@ -604,14 +606,8 @@ describe("createNotificationsTransport", () => {
 			expect.objectContaining({ id: "ntf_ask", type: "coordinator_message", purpose: "blocking_decision" }),
 		]);
 		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0].unresolvedCount).toBe(1);
-		expect(showNotificationMock).toHaveBeenCalledWith({
-			id: "ntf_ask",
-			title: "Pick the migration order",
-			body: "Both plans touch billing.",
-			type: "coordinator_message",
-			purpose: "blocking_decision",
-			watched: false,
-		});
+		// It never reaches the OS: no banner, bounce or sound for a coordinator message.
+		expect(showNotificationMock).not.toHaveBeenCalled();
 
 		// Reading it (opening the panel) is not answering it; AO resolving it is.
 		source.dispatch("notification_resolved", notification({
@@ -962,5 +958,28 @@ describe("createNotificationsTransport", () => {
 		expect(first.closed).toBe(true);
 		expect(EventSourceStub.instances).toHaveLength(2);
 		expect(EventSourceStub.instances[1].url).toBe("http://127.0.0.1:4555/api/v1/notifications/stream");
+	});
+});
+
+describe("coordinator message helpers", () => {
+	const coordinator = (purpose: NonNullable<NotificationDTO["purpose"]>, status: "read" | "unread", over: Partial<NotificationDTO> = {}) =>
+		notification({ id: `${purpose}-${status}`, type: "coordinator_message", purpose, status, ...over });
+	const cache = (notifications: NotificationDTO[], unreadCount: number, unresolvedAskCount = 0): NotificationsCache => ({
+		pages: [{ notifications, unreadCount, unresolvedCount: unresolvedAskCount, unresolvedAskCount }],
+		pageParams: [""],
+	});
+
+	it("keeps coordinator messages out of the bell and its unread number", () => {
+		const items = [notification({ id: "agent", status: "unread" }), coordinator("verified_result", "unread"), coordinator("blocking_decision", "unread")];
+		expect(items.map(isBellNotification)).toEqual([true, false, false]);
+		expect(getBellUnreadCount(cache(items, 3))).toBe(1);
+		expect(getBellUnreadCount(cache([coordinator("stopped_work", "unread")], 1))).toBe(0);
+	});
+
+	it("lists only needs_input and ready_to_merge; routine progress and coordinator messages are dropped", () => {
+		const types = ["needs_input", "ready_to_merge", "review_changes_requested", "review_completed", "pr_merged", "pr_closed_unmerged", "coordinator_message"] as const;
+		expect(types.filter((type) => isBellNotification({ type }))).toEqual(["needs_input", "ready_to_merge"]);
+		const unread = types.map((type) => notification({ id: type, type, status: "unread" }));
+		expect(getBellUnreadCount(cache(unread, unread.length))).toBe(2);
 	});
 });

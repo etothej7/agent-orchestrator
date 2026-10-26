@@ -3525,11 +3525,15 @@
 	"workspace.mainCoordinatorOpenFailed": "Could not open the main coordinator",
 	"workspace.showInternalActivity": "Show internal activity",
 	"chat.internalActivity": "Internal activity",
-	"notify.purposeScopeQuestion": "Scope question",
-	"notify.purposeBlockingDecision": "Decision needed",
-	"notify.purposeCompletionDecision": "Completion decision",
-	"notify.purposeVerifiedResult": "Verified result",
-	"notify.purposeStoppedWork": "Work stopped",
 	"workspace.needsYou": "needs you",
-	"workspace.coordinatorWaiting": "The coordinator is waiting for your answer."
+	"workspace.coordinatorWaiting": "The coordinator is waiting for your answer.",
+	"chat.coordinator.from": "From your coordinator",
+	"chat.coordinator.result": "Verified result",
+	"chat.coordinator.ask": "Needs your decision",
+	"chat.coordinator.stopped": "Work stopped",
+	"chat.coordinator.answer": "Answer",
+	"chat.coordinator.answered": "Answered",
+	"chat.coordinator.resolvedByCoordinator": "Resolved by the coordinator",
+	"chat.coordinator.answering": "Answering: {{question}}",
+	"chat.coordinator.stopAnswering": "Stop answering this question"
 }

@@ -355,6 +355,7 @@ if (typeof window !== "undefined") {
 			import: async () => ({ sourceName: "", entries: [] }),
 			onImportProgress: () => () => undefined,
 		},
+		coordinatorBadge: { refresh: () => undefined },
 		notifications: {
 			show: async () => undefined,
 			setBadge: async () => undefined,

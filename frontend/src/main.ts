@@ -95,7 +95,9 @@ import {
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
-import { createDesktopQuitController } from "./main/desktop-quit";
+import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { createCoordinatorBadge } from "./main/coordinator-badge";
+import { confirmFullQuit } from "./main/quit-confirmation";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -193,13 +195,7 @@ import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readProcessStartMs } from "./main/process-start";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
-import {
-	dockBounceType,
-	shouldReplaceBounce,
-	shouldSignalAttention,
-	shouldToast,
-	toastSilent,
-} from "./main/notification-signals";
+import { planNotificationSignals, shouldReplaceBounce, toastSilent } from "./main/notification-signals";
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
@@ -376,25 +372,27 @@ let browserCleanupComplete = false;
 let browserQuitRequested = false;
 let createWindowPromise: Promise<void> | null = null;
 const desktopQuit = createDesktopQuitController({
-	platform: process.platform,
-	hasTray: () => trayController !== null && !browserQuitRequested,
-	isUpdateRestartRequested,
-	hasWindow: () => mainWindow !== null || createWindowPromise !== null,
-	closeWindow: () => {
-		if (mainWindow) mainWindow.close();
-		else if (createWindowPromise) {
-			void createWindowPromise
-				.catch((error) => console.error("failed to close pending main window:", error))
-				.then(() => {
-					// No window came of it: nothing will emit "closed", so settle now.
-					if (mainWindow) mainWindow.close();
-					else desktopQuit.windowClosed();
-				});
-		}
-	},
-	hideDock: () => app.dock?.hide(),
+	draftRiskCount: () => chatDraftRisks.length,
+	confirmDraftLeave: () => confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog),
 	quit: () => app.quit(),
+	relaunch: () => app.relaunch(),
+	isUpdateRestart: isUpdateRestartRequested,
+	confirmFullQuit: () =>
+		confirmFullQuit({
+			fetchDaemon: async (path, timeoutMs) => {
+				if (daemonStatus.state !== "ready" || !daemonStatus.port) return undefined;
+				const response = await fetch(`http://127.0.0.1:${daemonStatus.port}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+				return response.ok ? ((await response.json()) as unknown) : undefined;
+			},
+			showDialog: async (content) => {
+				const options = { type: "warning" as const, message: content.title, detail: content.body, buttons: content.buttons, defaultId: content.defaultId, cancelId: content.cancelId, noLink: true };
+				const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+				return response;
+			},
+		}),
 });
+// A requested update relaunch is armed here, once the quit can no longer be stopped.
+app.on("will-quit", () => desktopQuit.handleWillQuit());
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
 let browserStreamLink: BrowserStreamLinkHandle | null = null;
@@ -406,7 +404,6 @@ let terminalFocused = false;
 let terminalFontSizeFocused = false;
 let chatDraftRisks: ChatDraftBoundaryKind[] = [];
 let chatDraftDialog: ChatDraftDialogCopy | undefined;
-let chatDraftQuitConfirmed = false;
 let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
@@ -886,7 +883,7 @@ async function createWindowInternal(): Promise<void> {
 					void host.toggleDevToolsForLastFocused().then((state) => {
 						if (!state) fallback();
 					}).catch(fallback);
-				}),
+				}, { appName: app.name, onQuit: () => desktopQuit.requestUserQuit() }),
 			),
 		);
 	} else if (process.platform === "linux") {
@@ -957,7 +954,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("will-prevent-unload", (event) => {
 		if (
 			chatDraftRisks.length > 0 &&
-			(chatDraftQuitConfirmed ||
+			(desktopQuit.draftLeaveConfirmed() ||
 				chatDraftWindowCloseConfirmed ||
 				confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog))
 		) {
@@ -966,20 +963,17 @@ async function createWindowInternal(): Promise<void> {
 			event.preventDefault();
 			return;
 		}
-		// Doing nothing honors the renderer's request to stay, so a quit's close
-		// did not happen and AO keeps its Dock icon.
-		desktopQuit.windowCloseCanceled();
+		// Doing nothing honors the renderer's request to stay.
 	});
 
 	mainWindow.on("close", (event) => {
 		const preventClose = shouldPreventUnsafeChatDraftClose(
 			chatDraftRisks,
-			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			desktopQuit.draftLeaveConfirmed() || chatDraftWindowCloseConfirmed,
 			(options) => dialog.showMessageBoxSync(options),
 			chatDraftDialog,
 		);
 		if (preventClose) {
-			desktopQuit.windowCloseCanceled();
 			event.preventDefault();
 			return;
 		}
@@ -1133,7 +1127,7 @@ async function createWindowInternal(): Promise<void> {
 	mainWindow.on("closed", () => {
 		chatDraftRisks = [];
 		chatDraftDialog = undefined;
-		chatDraftQuitConfirmed = false;
+		desktopQuit.resetDraftConfirmation();
 		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
@@ -1151,14 +1145,11 @@ async function createWindowInternal(): Promise<void> {
 		// the next bounce skip attaching one to the replacement window.
 		cancelDockBounce();
 		trayLifecycle.clearPendingTarget();
-		desktopQuit.windowClosed();
 	});
 }
 
 function createWindow(): Promise<void> {
 	if (createWindowPromise) return createWindowPromise;
-	// A background quit hid the Dock icon; bring it back with the window.
-	void app.dock?.show();
 	const pending = createWindowInternal();
 	createWindowPromise = pending;
 	void pending.then(
@@ -2620,7 +2611,7 @@ ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unkn
 	) return;
 	chatDraftRisks = [...parsed];
 	chatDraftDialog = parsedCopy;
-	chatDraftQuitConfirmed = false;
+	desktopQuit.resetDraftConfirmation();
 	chatDraftWindowCloseConfirmed = false;
 });
 
@@ -3000,8 +2991,7 @@ ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAnd
 // in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
 // already off on the failed path, so quitting can't apply a half-prepared build.
 ipcMain.handle("updates:relaunch", () => {
-	app.relaunch();
-	desktopQuit.quitCompletely();
+	desktopQuit.relaunchAndQuit();
 });
 
 // Whether THIS boot is a post-update relaunch, so the startup loader can show
@@ -3036,28 +3026,27 @@ ipcMain.handle(
 		if (!notification.id || !mainWindow) return;
 		// "Already looking" = the window has focus, or the renderer reports the
 		// prompt itself is on screen (`watched`). Visual signals are skipped then.
+		// Which signals exist at all is the policy's call (shared/notification-signal-policy.ts):
+		// by default none, so this handler only ever returns early.
 		const looking = mainWindow.isFocused() || notification.watched === true;
-		// On Linux the sound ignores that guess: Wayland gives apps no reliable
-		// visibility, so a window parked on another workspace still reports
-		// focused/visible and would otherwise stay silent. macOS and Windows
-		// report focus accurately and keep the quieter behaviour.
-		const playsSound =
-			shouldSignalAttention(notification.type) &&
-			soundNotificationsEnabled &&
-			(process.platform === "linux" || !looking);
-		if (playsSound) playNotificationSound();
-		if (looking) return;
-		// OS toast: a native banner the user can click to jump straight back to the
-		// session. Fires for every backend notification type (see shouldToast), so a
-		// new type in notification.go never silently loses its toast.
-		if (shouldToast(notification, ElectronNotification.isSupported())) {
+		const plan = planNotificationSignals({
+			type: notification.type,
+			purpose: notification.purpose,
+			title: notification.title,
+			platform: process.platform,
+			looking,
+			soundNotificationsEnabled,
+			toastSupported: ElectronNotification.isSupported(),
+		});
+		if (plan.sound) playNotificationSound();
+		if (plan.banner) {
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
 				// Mute the OS chime when our sound replaces it or the user turned
 				// sound notifications off. Honoured on macOS/Windows only; Linux
 				// notification daemons ignore it (see toastSilent).
-				silent: toastSilent(process.platform, soundNotificationsEnabled, playsSound),
+				silent: toastSilent(process.platform, soundNotificationsEnabled, plan.sound),
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -3074,28 +3063,20 @@ ipcMain.handle(
 			toast.show();
 		}
 
-		// Dock (macOS) / taskbar (Windows/Linux) attention signal. On macOS every
-		// notification bounces the dock — urgency is carried by the bounce type,
-		// so a merged PR bounces once while a blocked agent keeps bouncing. On
-		// Windows/Linux only the actionable types flash (see
-		// shouldSignalAttention), preserving the pre-existing behavior there.
-		if (process.platform === "darwin" && app.dock) {
-			// A pending critical bounce (agent blocked on the user) is never
-			// replaced: a later informational notification must not downgrade it
-			// to a one-shot bounce.
+		if (plan.dockBounce && app.dock) {
+			// A pending critical bounce is never replaced by a quieter one.
 			if (shouldReplaceBounce(pendingBounce)) {
 				// A focus listener from an earlier un-cancelled bounce still works for
 				// the new id, so only attach one at a time.
 				const hadPendingBounce = pendingBounce !== null;
 				cancelDockBounce();
-				const bounceType = dockBounceType(notification.type, notification.purpose);
-				const id = app.dock.bounce(bounceType);
+				const id = app.dock.bounce(plan.dockBounce);
 				if (typeof id === "number" && id >= 0) {
-					pendingBounce = { id, critical: bounceType === "critical" };
+					pendingBounce = { id, critical: plan.dockBounce === "critical" };
 					if (!hadPendingBounce) mainWindow.once("focus", cancelDockBounce);
 				}
 			}
-		} else if ((process.platform === "win32" || process.platform === "linux") && shouldSignalAttention(notification.type)) {
+		} else if (plan.flash) {
 			if (!isFlashing) {
 				isFlashing = true;
 				mainWindow.flashFrame(true);
@@ -3136,8 +3117,8 @@ if (!app.isPackaged) {
 	});
 }
 
-ipcMain.handle("notifications:setBadge", (_event, count: number) => {
-	if (!mainWindow) return { error: "no mainWindow" };
+/** Sets the launcher badge. macOS's Dock badge needs no window; the Windows overlay does. */
+function applyBadgeCount(count: number): { ok?: boolean; error?: string } {
 	const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 	if (process.platform === "darwin") {
 		const dock = app.dock;
@@ -3148,6 +3129,7 @@ ipcMain.handle("notifications:setBadge", (_event, count: number) => {
 			return { error: String(e) };
 		}
 	} else if (process.platform === "win32") {
+		if (!mainWindow) return { error: "no mainWindow" };
 		if (n > 0) {
 			// Pre-built red dot PNG overlay — indicates unread without needing Canvas.
 			const badgeDataUrl =
@@ -3161,12 +3143,26 @@ ipcMain.handle("notifications:setBadge", (_event, count: number) => {
 		// setBadgeCount drives a numeric launcher badge on Unity only, and only
 		// when the app ships a matching .desktop entry. Other Linux launchers
 		// (KDE, GNOME) expose no equivalent API, so the call is a no-op there.
-		// Surface the boolean result so the renderer can tell the badge was not
-		// applied instead of assuming unconditional success.
 		return { ok: app.setBadgeCount(n) };
 	}
 	return { ok: true };
+}
+
+ipcMain.handle("notifications:setBadge", (_event, count: number) => applyBadgeCount(count));
+
+// The Dock badge is owned here, not by the renderer: with the window closed AO keeps running and
+// there is no renderer to compute it. It follows the daemon's notifications on a short poll.
+const coordinatorBadge = createCoordinatorBadge({
+	getPort: () => (daemonStatus.state === "ready" && daemonStatus.port ? daemonStatus.port : undefined),
+	fetchJson: async (url, timeoutMs) => {
+		const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		return response.ok ? ((await response.json()) as unknown) : undefined;
+	},
+	setBadge: (count) => void applyBadgeCount(count),
 });
+// The renderer just read a result or answered a question: re-read straight away.
+ipcMain.on("coordinator-badge:refresh", () => void coordinatorBadge.refresh());
+app.once("will-quit", () => coordinatorBadge.stop());
 
 ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.handleSetAttentionState(event, state));
 
@@ -3365,6 +3361,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	coordinatorBadge.start();
 	const personalBuild = isPersonalBuild(app.getVersion());
 	if (app.isPackaged && !personalBuild) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
@@ -3498,12 +3495,12 @@ app.whenReady().then(async () => {
 		trayController = createTrayController({
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
-			quitCompletely: desktopQuit.quitCompletely,
+			quitCompletely: () => desktopQuit.requestUserQuit(),
 			locale: initialUiSettings.locale,
 		});
 	}
 	if (process.platform === "darwin") {
-		powerMonitor.on("shutdown", () => desktopQuit.quitCompletely());
+		powerMonitor.on("shutdown", () => desktopQuit.quitForShutdown());
 	}
 	// Boot the daemon alongside the window, not after it: the board cannot show
 	// until the daemon answers. createWindow links the browser runtime itself
@@ -3540,30 +3537,19 @@ app.whenReady().then(async () => {
 
 // Daemon teardown is now handled via the OS-native supervisor socket: the daemon
 // self-stops ~5s after the last client (this process) drops its connection.
-// Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
-// Full exit drops the supervisor socket, stopping the app-owned daemon after
-// its grace period. Sessions survive.
+// Quit and Cmd-Q exit AO; closing the window leaves it running in the Dock and tray.
+// Exiting drops the supervisor socket, stopping the app-owned daemon after its
+// grace period. Sessions survive.
 setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	// Quit and Cmd-Q are a full exit; only the unsaved-draft confirmation and the
+	// agents-pause / Mac-will-sleep warnings can hold one back.
 	if (desktopQuit.handleBeforeQuit(event)) return;
-	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
-		event.preventDefault();
-		if (confirmUnsafeChatDraftLeave(
-			chatDraftRisks,
-			(options) => dialog.showMessageBoxSync(options),
-			chatDraftDialog,
-		)) {
-			chatDraftQuitConfirmed = true;
-			app.quit();
-		} else {
-			desktopQuit.cancelQuit();
-		}
-		return;
-	}
+	if (desktopQuit.holdForWarnings(event)) return;
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	disposeBrowserStreamLink();
@@ -3628,7 +3614,5 @@ process.on("exit", () => {
 });
 
 app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") {
-		app.quit();
-	}
+	if (shouldQuitWhenAllWindowsClosed(process.platform)) app.quit();
 });

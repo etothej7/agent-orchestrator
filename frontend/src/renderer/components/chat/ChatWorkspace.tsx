@@ -1,4 +1,8 @@
 import { InternalActivity, isInternalGroup, isInternalItem } from "./InternalActivity";
+import { CoordinatorMessageBlock } from "./CoordinatorMessageBlock";
+import { CoordinatorAskContext, type CoordinatorAskControls, type CoordinatorAskStatus } from "./coordinator-asks";
+import { isCoordinatorMessage } from "../../lib/coordinator-messages";
+import { refreshCoordinatorBadge } from "../../lib/coordinator-badge";
 import { TurnWorkSummary } from "./TurnWorkSummary";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 import { isSettingsPageOpen } from "../../hooks/useAppShortcut";
@@ -36,7 +40,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Lightbulb, Loader2, MessageSquarePlus, TriangleAlert, Undo2 } from "lucide-react";
+import { ArrowDown, Lightbulb, Loader2, MessageSquareDot, MessageSquarePlus, TriangleAlert, Undo2, X } from "lucide-react";
 import { AnimatePresence, motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useChatSelectionPosition } from "../../hooks/useChatSelectionPosition";
@@ -416,7 +420,11 @@ export interface ChatWorkspaceProps {
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
 		excerpts?: ChatDraftExcerptReference[],
+		/** The coordinator question this message answers (its message id). */
+		replyToAskId?: string,
 	) => void | Promise<unknown>;
+	/** Whether a coordinator question is still open; answered ones read as settled. */
+	askStatusOf?: (message: ConversationMessage) => CoordinatorAskStatus;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
 		requestId: string,
@@ -546,6 +554,7 @@ export interface ChatWorkspaceProps {
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
 		recoverOnly?: boolean,
+		replyToAskId?: string,
 	) => Promise<ChatSteerOutcome | void>;
 	showSteerButton?: boolean;
 	sendPending?: boolean;
@@ -692,6 +701,7 @@ function ChatWorkspaceContent({
 	onLoadOlder,
 	excerptsEnabled = false,
 	onSend,
+	askStatusOf,
 	onDecide,
 	onResolveInput,
 	onInterrupt,
@@ -1073,6 +1083,24 @@ function ChatWorkspaceContent({
 		},
 		[queueEdit, stableCancelQueuedTurn, updateQueueDraft],
 	);
+	// The coordinator question the next message answers. It travels as `replyToAskId`, so only
+	// an explicit answer closes a question; the chip above the composer says what it answers.
+	const [answering, setAnswering] = useState<{ messageId: string; question: string; message: ConversationMessage }>();
+	const answeringRef = useRef(answering);
+	answeringRef.current = answering;
+	const answerStatus = answering ? askStatusOf?.(answering.message) : undefined;
+	useEffect(() => {
+		// Answered elsewhere (or by the coordinator): nothing left to answer.
+		if (answering && answerStatus && !answerStatus.open) setAnswering(undefined);
+	}, [answerStatus, answering]);
+	const startAnswering = useCallback((message: ConversationMessage) => {
+		setAnswering({ messageId: message.id, question: message.text.split("\n")[0]?.trim() ?? "", message });
+		composerFocusRef.current?.focus();
+	}, []);
+	const askControls = useMemo<CoordinatorAskControls>(
+		() => ({ statusOf: askStatusOf, answeringId: answering?.messageId, answer: startAnswering }),
+		[answering?.messageId, askStatusOf, startAnswering],
+	);
 	// Keep the dispatch target with this composer instance while attachment staging
 	// awaits. A newer queue editor must not redirect an older ordinary send.
 	const handleComposerSend = useCallback(
@@ -1123,7 +1151,11 @@ function ChatWorkspaceContent({
 				}
 				return;
 			}
-			return onSend?.(text, attachments, clientMessageId, excerpts);
+			const replyToAskId = answeringRef.current?.messageId;
+			const sent = await onSend?.(text, attachments, clientMessageId, excerpts, replyToAskId);
+			if (replyToAskId) refreshCoordinatorBadge();
+			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
+			return sent;
 		},
 		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
@@ -1161,7 +1193,13 @@ function ChatWorkspaceContent({
 			attachments?: { mimeType: string; data: string }[],
 			clientMessageId?: string,
 			recoverOnly?: boolean,
-		) => stableSteer(text, attachments, clientMessageId, recoverOnly),
+		) => {
+			const replyToAskId = answeringRef.current?.messageId;
+			const outcome = await stableSteer(text, attachments, clientMessageId, recoverOnly, replyToAskId);
+			if (replyToAskId) refreshCoordinatorBadge();
+			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
+			return outcome;
+		},
 		[stableSteer],
 	);
 	const acceptedClientMessageIds = useMemo(
@@ -1783,6 +1821,7 @@ function ChatWorkspaceContent({
 						>
 							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)} artifacts={session?.artifactFiles}>
 							<ChatHostId.Provider value={activeRemoteHostId}>
+							<CoordinatorAskContext.Provider value={askControls}>
 
 								<Timeline
 							onAddToSideChat={onAddToSideChat}
@@ -1817,6 +1856,7 @@ function ChatWorkspaceContent({
 									startup={sessionRole === "orchestrator" ? undefined : startup}
 									arriving={arrivingInChat}
 								/>
+							</CoordinatorAskContext.Provider>
 							</ChatHostId.Provider>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1870,6 +1910,20 @@ function ChatWorkspaceContent({
 										active={!workspaceActiveTabKey && !reviewerActive && !shellActive}
 									/>
 									{composerNotice}
+									{answering ? (
+										<div className="flex min-w-0 items-center gap-2 px-3 pb-1.5 text-caption text-muted-foreground" data-testid="answering-chip">
+											<MessageSquareDot aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
+											<span className="min-w-0 flex-1 truncate">{t("chat.coordinator.answering", { question: answering.question })}</span>
+											<button
+												aria-label={t("chat.coordinator.stopAnswering")}
+												className="grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-accent/50"
+												onClick={() => setAnswering(undefined)}
+												type="button"
+											>
+												<X aria-hidden="true" className="size-3" />
+											</button>
+										</div>
+									) : null}
 									<ChatComposer
 										attachedTop={Boolean(composerNotice)}
 										onSelectAnnotation={navigateToAnnotation}
@@ -4325,7 +4379,7 @@ const TurnGroup = memo(function TurnGroup({
 	);
 	const lastAssistantId = [...group.items]
 		.reverse()
-		.find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim() !== "")?.id;
+		.find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim() !== "" && !isCoordinatorMessage(item))?.id;
 	// A running turn offers copy only while its newest item is the reply itself, so the
 	// action does not flash under prose the agent is about to follow with more work.
 	const copyableMessageId = group.outcome
@@ -4337,7 +4391,7 @@ const TurnGroup = memo(function TurnGroup({
 	if (group.outcome) {
 		for (let index = runs.length - 1; index >= 0; index -= 1) {
 			const item = runs[index]?.items[0];
-			if (item?.kind === "message" && item.role === "assistant" && item.text.trim() !== "") {
+			if (item?.kind === "message" && item.role === "assistant" && item.text.trim() !== "" && !isCoordinatorMessage(item)) {
 				finalAssistantRunIndex = index;
 				break;
 			}
@@ -4632,6 +4686,7 @@ function TimelineItem({
 	 * followed by tool activity. */
 }) {
 	if (item.kind === "message") {
+		if (isCoordinatorMessage(item)) return <CoordinatorMessageBlock message={item} />;
 		if (item.role === "assistant") {
 			return (
 				<AssistantMessage
@@ -5030,13 +5085,41 @@ function previewText(value: string, limit: number): string {
  * Items with no turn (an automation relay that arrived between turns) form their
  * own group and keep their sequence position.
  */
+/**
+ * The turn a message the coordinator addressed to Ed belongs beside. `ao tell` / `ao ask`
+ * store it with no turn, but it is written from inside whatever the coordinator is doing:
+ * when the items around it belong to one turn (or that turn is still running), it sits in
+ * that turn at its own sequence, so it appears where it happened instead of after the whole
+ * block. Between turns it stays its own group.
+ */
+function coordinatorMessageTurns(
+	snapshot: ConversationSnapshot,
+	byTurn: ReadonlyMap<string, ConversationSnapshot["turns"][number]>,
+): Map<string, string> {
+	const attached = new Map<string, string>();
+	const items = snapshot.items;
+	items.forEach((item, index) => {
+		if (item.turnId !== undefined || !isCoordinatorMessage(item)) return;
+		const before = items.slice(0, index).findLast((candidate) => candidate.turnId !== undefined && !attached.has(candidate.id));
+		if (!before?.turnId) return;
+		const after = items.slice(index + 1).find((candidate) => candidate.turnId !== undefined);
+		const turnState = byTurn.get(before.turnId)?.state;
+		if (after?.turnId === before.turnId || (after === undefined && (turnState === "running" || turnState === "queued"))) {
+			attached.set(item.id, before.turnId);
+		}
+	});
+	return attached;
+}
+
 function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 	const byTurn = new Map(snapshot.turns.map((turn) => [turn.id, turn]));
 	const groups: TimelineGroup[] = [];
 	const groupForTurn = new Map<string, TimelineGroup>();
+	const attachedTurn = coordinatorMessageTurns(snapshot, byTurn);
 
 	for (const item of snapshot.items) {
-		if (item.turnId === undefined) {
+		const turnId = item.turnId ?? attachedTurn.get(item.id);
+		if (turnId === undefined) {
 			// Consecutive turn-less items share one group rather than getting one each.
 			// A provider can run a turn AO never dispatched — a compaction, or a turn
 			// resumed inside the provider's own history — and every item it emits then
@@ -5057,19 +5140,19 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 			});
 			continue;
 		}
-		const existing = groupForTurn.get(item.turnId);
+		const existing = groupForTurn.get(turnId);
 		if (existing) {
 			existing.items.push(item);
 			continue;
 		}
 		const group: TimelineGroup = {
 			// A turn opened by a keyed human message keeps the key its echo had.
-			key: itemKey(item) === item.id ? `${item.turnId}-${item.sequence}` : itemKey(item),
-			turnId: item.turnId,
+			key: itemKey(item) === item.id ? `${turnId}-${item.sequence}` : itemKey(item),
+			turnId,
 			anchor: item.sequence,
 			items: [item],
 		};
-		groupForTurn.set(item.turnId, group);
+		groupForTurn.set(turnId, group);
 		groups.push(group);
 	}
 
@@ -5182,6 +5265,8 @@ function isHumanRun(item: ConversationItem | undefined): boolean {
 /** Conversation records that stay readable outside a settled turn's folded work. */
 function isNoticeRun(run: TimelineRun): boolean {
 	const item = run.items[0];
+	// A message the coordinator addressed to Ed is never folded away with the work.
+	if (run.kind === "single" && isCoordinatorMessage(item)) return true;
 	if (run.kind !== "single" || item?.kind !== "activity") return false;
 	if (item.activityKind === "error") return true;
 	if (item.activityKind === "user_input") return item.status !== "pending";
