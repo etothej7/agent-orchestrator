@@ -834,6 +834,14 @@ WHERE conversation_id = ? AND provider_turn_id = ?;
 -- name: SelectConversationTurnByID :one
 SELECT * FROM conversation_turns WHERE id = ? LIMIT 1;
 
+-- A session's chat activity only turns active once its provider starts the
+-- turn, so queued or running turns are the earlier durable busy signal.
+-- name: SessionHasOpenConversationTurn :one
+SELECT EXISTS (
+    SELECT 1 FROM conversation_turns
+    WHERE handled_by_session_id = ? AND state IN ('queued', 'running')
+);
+
 -- Turns are read in full, rolled-back ones included. They carry rolled_back_at, so
 -- a client can report how much an undo discarded instead of watching the timeline
 -- silently shrink.

@@ -178,6 +178,13 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	if err != nil || len(batch.Reports) == 0 {
 		return err
 	}
+	if kept := c.dropSettledStoryReports(ctx, batch.Reports); len(kept) != len(batch.Reports) {
+		if len(kept) == 0 {
+			_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
+			return err
+		}
+		batch.Reports = kept
+	}
 	if err := c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target.ID); err != nil {
 		return c.release(ctx, batch, err)
 	}
@@ -208,6 +215,38 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	}
 	_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
 	return err
+}
+
+// dropSettledStoryReports omits worker completion and progress notes for an
+// autonomous story that is already done: the manager recorded that result in
+// the story, so waking it again only adds a redundant turn. Questions, stuck
+// reports, other stories and manager summaries are always delivered, and any
+// lookup failure delivers the report.
+func (c *Coordinator) dropSettledStoryReports(ctx context.Context, reports []domain.ReportRecord) []domain.ReportRecord {
+	stories, ok := c.store.(interface {
+		GetStory(context.Context, string) (domain.Story, error)
+	})
+	if !ok {
+		return reports
+	}
+	done := map[string]bool{}
+	kept := make([]domain.ReportRecord, 0, len(reports))
+	for _, report := range reports {
+		if report.StoryID == "" || report.RecipientProjectID != "" || (report.State != domain.ReportDone && report.State != domain.ReportCheckpoint) {
+			kept = append(kept, report)
+			continue
+		}
+		settled, seen := done[report.StoryID]
+		if !seen {
+			story, err := stories.GetStory(ctx, report.StoryID)
+			settled = err == nil && story.Autonomous && story.Status == "done"
+			done[report.StoryID] = settled
+		}
+		if !settled {
+			kept = append(kept, report)
+		}
+	}
+	return kept
 }
 
 func (c *Coordinator) activeOrchestrator(ctx context.Context, projectID domain.ProjectID) (domain.SessionRecord, bool, error) {
@@ -266,6 +305,14 @@ func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.Sessio
 	}
 	batch, err := c.claim(ctx, rec.ProjectID)
 	if err == nil && len(batch.Reports) > 0 {
+		if kept := c.dropSettledStoryReports(ctx, batch.Reports); len(kept) != len(batch.Reports) {
+			if len(kept) == 0 {
+				// Nothing left worth adding to the message: settle the claim.
+				_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
+				return PreparedBatch{}, err
+			}
+			batch.Reports = kept
+		}
 		err = c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target)
 		if err != nil {
 			return PreparedBatch{}, c.release(ctx, batch, err)

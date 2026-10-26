@@ -754,3 +754,64 @@ func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
 		t.Fatal("a dismissed question stayed open", ids, asks)
 	}
 }
+
+// A repo manager already working an autonomous story learns the end-turn rule in
+// place, once per rule revision. A manager Ed drives by hand, or one whose
+// stories are done or manual, gets no extra turn or message.
+func TestManagerStandingInstructionsReachOnlyStoryManagersOncePerRevision(t *testing.T) {
+	setup := func(t *testing.T, stories ...domain.Story) *harness {
+		t.Helper()
+		h := newHarness(t)
+		ctx := context.Background()
+		if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: "coordinator-elsewhere", ManagedProjectIDs: []domain.ProjectID{testProject}}, h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.CreateEpic(ctx, domain.Epic{ID: "epic", Title: "TEST standing"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, story := range stories {
+			story.EpicID, story.Revision, story.ProjectIDs = "epic", 1, []domain.ProjectID{testProject}
+			story.Assignments = []domain.StoryAssignment{{SessionID: testSession, Role: "manager"}}
+			if err := h.st.CreateStory(ctx, story); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return h
+	}
+	deliveries := func(t *testing.T, h *harness, calls int) []string {
+		t.Helper()
+		before := len(h.conv.sentTexts())
+		for range calls {
+			if delivered, err := h.svc.DeliverManagerStandingInstructions(context.Background()); err != nil || !delivered {
+				t.Fatal(delivered, err)
+			}
+		}
+		return h.conv.sentTexts()[before:]
+	}
+	for name, stories := range map[string][]domain.Story{
+		"hand-driven manager with no story": nil,
+		"manager of a finished story":       {{ID: "done", Title: "TEST done", Autonomous: true, Status: "done"}},
+		"manager of a manual story":         {{ID: "manual", Title: "TEST manual", Status: "in_progress"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := deliveries(t, setup(t, stories...), 3); len(got) != 0 {
+				t.Fatal("a manager with no autonomous story work received the rule", got)
+			}
+		})
+	}
+	t.Run("autonomous story manager", func(t *testing.T) {
+		h := setup(t,
+			domain.Story{ID: "s1", Title: "TEST one", Autonomous: true, Status: "in_progress"},
+			domain.Story{ID: "s2", Title: "TEST two", Autonomous: true, Status: "backlog"})
+		got := deliveries(t, h, 3)
+		if len(got) != 1 || !strings.Contains(got[0], "Ending your turn:") || !strings.Contains(got[0], domain.RepoManagerStandingRevision()) {
+			t.Fatal("end-turn rule not delivered exactly once", got)
+		}
+		if _, found, err := h.st.ConversationMessageByClientID(context.Background(), h.ctrl.ConversationID(), chatsvc.ManagerStandingMessageID(domain.RepoManagerStandingRevision())); err != nil || !found {
+			t.Fatal("delivery is not durable", found, err)
+		}
+	})
+	if chatsvc.CoordinatorStandingMessageID(domain.CoordinatorStandingRevision()) == chatsvc.ManagerStandingMessageID(domain.RepoManagerStandingRevision()) {
+		t.Fatal("coordinator and manager standing handles collide")
+	}
+}

@@ -270,6 +270,11 @@ func (c *Continuations) owner(ctx context.Context, s domain.Story, phaseWake boo
 		}
 		if a.Role == "manager" {
 			manager = a.SessionID
+			open, err := c.hasOpenTurn(ctx, a.SessionID)
+			if err != nil {
+				return "", false, err
+			}
+			busy = busy || open
 		}
 	}
 	if manager != "" {
@@ -292,7 +297,25 @@ func (c *Continuations) owner(ctx context.Context, s domain.Story, phaseWake boo
 			selected = session
 		}
 	}
-	return selected.ID, busy || selected.Activity.State == domain.ActivityActive || selected.Activity.State == domain.ActivityBlocked || selected.ProvisionState.IsProvisioning(), nil
+	open, err := c.hasOpenTurn(ctx, selected.ID)
+	if err != nil {
+		return "", false, err
+	}
+	return selected.ID, busy || open || selected.Activity.State == domain.ActivityActive || selected.Activity.State == domain.ActivityBlocked || selected.ProvisionState.IsProvisioning(), nil
+}
+
+// hasOpenTurn closes the gap before a provider reports a freshly queued turn as
+// active: a continuation sent then would only queue a redundant turn behind the
+// work it is meant to prompt. Stores without turn history keep activity-only
+// behavior.
+func (c *Continuations) hasOpenTurn(ctx context.Context, id domain.SessionID) (bool, error) {
+	reader, ok := c.Store.(interface {
+		SessionHasOpenTurn(context.Context, domain.SessionID) (bool, error)
+	})
+	if !ok || id == "" {
+		return false, nil
+	}
+	return reader.SessionHasOpenTurn(ctx, id)
 }
 
 // Only actual phase/evidence changes reset the bounded progress budget. Reports,

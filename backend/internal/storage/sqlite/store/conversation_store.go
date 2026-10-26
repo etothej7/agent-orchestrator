@@ -1169,6 +1169,16 @@ func (s *Store) HasConversationTurns(ctx context.Context, conversationID string)
 	return hasTurns, nil
 }
 
+// SessionHasOpenTurn reports whether the session still has queued or running
+// chat work, regardless of the activity state its provider has reported yet.
+func (s *Store) SessionHasOpenTurn(ctx context.Context, session domain.SessionID) (bool, error) {
+	open, err := s.qr.SessionHasOpenConversationTurn(ctx, session)
+	if err != nil {
+		return false, fmt.Errorf("check open turns for %s: %w", session, err)
+	}
+	return open, nil
+}
+
 // LatestConversationTurn reads the latest non-rolled-back turn on the active
 // branch lineage without loading messages or activities.
 func (s *Store) LatestConversationTurn(ctx context.Context, conversationID string) (domain.ConversationTurn, error) {

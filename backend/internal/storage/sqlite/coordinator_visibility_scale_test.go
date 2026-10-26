@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,5 +142,31 @@ func TestCoordinatorVisibilityQueriesScaleLinearly(t *testing.T) {
 	// 5x the data should cost about 5x; a quadratic plan costs about 25x.
 	if floor := 2 * time.Millisecond; largeM > 12*max(smallM, floor) || largeP > 12*max(smallP, floor) {
 		t.Fatalf("visibility cost is not linear: messages %v -> %v, page %v -> %v", smallM, largeM, smallP, largeP)
+	}
+}
+
+// The open-turn lookup runs on every continuation sweep, so it must use the
+// partial index instead of scanning every turn.
+func TestOpenTurnLookupUsesPartialIndex(t *testing.T) {
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 20261026003300000)
+	rows, err := db.Query(`EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM conversation_turns WHERE handled_by_session_id = ? AND state IN ('queued', 'running'))`, "manager-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "idx_conversation_turns_open_by_session") {
+		t.Fatalf("open-turn lookup does not use the partial index:\n%s", plan)
 	}
 }

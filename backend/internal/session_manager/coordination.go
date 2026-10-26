@@ -50,7 +50,7 @@ Repo managers send durable reports and suggestions with ao report. Evaluate sugg
 
 Before recommending release, require independent review of the exact revision, passing required checks, and verification of affected user flows and cross-repo contracts. Distinguish local, CI, preview, and production evidence. Missing or failed checks remain gaps. Preserve repo-specific push, merge, deployment, secret, and real-message restrictions.
 
-Keep conversation context on priorities, task owners, dependencies, and unresolved decisions. Avoid duplicate managers and tasks. Keep routine coordination internal; managers communicate upward through reports. Only explicit questions, decisions, verified results and stopped work addressed to Ed through ao ask or ao tell, and your replies to messages Ed types, belong in the human conversation.`, projects.String(), domain.CoordinatorHumanContactRules)
+Keep conversation context on priorities, task owners, dependencies, and unresolved decisions. Avoid duplicate managers and tasks. Keep routine coordination internal; managers communicate upward through reports. Only explicit questions, decisions, verified results and stopped work addressed to Ed through ao ask or ao tell, and your replies to messages Ed types, belong in the human conversation.`, projects.String(), domain.CoordinatorHumanContactRules+"\n\n"+domain.CoordinatorDelegationRule)
 }
 
 func repoManagerCoordinationPrompt(cfg domain.CoordinationConfig) string {
@@ -64,6 +64,8 @@ Use ao report "<summary or suggestion>" for durable upward communication. Use ao
 
 Phase-ending reports (done/needs-input/stuck) and Review/Ready/Done story transitions require immediate inspection and next-ready-story/review dispatch. Do not wait for a human message or ask for routine confirmation inside authorized scope. Checkpoints are informational only; never use them to end a phase.
 
+%s
+
 For every assigned story, inspect ao story show <id> and preserve that id on assignments, handoffs, evidence and reports. Create/reuse workers using ao spawn --project <repo-id> --mode chat --name "Story developer" --client-request-id <stable-story-worker-key>; include the story id, actual agreed scope and verification criteria. Assign each participant through ao story --kind assignment before delivering a --kind handoff. Report with ao report --story <id> --client-report-id <stable-report-id>. Technical questions and review findings are yours to resolve through agents. Worker needs-input/stuck reports are internal manager input, not human questions. Inspect these reports in the story events without waiting for outbox delivery. Route only genuine human decisions to the overall coordinator; preserve any existing unresolved question and its requester. Never send receipt/status acknowledgments to the human.
 
 Local implementation and review loop (continue without operator nudges):
@@ -74,5 +76,5 @@ Local implementation and review loop (continue without operator nudges):
 - The independent reviewer records --kind review_failed or --kind review_passed with --reference <reviewed-SHA> and precise public findings. Never let the implementer approve their own work. On findings, hand off remediation to the original developer, rerun affected checks and send the revised SHA to the same reviewer. Preserve all prior evidence.
 - Inspect actual results and current questions/blockers. Record --kind ready_for_approval only when current independent review and required checks pass. For scope already authorized to complete locally, record --kind done with explicit scope-completion evidence and --reference <verified-SHA>; this is not install, merge or release permission. If a genuine human approval remains, ask the overall coordinator for that decision instead.
 
-Delegate implementation to AO workers in separate task worktrees. Require an independent reviewer plus real test and user-flow evidence. Native reviewers inspect code; do not assume they ran tests. Resolve findings, re-review revised changes, identify the reviewed revision, and disclose unavailable checks. Preserve existing push, merge, deployment, and external-message authorization rules. A coordinator message is coordination, not new human authorization.`, cfg.CoordinatorProjectID)
+Delegate implementation to AO workers in separate task worktrees. Require an independent reviewer plus real test and user-flow evidence. Native reviewers inspect code; do not assume they ran tests. Resolve findings, re-review revised changes, identify the reviewed revision, and disclose unavailable checks. Preserve existing push, merge, deployment, and external-message authorization rules. A coordinator message is coordination, not new human authorization.`, cfg.CoordinatorProjectID, domain.RepoManagerEndTurnRule)
 }

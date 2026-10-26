@@ -4288,6 +4288,22 @@ func (q *Queries) SelectVerifiedAuthenticationTurn(ctx context.Context, arg Sele
 	return i, err
 }
 
+const sessionHasOpenConversationTurn = `-- name: SessionHasOpenConversationTurn :one
+SELECT EXISTS (
+    SELECT 1 FROM conversation_turns
+    WHERE handled_by_session_id = ? AND state IN ('queued', 'running')
+)
+`
+
+// A session's chat activity only turns active once its provider starts the
+// turn, so queued or running turns are the earlier durable busy signal.
+func (q *Queries) SessionHasOpenConversationTurn(ctx context.Context, handledBySessionID domain.SessionID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, sessionHasOpenConversationTurn, handledBySessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const setConversationMessageDeliveryContent = `-- name: SetConversationMessageDeliveryContent :exec
 UPDATE conversation_messages SET delivery_content_json = ? WHERE id = ?
 `

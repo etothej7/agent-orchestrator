@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -324,5 +325,135 @@ func TestCoalesceInterleavedStoriesPreservesIdentity(t *testing.T) {
 	rendered := (PreparedBatch{Reports: []domain.ReportRecord{first, second, repeat}}).Render()
 	if strings.Count(rendered, "[story story-a]") != 1 || strings.Count(rendered, "[story story-b]") != 1 || strings.Count(rendered, "Same blocker") != 2 {
 		t.Fatalf("delivery omitted a story: %s", rendered)
+	}
+}
+
+type storyCoordinatorStore struct {
+	*coordinatorStore
+	stories map[string]domain.Story
+}
+
+func (s storyCoordinatorStore) GetStory(_ context.Context, id string) (domain.Story, error) {
+	story, ok := s.stories[id]
+	if !ok {
+		return domain.Story{}, errors.New("story lookup failed")
+	}
+	return story, nil
+}
+
+func TestCoordinatorSkipsWorkerNotesForAlreadyDoneAutonomousStory(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	base := newCoordinatorStore(now)
+	base.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store := storyCoordinatorStore{coordinatorStore: base, stories: map[string]domain.Story{
+		"finished": {ID: "finished", Autonomous: true, Status: "done"},
+		"open":     {ID: "open", Autonomous: true, Status: "in_review"},
+		"manual":   {ID: "manual", Status: "done"},
+	}}
+	story := func(id, storyID string, state domain.ReportState, note string) domain.ReportRecord {
+		rec := reportAt(id, "worker", now, now, note)
+		rec.State, rec.StoryID = state, storyID
+		return rec
+	}
+	managerSummary := story("summary", "finished", domain.ReportDone, "manager summary")
+	managerSummary.RecipientProjectID = "p"
+	base.add(
+		story("finished-done", "finished", domain.ReportDone, "worker done redundant"),
+		story("finished-note", "finished", domain.ReportCheckpoint, "worker note redundant"),
+		story("finished-question", "finished", domain.ReportNeedsInput, "still needs an answer"),
+		story("finished-stuck", "finished", domain.ReportStuck, "blocked"),
+		story("open-done", "open", domain.ReportDone, "open story result"),
+		story("manual-done", "manual", domain.ReportDone, "manual story result"),
+		story("unknown-done", "unlisted", domain.ReportDone, "lookup fails so deliver"),
+		story("no-story", "", domain.ReportDone, "storyless result"),
+		managerSummary,
+	)
+	delivery := &coordinatorDelivery{}
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: delivery, Now: func() time.Time { return now }, NewToken: func() string { return "claim" }})
+	if _, err := c.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivery.submissions) != 1 {
+		t.Fatalf("submissions = %#v, want one batch", delivery.submissions)
+	}
+	message := delivery.submissions[0].message
+	for _, redundant := range []string{"worker done redundant", "worker note redundant"} {
+		if strings.Contains(message, redundant) {
+			t.Fatalf("redundant report delivered: %q in %q", redundant, message)
+		}
+	}
+	for _, kept := range []string{"still needs an answer", "blocked", "open story result", "manual story result", "lookup fails so deliver", "storyless result", "manager summary"} {
+		if !strings.Contains(message, kept) {
+			t.Fatalf("report dropped: %q not in %q", kept, message)
+		}
+	}
+	if base.acked != len(base.reports) {
+		t.Fatalf("acknowledged = %d, want every claimed report (%d) settled", base.acked, len(base.reports))
+	}
+}
+
+func TestCoordinatorAcknowledgesBatchOfOnlyRedundantStoryReportsWithoutWaking(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	base := newCoordinatorStore(now)
+	base.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store := storyCoordinatorStore{coordinatorStore: base, stories: map[string]domain.Story{"finished": {ID: "finished", Autonomous: true, Status: "done"}}}
+	for _, state := range []domain.ReportState{domain.ReportDone, domain.ReportCheckpoint} {
+		rec := reportAt("finished-"+string(state), "worker", now, now, "already recorded")
+		rec.State, rec.StoryID = state, "finished"
+		base.add(rec)
+	}
+	delivery := &coordinatorDelivery{}
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: delivery, Now: func() time.Time { return now }, NewToken: func() string { return "claim" }})
+	delay, err := c.RunDue(context.Background())
+	if err != nil || delay >= 0 {
+		t.Fatalf("delay = %v, err = %v; redundant reports must be fully settled", delay, err)
+	}
+	if len(delivery.submissions) != 0 || base.acked != 2 {
+		t.Fatalf("submissions = %#v, acked = %d; want no manager wake and both acknowledged", delivery.submissions, base.acked)
+	}
+}
+
+// Worker notes for a story that is already done are not carried into the
+// message a human sends, just as the outbox path drops them.
+func TestCoordinatorPiggybackSkipsWorkerNotesForAlreadyDoneStory(t *testing.T) {
+	now := time.Date(2026, 10, 25, 14, 0, 0, 0, time.UTC)
+	base := newCoordinatorStore(now)
+	base.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store := storyCoordinatorStore{coordinatorStore: base, stories: map[string]domain.Story{
+		"finished": {ID: "finished", Autonomous: true, Status: "done"},
+		"open":     {ID: "open", Autonomous: true, Status: "in_review"},
+	}}
+	note := func(id, storyID string, state domain.ReportState, text string) domain.ReportRecord {
+		rec := reportAt(id, "worker", now, now, text)
+		rec.State, rec.StoryID = state, storyID
+		return rec
+	}
+	base.add(
+		note("done-note", "finished", domain.ReportDone, "redundant finished note"),
+		note("question", "finished", domain.ReportNeedsInput, "still needs an answer"),
+		note("open-note", "open", domain.ReportCheckpoint, "open story progress"),
+	)
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: &coordinatorDelivery{}, Now: func() time.Time { return now }, NewToken: func() string { return "piggyback" }})
+	batch, err := c.PreparePiggyback(context.Background(), "orch")
+	if err != nil || len(batch.Reports) != 2 {
+		t.Fatalf("prepare = %#v, err = %v", batch, err)
+	}
+	text := batch.Render()
+	if strings.Contains(text, "redundant finished note") || !strings.Contains(text, "still needs an answer") || !strings.Contains(text, "open story progress") {
+		t.Fatalf("piggyback text = %q", text)
+	}
+	if err := c.AcceptPiggyback(context.Background(), batch); err != nil || base.acked != 3 {
+		t.Fatalf("accept: err = %v, acknowledged = %d, want the whole claim settled", err, base.acked)
+	}
+
+	// Only redundant notes: nothing is added and the claim is settled at once.
+	only := newCoordinatorStore(now)
+	only.sessions = base.sessions
+	onlyStore := storyCoordinatorStore{coordinatorStore: only, stories: store.stories}
+	only.add(note("alone", "finished", domain.ReportDone, "redundant"))
+	c = NewCoordinator(CoordinatorDeps{Store: onlyStore, Delivery: &coordinatorDelivery{}, Now: func() time.Time { return now }, NewToken: func() string { return "piggyback-2" }})
+	batch, err = c.PreparePiggyback(context.Background(), "orch")
+	if err != nil || len(batch.Reports) != 0 || only.acked != 1 {
+		t.Fatalf("redundant-only prepare = %#v, err = %v, acknowledged = %d", batch, err, only.acked)
 	}
 }
