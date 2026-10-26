@@ -189,6 +189,18 @@ class CoordinatorVisibility(a.Harness):
                 break
         return out
 
+    @staticmethod
+    def bundle_state():
+        home = Path(os.path.expanduser('~'))
+        plist = home / 'Library/Preferences/dev.agent-orchestrator.desktop.plist'
+        saved = home / 'Library/Saved Application State/dev.agent-orchestrator.desktop.savedState'
+        snap = {'preferencesPlist': {'exists': plist.exists()}, 'savedState': {'exists': saved.exists()}}
+        if plist.exists():
+            snap['preferencesPlist'].update(sha256=hashlib.sha256(plist.read_bytes()).hexdigest(), mtime=time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(plist.stat().st_mtime)))
+        if saved.exists():
+            snap['savedState']['entries'] = sorted(p.name for p in saved.iterdir())
+        return snap
+
     def use_binary(self, path):
         self.args.daemon = path
         link = self.root / 'bin/ao'
@@ -242,15 +254,20 @@ class CoordinatorVisibility(a.Harness):
 
     def run_cv(self):
         r = self.result
+        r['bundleIdMacOSState'] = {'before': self.bundle_state()}
         r['controlledConditions'] = [
             'scratch HOME/AO data under a 0700 scratch root; daemon confined with sandbox-exec (writes only to scratch, live ~/.ao unreadable)',
             'database is a fresh read-only SQLite backup of the live DB; the copied Claude coordinator is marked terminated and a new Codex coordinator is created by the previous (66b) build',
             'coordinator provider is Codex via a read-only auth link (Claude credentials are not reachable from scratch and are not extracted)',
             'packaged GUI (when --app) is launched unconfined with --use-mock-keychain so it never touches the real keychain; scratch only',
             'needs-Ed and routine-report stimuli are synthetic automation messages sent through the daemon send path with a worker sender, not a real worker report',
-            'persistent host survival across the daemon swap is reproduced by stopping only the daemon; adoption of the live Claude host is not reproducible here'
+            'persistent host survival across the daemon swap is reproduced by stopping only the daemon; adoption of the live Claude host is not reproducible here',
+            'the scratch GUI exposes a loopback-only Chrome DevTools (CDP) debugger for the duration of the run',
+            'refocus steps use `open` to activate the scratch app and then Finder, which briefly takes the foreground on the host Mac',
+            'OS banners are counted from the usernoted unified log by bundle id, which the installed app shares; dock attention is read per scratch pid (lsappinfo LSWantsAttention)',
+            'the scratch GUI shares the installed app bundle id: macOS bundle-id state (Preferences plist, Saved Application State) is snapshotted before and after as bundleIdMacOSState'
         ]
-        r.update(scenario='coordinator-visibility', kind='targeted_coordinator_visibility_backend_not_acceptance', autonomyAccepted=False)
+        r.update(scenario='coordinator-visibility', kind='targeted_coordinator_visibility_not_acceptance', autonomyAccepted=False)
         r['harnessSha'] = subprocess.check_output(['/usr/bin/git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'], text=True).strip()
         r['harnessSourceSha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         if self.args.app:
@@ -529,6 +546,11 @@ class CoordinatorVisibility(a.Harness):
     def finalize_cv(self):
         self.finalize()
 
+    def record_bundle_state_after(self):
+        before = self.result.get('bundleIdMacOSState', {}).get('before')
+        after = self.bundle_state()
+        self.result['bundleIdMacOSState'] = {'before': before, 'after': after, 'unchanged': before == after}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -562,6 +584,7 @@ def main():
         harness.env['PATH'] += ':/Users/edstockman/.local/bin:/opt/homebrew/bin'
         a.signal.signal(a.signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
         harness.run_cv()
+        harness.record_bundle_state_after()
     except (Exception, KeyboardInterrupt) as e:
         if harness is None:
             print(type(e).__name__ + ': harness initialization failed', file=sys.stderr)
