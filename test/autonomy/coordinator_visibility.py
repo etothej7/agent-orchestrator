@@ -72,11 +72,18 @@ class CoordinatorVisibility(a.Harness):
         conn.execute("update projects set path=? where id='overall-coordinator'", (str(coord_project),))
         conn.execute("update sessions set workspace_path=?, workspace_repo_path='' where id=?", (str(coord_ws), COORD))
         conn.execute("update sessions set artifact_dir=? || '/' || id where artifact_dir<>''", (str(self.root / 'artifacts'),))
-        conn.execute("update sessions set model=?, effort='high' where id=?", (self.args.coordinator_model, COORD))
-        conn.execute("update conversations set model=?, reasoning_effort='high' where current_session_id=? or session_id=?", (self.args.coordinator_model, COORD, COORD))
+        # Scratch cannot reach Ed's Claude credentials (and they are not extracted), so the copied
+        # coordinator session is switched to the Codex provider authorized for scratch runs. The
+        # session id, conversation and history are unchanged; the visibility rules are
+        # provider-independent (standing instruction is plain message text).
+        conn.execute("update sessions set harness='codex', model='', effort='', agent_session_id='' where id=?", (COORD,))
+        conn.execute("update conversations set model=NULL, reasoning_effort=NULL, approval_mode='auto', account_json=NULL, thread_state_json=NULL, opencode_mode='' where current_session_id=? or session_id=?", (COORD, COORD))
+        project_config = json.loads(conn.execute("select config from projects where id='overall-coordinator'").fetchone()[0] or '{}')
+        project_config['orchestrator'] = {'agent': 'codex', 'agentConfig': {}}
+        conn.execute("update projects set config=? where id='overall-coordinator'", (json.dumps(project_config),))
         conn.commit(); conn.close()
         self.result['dbCopy'] = {'source': 'live ao.db via sqlite backup API (mode=ro)', 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
-                                 'bytes': target.stat().st_size, 'coordinatorModelOverride': self.args.coordinator_model,
+                                 'bytes': target.stat().st_size, 'coordinatorProviderOverride': {'from': 'claude-code', 'to': 'codex', 'reason': 'scratch HOME cannot reach the Claude credentials; they are not extracted'},
                                  'originalCoordinatorConversationSettings': [list(r) for r in before]}
 
     def host_identity(self):
@@ -148,11 +155,13 @@ class CoordinatorVisibility(a.Harness):
 
         # The copied coordinator has no live host in scratch (the live one is not reachable):
         # resume the exited session in place, the scratch equivalent of host re-adoption.
-        restore_status, _ = self.api('POST', f'/api/v1/sessions/{COORD}/restore', {}, timeout=60)
+        restore_status, restore_body = self.api('POST', f'/api/v1/sessions/{COORD}/resume-agent', {}, timeout=120)
         status_now = self.wait(lambda: (lambda s: s if s.get('activity', {}).get('state') not in (None, 'exited') else None)(self.api('GET', f'/api/v1/sessions/{COORD}')[1].get('session', self.api('GET', f'/api/v1/sessions/{COORD}')[1])), 90)
-        r['restoreExitedCoordinatorInPlace'] = {'status': restore_status, 'activityAfter': (status_now or {}).get('activity', {}).get('state'),
+        r['restoreExitedCoordinatorInPlace'] = {'status': restore_status, 'errorCode': restore_body.get('errorCode'), 'activityAfter': (status_now or {}).get('activity', {}).get('state'),
                                                 'note': 'scratch has no live persistent host; resume in place stands in for the daemon re-adopting it'}
-        self.check('coordinator_resumed_in_place_for_scratch', restore_status < 400 and bool(status_now))
+        host_up = self.wait(lambda: self.host_identity(), 60)
+        r['restoreExitedCoordinatorInPlace']['hostProcessStarted'] = bool(host_up)
+        self.check('coordinator_resumed_in_place_for_scratch', restore_status < 400 and bool(host_up))
 
         # (d) the existing coordinator receives the standing instruction in place.
         def standing():
@@ -274,14 +283,14 @@ def main():
     parser.add_argument('--expect-revision', required=True)
     parser.add_argument('--acp-runtime-dir', type=Path, required=True)
     parser.add_argument('--agent-bin-dir', action='append', default=[])
-    parser.add_argument('--coordinator-model', default='claude-sonnet-5-5')
+    parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
     parser.add_argument('--standing-wait', type=float, default=150)
     parser.add_argument('--turn-wait', type=float, default=240)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--scratch-parent', type=Path, default=Path('/private/tmp'))
     args = parser.parse_args()
     args.daemon = args.daemon.resolve()
-    args.mode = 'real'; args.agent = 'claude-code'; args.pass_env = []; args.auth_readonly = []; args.answers = {}
+    args.mode = 'real'; args.agent = 'codex'; args.pass_env = []; args.answers = {}
     args.scenario = 'coordinator-visibility'; args.poll = 1.0; args.duration = 900
     harness = None
     try:
