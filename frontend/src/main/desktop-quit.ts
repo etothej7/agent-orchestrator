@@ -46,8 +46,15 @@ export function createDesktopQuitController(options: {
 		quit(): void {
 			options.quit();
 		},
-		/** Update retry: start a fresh AO after this one exits. */
+		/**
+		 * Update retry: start a fresh AO after this one exits. The draft confirmation comes
+		 * first: a relaunch armed before a declined prompt would fire on the next exit of any kind.
+		 */
 		relaunchAndQuit(): void {
+			if (options.draftRiskCount() > 0 && !draftLeaveConfirmed) {
+				if (!options.confirmDraftLeave()) return;
+				draftLeaveConfirmed = true;
+			}
 			options.relaunch();
 			options.quit();
 		},

@@ -87,14 +87,27 @@ describe("desktop quit", () => {
 			expect(exits()).toBe(1);
 		});
 
-		it("also guard the tray quit, shutdown and update relaunch paths", () => {
+		it("also guard the tray quit and shutdown paths", () => {
 			const declined = harness({ drafts: 2, confirm: [false] });
 			declined.controller.quit();
 			expect(declined.exits()).toBe(0);
-			const relaunch = harness({ drafts: 2, confirm: [false] });
-			relaunch.controller.relaunchAndQuit();
-			expect(relaunch.log).toEqual(["relaunch", "quit", "ask"]);
-			expect(relaunch.exits()).toBe(0);
+		});
+
+		it("ask before an update relaunch is armed, so declining leaves no relaunch behind", () => {
+			const declined = harness({ drafts: 2, confirm: [false] });
+			declined.controller.relaunchAndQuit();
+			expect(declined.log).toEqual(["ask"]);
+			expect(declined.exits()).toBe(0);
+			// A later plain quit exits without starting a stray new AO.
+			declined.app.quit();
+			expect(declined.log).not.toContain("relaunch");
+		});
+
+		it("relaunches once the draft prompt is accepted, without asking again", () => {
+			const accepted = harness({ drafts: 2, confirm: [true] });
+			accepted.controller.relaunchAndQuit();
+			expect(accepted.log).toEqual(["ask", "relaunch", "quit"]);
+			expect(accepted.exits()).toBe(1);
 		});
 
 		it("tells the window-close handler a confirmed quit need not ask again, until reset", () => {
