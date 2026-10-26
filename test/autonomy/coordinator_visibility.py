@@ -284,8 +284,18 @@ class CoordinatorVisibility(a.Harness):
                 time.sleep(2)
             return
         global COORD
-        status, body = self.api('POST', '/api/v1/sessions', {'projectId': 'overall-coordinator', 'kind': 'orchestrator', 'harness': 'codex', 'mode': 'chat'}, timeout=180)
-        self.check('previous_build_created_coordinator', status < 400 and 'session' in body, status=status, errorCode=body.get('errorCode'))
+        attempts = []
+        for _ in range(8):
+            status, body = self.api('POST', '/api/v1/sessions', {'projectId': 'overall-coordinator', 'kind': 'orchestrator', 'harness': 'codex', 'mode': 'chat'}, timeout=180)
+            attempts.append({'status': status, 'errorCode': body.get('errorCode')})
+            # The codex driver compatibility probe can still be warming up right after daemon start on a loaded machine.
+            if status < 400 or body.get('errorCode') != 'CHAT_DRIVER_INCOMPATIBLE':
+                break
+            time.sleep(10)
+        r['previousBuildCreateAttempts'] = attempts
+        self.check('previous_build_created_coordinator', status < 400 and 'session' in body, status=status, errorCode=body.get('errorCode'), attempts=len(attempts))
+        if status >= 400 or 'session' not in body:
+            raise RuntimeError('previous build could not create the scratch coordinator')
         COORD = body['session']['id']
         r['coordinatorSessionId'] = COORD
         pre_key = 'cv-pre-' + self.token
