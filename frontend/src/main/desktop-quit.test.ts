@@ -5,7 +5,7 @@ import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./d
  * A stand-in for Electron's app: `quit()` raises `before-quit`; the app exits unless the
  * handler prevented it.
  */
-function harness(options: { drafts?: number | (() => number); confirm?: boolean[] } = {}) {
+function harness(options: { drafts?: number | (() => number); confirm?: boolean[]; warnings?: { proceed: boolean | (() => Promise<boolean>); updateRestart?: boolean } } = {}) {
 	const answers = [...(options.confirm ?? [])];
 	const log: string[] = [];
 	let exited = 0;
@@ -17,12 +17,19 @@ function harness(options: { drafts?: number | (() => number); confirm?: boolean[
 		},
 		quit: () => app.quit(),
 		relaunch: () => log.push("relaunch"),
+		isUpdateRestart: () => options.warnings?.updateRestart ?? false,
+		confirmFullQuit: async () => {
+			log.push("warn");
+			const proceed = options.warnings?.proceed ?? true;
+			return typeof proceed === "function" ? proceed() : proceed;
+		},
 	});
 	const app = {
 		quit() {
 			log.push("quit");
 			const event = { prevented: false, preventDefault() { this.prevented = true; } };
-			if (!controller.handleBeforeQuit(event) && !event.prevented) {
+			if (options.warnings && !controller.handleBeforeQuit(event) && controller.holdForWarnings(event)) return;
+			if (!options.warnings ? !controller.handleBeforeQuit(event) && !event.prevented : !event.prevented) {
 				// Nothing stopped it: will-quit fires, then the process exits.
 				controller.handleWillQuit();
 				exited += 1;
@@ -145,5 +152,88 @@ describe("desktop quit", () => {
 			controller.resetDraftConfirmation();
 			expect(controller.draftLeaveConfirmed()).toBe(false);
 		});
+	});
+});
+
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe("warnings before a full quit", () => {
+	it("holds a person-initiated quit for the check, then exits when nothing needs a warning", async () => {
+		const { app, log, exits } = harness({ warnings: { proceed: true } });
+		app.quit();
+		expect(exits()).toBe(0);
+		await settle();
+		expect(log).toEqual(["quit", "warn", "quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("Keep Running cancels the quit, and the next quit asks again", async () => {
+		const answers = [false, true];
+		const { app, log, exits } = harness({ warnings: { proceed: async () => answers.shift() ?? true } });
+		app.quit();
+		await settle();
+		expect(exits()).toBe(0);
+		expect(log).toEqual(["quit", "warn"]);
+		app.quit();
+		await settle();
+		expect(log).toEqual(["quit", "warn", "quit", "warn", "quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("does not stack a second check while one is open", async () => {
+		let release!: (value: boolean) => void;
+		const { app, log } = harness({ warnings: { proceed: () => new Promise<boolean>((resolve) => { release = resolve; }) } });
+		app.quit();
+		app.quit();
+		expect(log.filter((entry) => entry === "warn")).toHaveLength(1);
+		release(false);
+		await settle();
+	});
+
+	it("never traps the person: a check that throws lets the quit through", async () => {
+		const { app, exits } = harness({ warnings: { proceed: () => Promise.reject(new Error("daemon gone")) } });
+		app.quit();
+		await settle();
+		expect(exits()).toBe(1);
+	});
+
+	it("asks about unsaved drafts first, then about agents", async () => {
+		const { app, log, exits } = harness({ drafts: 1, confirm: [true], warnings: { proceed: true } });
+		app.quit();
+		await settle();
+		expect(log).toEqual(["quit", "ask", "quit", "warn", "quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("an OS shutdown quits without any warning", async () => {
+		const { controller, log, exits } = harness({ warnings: { proceed: false } });
+		controller.quitForShutdown();
+		await settle();
+		expect(log).toEqual(["quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("an update relaunch quits without any warning and still relaunches", async () => {
+		const { controller, log, exits } = harness({ warnings: { proceed: false } });
+		controller.relaunchAndQuit();
+		await settle();
+		expect(log).toEqual(["quit", "relaunch"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("an updater-driven restart quits without any warning", async () => {
+		const { app, log, exits } = harness({ warnings: { proceed: false, updateRestart: true } });
+		app.quit();
+		await settle();
+		expect(log).toEqual(["quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	it("the tray's Quit AO Completely is warned like any other quit", async () => {
+		const { controller, log, exits } = harness({ warnings: { proceed: false } });
+		controller.quit();
+		await settle();
+		expect(log).toEqual(["quit", "warn"]);
+		expect(exits()).toBe(0);
 	});
 });

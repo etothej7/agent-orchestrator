@@ -20,9 +20,16 @@ export function createDesktopQuitController(options: {
 	confirmDraftLeave(): boolean;
 	quit(): void;
 	relaunch(): void;
+	/** The "your agents will pause" / "your Mac will sleep" check; true means go ahead and quit. */
+	confirmFullQuit(): Promise<boolean>;
+	/** The updater is restarting AO for an install: no warnings. */
+	isUpdateRestart(): boolean;
 }) {
 	let draftLeaveConfirmed = false;
 	let relaunchRequested = false;
+	let skipWarnings = false;
+	let warningsPassed = false;
+	let checkingWarnings = false;
 
 	return {
 		/** The `before-quit` handler. True when the quit was held for the draft confirmation. */
@@ -35,7 +42,30 @@ export function createDesktopQuitController(options: {
 			} else {
 				// The quit was called off, so a relaunch that rode on it is too.
 				relaunchRequested = false;
+				skipWarnings = false;
 			}
+			return true;
+		},
+		/**
+		 * The `before-quit` handler, after the draft guard: a person-initiated quit (Cmd-Q, Quit, the
+		 * tray) while agents work or Stay Awake holds the lid pauses for a Keep Running / Quit Anyway
+		 * choice. Shutdown, an update restart and a relaunch never ask. True when the quit was held.
+		 */
+		holdForWarnings(event: QuitEvent): boolean {
+			if (skipWarnings || warningsPassed || options.isUpdateRestart()) return false;
+			event.preventDefault();
+			if (checkingWarnings) return true;
+			checkingWarnings = true;
+			void options
+				.confirmFullQuit()
+				// A failed check must not trap the person in a running app.
+				.catch(() => true)
+				.then((proceed) => {
+					checkingWarnings = false;
+					if (!proceed) return;
+					warningsPassed = true;
+					options.quit();
+				});
 			return true;
 		},
 		/** A quit was confirmed through the draft dialog; closing the window must not ask again. */
@@ -46,8 +76,13 @@ export function createDesktopQuitController(options: {
 		resetDraftConfirmation(): void {
 			draftLeaveConfirmed = false;
 		},
-		/** The tray's "Quit AO Completely" and the OS shutdown. */
+		/** The tray's "Quit AO Completely" or a Cmd-Q style quit: asks about agents and sleep first. */
 		quit(): void {
+			options.quit();
+		},
+		/** The OS is shutting down: quit now, without asking about agents or sleep. */
+		quitForShutdown(): void {
+			skipWarnings = true;
 			options.quit();
 		},
 		/**
@@ -61,6 +96,7 @@ export function createDesktopQuitController(options: {
 				draftLeaveConfirmed = true;
 			}
 			relaunchRequested = true;
+			skipWarnings = true;
 			options.quit();
 		},
 		/** The `will-quit` handler: the quit can no longer be stopped, so arm a requested relaunch now. */

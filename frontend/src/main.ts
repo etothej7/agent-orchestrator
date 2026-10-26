@@ -96,6 +96,7 @@ import {
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { confirmFullQuit } from "./main/quit-confirmation";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -374,6 +375,20 @@ const desktopQuit = createDesktopQuitController({
 	confirmDraftLeave: () => confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog),
 	quit: () => app.quit(),
 	relaunch: () => app.relaunch(),
+	isUpdateRestart: isUpdateRestartRequested,
+	confirmFullQuit: () =>
+		confirmFullQuit({
+			fetchDaemon: async (path, timeoutMs) => {
+				if (daemonStatus.state !== "ready" || !daemonStatus.port) return undefined;
+				const response = await fetch(`http://127.0.0.1:${daemonStatus.port}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+				return response.ok ? ((await response.json()) as unknown) : undefined;
+			},
+			showDialog: async (content) => {
+				const options = { type: "warning" as const, message: content.title, detail: content.body, buttons: content.buttons, defaultId: content.defaultId, cancelId: content.cancelId, noLink: true };
+				const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+				return response;
+			},
+		}),
 });
 // A requested update relaunch is armed here, once the quit can no longer be stopped.
 app.on("will-quit", () => desktopQuit.handleWillQuit());
@@ -3468,7 +3483,7 @@ app.whenReady().then(async () => {
 		});
 	}
 	if (process.platform === "darwin") {
-		powerMonitor.on("shutdown", () => desktopQuit.quit());
+		powerMonitor.on("shutdown", () => desktopQuit.quitForShutdown());
 	}
 	// Boot the daemon alongside the window, not after it: the board cannot show
 	// until the daemon answers. createWindow links the browser runtime itself
@@ -3514,8 +3529,10 @@ setUpdateRestartFailureHandler(() => {
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
-	// Quit and Cmd-Q are a full exit; only the unsaved-draft confirmation can hold one back.
+	// Quit and Cmd-Q are a full exit; only the unsaved-draft confirmation and the
+	// agents-pause / Mac-will-sleep warnings can hold one back.
 	if (desktopQuit.handleBeforeQuit(event)) return;
+	if (desktopQuit.holdForWarnings(event)) return;
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	disposeBrowserStreamLink();
