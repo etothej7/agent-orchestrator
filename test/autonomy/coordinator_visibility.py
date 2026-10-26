@@ -31,10 +31,25 @@ def sql(path, query, *params):
 
 
 class CoordinatorVisibility(a.Harness):
-    def snapshot(self, audience_all=False, limit=200):
-        route = f'/api/v1/sessions/{COORD}/conversation?limit={limit}' + ('&audience=all' if audience_all else '')
+    def snapshot(self, audience_all=False, limit=200, before=None):
+        route = f'/api/v1/sessions/{COORD}/conversation?limit={limit}' + ('&audience=all' if audience_all else '') + (f'&beforeSequence={before}' if before else '')
         status, body = self.api('GET', route, timeout=30)
         return body if status == 200 else {'messages': [], 'activities': [], 'turns': [], 'errorCode': body.get('errorCode')}
+
+    def all_pages(self, audience_all=False, max_pages=12):
+        """Every page of one view: messages by id, plus activities and the newest page's envelope."""
+        messages, activities, before, first = {}, [], None, None
+        for _ in range(max_pages):
+            snap = self.snapshot(audience_all, before=before)
+            first = first or snap
+            for m in snap.get('messages', []):
+                messages[m['id']] = m
+            activities += snap.get('activities', [])
+            nxt = snap.get('oldestSequence')
+            if not snap.get('hasMoreBefore') or not nxt or nxt == before:
+                break
+            before = nxt
+        return messages, activities, first
 
     def conversation_id(self):
         row = sql(self.data / 'ao.db', "select id from conversations where current_session_id=? or session_id=? order by latest_sequence desc limit 1", COORD, COORD)
@@ -56,6 +71,7 @@ class CoordinatorVisibility(a.Harness):
         # Only the coordinator is made runnable in scratch; paths move into the scratch root.
         conn.execute("update projects set path=? where id='overall-coordinator'", (str(coord_project),))
         conn.execute("update sessions set workspace_path=?, workspace_repo_path='' where id=?", (str(coord_ws), COORD))
+        conn.execute("update sessions set artifact_dir=? || '/' || id where artifact_dir<>''", (str(self.root / 'artifacts'),))
         conn.execute("update sessions set model=?, effort='high' where id=?", (self.args.coordinator_model, COORD))
         conn.execute("update conversations set model=?, reasoning_effort='high' where current_session_id=? or session_id=?", (self.args.coordinator_model, COORD, COORD))
         conn.commit(); conn.close()
@@ -88,8 +104,8 @@ class CoordinatorVisibility(a.Harness):
         return body.get('notifications', []) if status == 200 else []
 
     def visible_ids(self, audience_all=False):
-        snap = self.snapshot(audience_all)
-        return {m['id']: m for m in snap.get('messages', [])}, snap
+        messages, activities, first = self.all_pages(audience_all)
+        return messages, dict(first or {}, activities=activities)
 
     def send_human(self, text, key):
         status, body = self.api('POST', f'/api/v1/sessions/{COORD}/conversation/messages', {'text': text, 'clientMessageId': key}, timeout=60)
@@ -129,6 +145,14 @@ class CoordinatorVisibility(a.Harness):
         # Fixed snapshot of what Ed sees before any new traffic.
         default0, _ = self.visible_ids()
         r['before'] = {'visibleMessages': len(default0), 'storedMessages': sql(self.data / 'ao.db', 'select count(*) from conversation_messages where conversation_id=?', cid)[0][0]}
+
+        # The copied coordinator has no live host in scratch (the live one is not reachable):
+        # resume the exited session in place, the scratch equivalent of host re-adoption.
+        restore_status, _ = self.api('POST', f'/api/v1/sessions/{COORD}/restore', {}, timeout=60)
+        status_now = self.wait(lambda: (lambda s: s if s.get('activity', {}).get('state') not in (None, 'exited') else None)(self.api('GET', f'/api/v1/sessions/{COORD}')[1].get('session', self.api('GET', f'/api/v1/sessions/{COORD}')[1])), 90)
+        r['restoreExitedCoordinatorInPlace'] = {'status': restore_status, 'activityAfter': (status_now or {}).get('activity', {}).get('state'),
+                                                'note': 'scratch has no live persistent host; resume in place stands in for the daemon re-adopting it'}
+        self.check('coordinator_resumed_in_place_for_scratch', restore_status < 400 and bool(status_now))
 
         # (d) the existing coordinator receives the standing instruction in place.
         def standing():
