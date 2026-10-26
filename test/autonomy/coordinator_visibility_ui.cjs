@@ -86,6 +86,36 @@ async function main() {
       await itemIn().first().click();
       await page.waitForTimeout(1500);
       out.internalAfterOff = await internalCount();
+    } else if (action === 'instrument') {
+      // Record (without playing) notification sounds, and minimise the window so the app is not "looking" at the notification.
+      await page.evaluate(() => {
+        window.__cvSound = 0;
+        const bump = () => { window.__cvSound++; };
+        HTMLMediaElement.prototype.play = function () { bump(); return Promise.resolve(); };
+        if (window.AudioBufferSourceNode) AudioBufferSourceNode.prototype.start = function () { bump(); };
+        if (window.OscillatorNode) OscillatorNode.prototype.start = function () { bump(); };
+      });
+      const cdp = await browser.contexts()[0].newCDPSession(page);
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+      out.instrumented = true;
+    } else if (action === 'refocus-cycle') {
+      // Focusing the window cancels a pending dock bounce; then minimise again before the next alert.
+      const cdp = await browser.contexts()[0].newCDPSession(page);
+      const { windowId } = await cdp.send('Browser.getWindowForTarget');
+      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      await page.bringToFront();
+      await page.waitForTimeout(2500);
+      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+      out.cycled = true;
+    } else if (action === 'sound-count') {
+      out.soundInvocations = await page.evaluate(() => window.__cvSound || 0);
+    } else if (action === 'attention-routes') {
+      const count = async () => (await page.locator('[aria-label*="needs you" i], [title*="needs you" i]').count()) + (await page.getByText(/needs you/i).count());
+      out.coordinatorRoute = await count();
+      await page.goto('app://renderer/index.html#/');
+      await page.waitForTimeout(3000);
+      out.homeRoute = await count();
     } else if (action === 'attention') {
       // The needs-you marker (sidebar Main coordinator row, Home entry).
       const labelled = await page.locator('[aria-label*="needs you" i], [title*="needs you" i]').count();

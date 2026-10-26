@@ -132,6 +132,22 @@ class CoordinatorVisibility(a.Harness):
                     pass
         return out
 
+    def refocus(self):
+        self.ui('refocus-cycle')
+        time.sleep(1.5)
+
+    def alerts_since(self):
+        events = self.hook_events()
+        fresh = events[self.hook_mark:]
+        self.hook_mark = len(events)
+        total = self.ui('sound-count').get('soundInvocations', 0)
+        sound = total - self.sound_mark
+        self.sound_mark = total
+        return {'dockBounceTypes': [e.get('type') for e in fresh if e['kind'] == 'dock-bounce'], 'osToastTitles': [e.get('title') for e in fresh if e['kind'] == 'notification-show'], 'soundInvocations': sound}
+
+    def decision(self, key, purpose, text):
+        return self.api('POST', f'/api/v1/sessions/{COORD}/conversation/human-decisions', {'id': key, 'purpose': purpose, 'question': text}, timeout=60)[0]
+
     def ui(self, action, **kw):
         node = '/Users/edstockman/.local/share/fnm/node-versions/v24.14.0/installation/bin/node'
         run = subprocess.run([node, str(Path(__file__).with_name('coordinator_visibility_ui.cjs')), str(self.args.playwright_dir), str(self.cdp_port), action, json.dumps(kw)],
@@ -151,6 +167,9 @@ class CoordinatorVisibility(a.Harness):
             if len(out) >= limit:
                 break
         return out
+
+    hook_mark = 0
+    sound_mark = 0
 
     def use_binary(self, path):
         self.args.daemon = path
@@ -329,6 +348,10 @@ class CoordinatorVisibility(a.Harness):
             r['f_coordinatorProjectFindableInUi'] = {'homeOpenMain': home, 'sidebarMainCoordinatorRow': side}
             r['ui_defaultView'] = view
             self.check('f_coordinator_findable_via_home_open_main_and_sidebar_row', home.get('reachedCoordinatorSession') and side.get('sidebarRowPresent') and side.get('reachedCoordinatorSession'))
+            inst = self.ui('instrument')
+            self.hook_mark = len(self.hook_events())
+            self.sound_mark = 0
+            r['alertInstrumentation'] = {'rendererSoundRecorder': inst, 'hookEventsAtStart': self.hook_mark, 'note': 'window minimised so the app is not looking; sound recorded as invoked (not played)'}
             self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
 
         # (a) a human message gets a visible reply.
@@ -353,6 +376,8 @@ class CoordinatorVisibility(a.Harness):
         c_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
         c_text = ('Routine report from worker agent-orchestrator-4 (state: checkpoint, story routine-demo): tests ran green on the scratch branch; nothing is needed from Ed. '
                   'Record it internally and continue.')
+        if self.args.app:
+            self.refocus(); self.alerts_since()
         c_status, _ = self.send_automation(c_text, 'agent-orchestrator-4')
         c_turn = self.wait(lambda: self.newest_turn_after(c_mark), 40)
         c_res = {'sendStatus': c_status, 'turnStarted': bool(c_turn)}
@@ -363,8 +388,21 @@ class CoordinatorVisibility(a.Harness):
             c_res.update(turnId=c_turn, turnState=end[0] if end else 'timeout', newVisibleMessages=len([i for i in vis_after if i not in vis_before]),
                          newStoredMessagesInAllView=len(new_all), newMessagesTaggedInternal=all(all_view[i].get('audience') == 'internal' for i in new_all),
                          newCoordinatorNotifications=len([n for n in self.notifications() if n.get('type') == 'coordinator_message']) - len(n_before))
+        if self.args.app:
+            time.sleep(3)
+            c_res['alerts'] = self.alerts_since()
+            self.check('c_routine_report_raises_no_toast_bounce_or_sound', not c_res['alerts']['dockBounceTypes'] and not c_res['alerts']['osToastTitles'] and c_res['alerts']['soundInvocations'] == 0)
         r['c_routineReportHidden'] = c_res
         self.check('c_routine_report_hidden_no_notification', c_res.get('turnState') == 'completed' and c_res.get('newVisibleMessages') == 0 and c_res.get('newStoredMessagesInAllView', 0) >= 1 and c_res.get('newMessagesTaggedInternal') and c_res.get('newCoordinatorNotifications') == 0)
+
+        if self.args.app:
+            self.refocus(); self.alerts_since()
+            v_status = self.decision('cv-verified-' + self.token, 'verified_result', 'Verified: the scratch acceptance check passed on the candidate build.')
+            time.sleep(6)
+            v = self.alerts_since()
+            r['alerts_verifiedResultInformational'] = dict(v, sendStatus=v_status, via='POST human-decisions (the endpoint `ao tell --kind result` uses)')
+            self.check('electron_verified_result_raises_informational_bounce_and_os_toast', v_status < 400 and v['dockBounceTypes'] == ['informational'] and any('Verified result' in (t or '') for t in v['osToastTitles']))
+            self.refocus(); self.alerts_since()
 
         # (b) a report that needs Ed produces a visible message AND a notification.
         n_before = [n['id'] for n in self.notifications() if n.get('type') == 'coordinator_message']
@@ -400,15 +438,21 @@ class CoordinatorVisibility(a.Harness):
             note = self.ui('notifications', title='Your coordinator needs a decision', purposeLabel='Scope question')
             r['b_notificationRenderedInUi'] = note
             self.check('b_notification_rendered_in_ui_with_purpose', note.get('ok') and note.get('bellPresent') and note.get('titlePresent') and note.get('purposeLabelPresent'))
-            attention = self.ui('attention')
-            r['b_needsYouMarkerAfterAsk'] = attention
-            self.check('b_needs_you_marker_visible_until_answered', attention.get('ok') and attention.get('needsYouElements', 0) >= 1)
-            hooks = self.hook_events()
-            bounces = [e.get('type') for e in hooks if e['kind'] == 'dock-bounce']
-            toasts = [e for e in hooks if e['kind'] == 'notification-show']
-            r['b_electronOnlyPaths'] = {'hookLoaded': any(e['kind'] == 'hook' for e in hooks), 'dockBounceTypes': bounces, 'osToastRequests': len(toasts),
-                                        'note': 'recorded by a test-only main-process hook that intercepts (does not display) Electron Notification.show and app.dock.bounce; the OS-level display is not observed'}
-            self.check('electron_dock_bounce_critical_and_os_toast_requested_for_coordinator_ask', 'critical' in bounces and len(toasts) >= 1)
+            time.sleep(3)
+            ask_alerts = self.alerts_since()
+            r['b_electronAlertsForAsk'] = dict(ask_alerts, note='main-process hook records (does not display) Notification.show and app.dock.bounce; OS banner and bounce display are not observed')
+            self.check('electron_ask_raises_critical_dock_bounce_and_os_toast', ask_alerts['dockBounceTypes'] == ['critical'] and any('needs a decision' in (t or '') for t in ask_alerts['osToastTitles']))
+            attention = self.ui('attention-routes')
+            r['b_needsYouMarkerWhileAskOpen'] = attention
+            self.check('b_needs_you_marker_on_sidebar_row_and_home_while_ask_open', attention.get('ok') and attention.get('coordinatorRoute', 0) >= 1 and attention.get('homeRoute', 0) > attention.get('coordinatorRoute', 0))
+            self.ui('open-main-from-sidebar', sessionId=COORD)
+            self.refocus(); self.alerts_since()
+            st_status = self.decision('cv-stopped-' + self.token, 'stopped_work', 'Authorized scratch work has stopped and needs a decision from Ed before it can continue.')
+            time.sleep(6)
+            sw = self.alerts_since()
+            r['alerts_stoppedWorkCritical'] = dict(sw, sendStatus=st_status, via='POST human-decisions (the endpoint `ao tell --kind stopped` uses)')
+            self.check('electron_stopped_work_raises_critical_dock_bounce_and_os_toast', st_status < 400 and sw['dockBounceTypes'] == ['critical'] and any('stopped' in (t or '').lower() for t in sw['osToastTitles']))
+            self.refocus(); self.alerts_since()
             ui_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
             marker = 'cv-live-' + self.token
             sent = self.ui('send', text='Reply with one short sentence confirming you can see this message in the live chat. Take no other action.', marker=marker)
@@ -423,10 +467,11 @@ class CoordinatorVisibility(a.Harness):
             r['a_replyRendersLiveWithoutRefreshInUi'] = live
             self.check('a_reply_renders_live_in_ui_without_reload', sent.get('ok') and live.get('turnState') == 'completed' and live.get('check', {}).get('markerStillPresent') and live.get('check', {}).get('replySnippetMatches', 0) >= 1)
             time.sleep(3)
-            attention2 = self.ui('attention')
+            attention2 = self.ui('attention-routes')
             ask = [n for n in self.notifications() if n.get('type') == 'coordinator_message' and n.get('purpose') in PURPOSES_ASK]
-            r['b_askResolvedWhenEdReplies'] = {'needsYouElementsAfterReply': attention2.get('needsYouElements'), 'askNotifications': [{'id': n['id'], 'resolvedAt': bool(n.get('resolvedAt'))} for n in ask]}
-            self.check('b_ask_resolved_and_marker_cleared_after_ed_reply', attention2.get('ok') and attention2.get('needsYouElements') == 0 and bool(ask) and all(n.get('resolvedAt') for n in ask))
+            r['b_askResolvedWhenEdReplies'] = {'needsYouAfterReply': {'coordinatorRoute': attention2.get('coordinatorRoute'), 'homeRoute': attention2.get('homeRoute')}, 'askNotifications': [{'id': n['id'], 'resolvedAt': bool(n.get('resolvedAt'))} for n in ask]}
+            self.check('b_ask_resolved_and_marker_cleared_after_ed_reply', attention2.get('ok') and attention2.get('coordinatorRoute') == 0 and attention2.get('homeRoute') == 0 and bool(ask) and all(n.get('resolvedAt') for n in ask))
+            self.ui('open-main-from-sidebar', sessionId=COORD)
             tog = self.ui('toggle')
             r['e_hiddenContentOpensViaUiToggle'] = tog
             self.check('e_internal_activity_toggle_reveals_and_hides', tog.get('ok') and tog.get('menuItemPresent') and tog.get('checkedBefore') is False and tog.get('internalBefore') == 0 and tog.get('internalAfterOn', 0) > 0 and tog.get('internalLabelPresent') and tog.get('checkedWhenReopened') and tog.get('internalAfterOff') == 0)
