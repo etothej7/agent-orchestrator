@@ -117,7 +117,7 @@ func TestCoordinatorVisibilityQueriesScaleLinearly(t *testing.T) {
 				}
 			}
 		})
-		return
+		return messages, page, labels, visible
 	}
 	smallTurns, largeTurns := 500, 2500 // the large conversation has 5,000 messages
 	if raceDetector {
