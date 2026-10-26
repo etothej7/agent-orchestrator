@@ -78,6 +78,8 @@ class CoordinatorVisibility(a.Harness):
         # provider-independent (standing instruction is plain message text).
         conn.execute("update sessions set harness='codex', model='', effort='', agent_session_id='' where id=?", (COORD,))
         conn.execute("update conversations set model=NULL, reasoning_effort=NULL, approval_mode='auto', account_json=NULL, thread_state_json=NULL, opencode_mode='' where current_session_id=? or session_id=?", (COORD, COORD))
+        # Stale per-session account bindings point at credential stores that exist only in the live HOME.
+        conn.execute('delete from session_agent_accounts')
         project_config = json.loads(conn.execute("select config from projects where id='overall-coordinator'").fetchone()[0] or '{}')
         project_config['orchestrator'] = {'agent': 'codex', 'agentConfig': {}}
         conn.execute("update projects set config=? where id='overall-coordinator'", (json.dumps(project_config),))
