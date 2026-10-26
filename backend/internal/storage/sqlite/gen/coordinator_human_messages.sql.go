@@ -13,6 +13,28 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const coordinatorHumanRequestedSince = `-- name: CoordinatorHumanRequestedSince :one
+SELECT EXISTS (
+    SELECT 1 FROM coordinator_human_messages h
+    JOIN conversation_messages m ON m.id=h.message_id
+    WHERE h.purpose = 'human_request' AND m.conversation_id = ?1 AND m.created_at > ?2
+)
+`
+
+type CoordinatorHumanRequestedSinceParams struct {
+	ConversationID string
+	Since          time.Time
+}
+
+// An answered question may be asked again: a newer human request means the
+// earlier ask was seen and responded to.
+func (q *Queries) CoordinatorHumanRequestedSince(ctx context.Context, arg CoordinatorHumanRequestedSinceParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, coordinatorHumanRequestedSince, arg.ConversationID, arg.Since)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getCoordinatorHumanMessage = `-- name: GetCoordinatorHumanMessage :one
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation, h.purpose FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id WHERE h.message_id=?
@@ -71,6 +93,22 @@ func (q *Queries) GetCoordinatorHumanMessage(ctx context.Context, messageID stri
 	return i, err
 }
 
+const getCoordinatorNoticeKey = `-- name: GetCoordinatorNoticeKey :one
+SELECT message_id, created_at FROM coordinator_notice_keys WHERE dedupe_key = ?
+`
+
+type GetCoordinatorNoticeKeyRow struct {
+	MessageID string
+	CreatedAt time.Time
+}
+
+func (q *Queries) GetCoordinatorNoticeKey(ctx context.Context, dedupeKey string) (GetCoordinatorNoticeKeyRow, error) {
+	row := q.db.QueryRowContext(ctx, getCoordinatorNoticeKey, dedupeKey)
+	var i GetCoordinatorNoticeKeyRow
+	err := row.Scan(&i.MessageID, &i.CreatedAt)
+	return i, err
+}
+
 const insertCoordinatorHumanMessage = `-- name: InsertCoordinatorHumanMessage :exec
 INSERT INTO coordinator_human_messages(message_id,purpose) VALUES(?,?)
 `
@@ -86,25 +124,32 @@ func (q *Queries) InsertCoordinatorHumanMessage(ctx context.Context, arg InsertC
 }
 
 const listCoordinatorHumanMessages = `-- name: ListCoordinatorHumanMessages :many
+WITH human_turns AS (
+    SELECT turn_id, MIN(seq) AS first_seq FROM (
+        SELECT u.turn_id AS turn_id, u.sequence AS seq FROM coordinator_human_messages hu
+        JOIN conversation_messages u ON u.id = hu.message_id
+        WHERE hu.purpose = 'human_request' AND u.role = 'user' AND u.turn_id IS NOT NULL
+          AND u.conversation_id = ?1
+        UNION ALL
+        SELECT s.turn_id, s.sequence FROM conversation_activities s
+        WHERE s.conversation_id = ?1 AND s.turn_id IS NOT NULL AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
+    ) GROUP BY turn_id
+)
 SELECT h.message_id, h.purpose FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id WHERE m.conversation_id = ?1
 UNION ALL
 SELECT m.id AS message_id, 'human_reply' AS purpose FROM conversation_messages m
-WHERE m.conversation_id = ?1 AND m.role='assistant' AND m.turn_id IS NOT NULL
+JOIN human_turns ht ON ht.turn_id = m.turn_id AND ht.first_seq < m.sequence
+WHERE m.conversation_id = ?1 AND m.role='assistant'
   AND NOT EXISTS (SELECT 1 FROM coordinator_human_messages x WHERE x.message_id=m.id)
-  AND (EXISTS (
-      SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
-      WHERE u.conversation_id=m.conversation_id AND u.turn_id=m.turn_id AND u.role='user' AND u.sequence < m.sequence)
-      OR EXISTS (
-      SELECT 1 FROM conversation_activities s
-      WHERE s.conversation_id=m.conversation_id AND s.turn_id=m.turn_id AND s.sequence < m.sequence AND (s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND json_extract(s.detail_json,'$.senderSessionId') IS NULL)))
 `
 
 // Explicitly labeled messages, plus assistant output that replies to the human:
 // an assistant message is a human_reply when its turn holds an earlier
 // human_request user message or a human steer activity (Ed typed into a running
 // turn). Automation-started turns have neither, so their output stays internal
-// unless it was explicitly addressed to the human.
+// unless it was explicitly addressed to the human. One pass computes each turn's
+// first human anchor, so the cost is linear in the conversation.
 func (q *Queries) ListCoordinatorHumanMessages(ctx context.Context, conversationID string) ([]CoordinatorHumanMessage, error) {
 	rows, err := q.db.QueryContext(ctx, listCoordinatorHumanMessages, conversationID)
 	if err != nil {
@@ -128,24 +173,24 @@ func (q *Queries) ListCoordinatorHumanMessages(ctx context.Context, conversation
 	return items, nil
 }
 
-const listRecentCoordinatorResultTimes = `-- name: ListRecentCoordinatorResultTimes :many
+const listRecentCoordinatorNoticeTimes = `-- name: ListRecentCoordinatorNoticeTimes :many
 SELECT m.created_at FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id
-WHERE h.purpose = 'verified_result' AND m.created_at >= ?1
+WHERE h.purpose = ?1 AND m.created_at >= ?2
 ORDER BY m.created_at DESC
-LIMIT ?2
+LIMIT ?3
 `
 
-type ListRecentCoordinatorResultTimesParams struct {
+type ListRecentCoordinatorNoticeTimesParams struct {
+	Purpose string
 	Since   time.Time
 	MaxRows int64
 }
 
-// Verified results are the only non-blocking coordinator notice that is
-// bounded, so they cannot become a status channel. stopped_work is never
-// limited: losing a stop would leave Ed unaware that work halted.
-func (q *Queries) ListRecentCoordinatorResultTimes(ctx context.Context, arg ListRecentCoordinatorResultTimesParams) ([]time.Time, error) {
-	rows, err := q.db.QueryContext(ctx, listRecentCoordinatorResultTimes, arg.Since, arg.MaxRows)
+// Coordinator notices are bounded per purpose so none becomes a status channel:
+// verified results tightly, stopped work generously (a stop must never be lost).
+func (q *Queries) ListRecentCoordinatorNoticeTimes(ctx context.Context, arg ListRecentCoordinatorNoticeTimesParams) ([]time.Time, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentCoordinatorNoticeTimes, arg.Purpose, arg.Since, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -165,4 +210,20 @@ func (q *Queries) ListRecentCoordinatorResultTimes(ctx context.Context, arg List
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertCoordinatorNoticeKey = `-- name: UpsertCoordinatorNoticeKey :exec
+INSERT INTO coordinator_notice_keys(dedupe_key, message_id, created_at) VALUES(?, ?, ?)
+ON CONFLICT(dedupe_key) DO UPDATE SET message_id = excluded.message_id, created_at = excluded.created_at
+`
+
+type UpsertCoordinatorNoticeKeyParams struct {
+	DedupeKey string
+	MessageID string
+	CreatedAt time.Time
+}
+
+func (q *Queries) UpsertCoordinatorNoticeKey(ctx context.Context, arg UpsertCoordinatorNoticeKeyParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCoordinatorNoticeKey, arg.DedupeKey, arg.MessageID, arg.CreatedAt)
+	return err
 }

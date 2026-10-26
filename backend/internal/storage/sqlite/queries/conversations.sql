@@ -926,11 +926,26 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     FROM active_path AS path
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
+),
+human_turns AS (
+    -- First human anchor per turn: a human_request message or Ed's own steer.
+    SELECT turn_id, MIN(seq) AS first_seq FROM (
+        SELECT u.turn_id AS turn_id, u.sequence AS seq FROM coordinator_human_messages hu
+        JOIN conversation_messages u ON u.id = hu.message_id
+        WHERE hu.purpose = 'human_request' AND u.role = 'user' AND u.turn_id IS NOT NULL
+          AND u.conversation_id = sqlc.arg(conversation_id)
+        UNION ALL
+        SELECT s.turn_id, s.sequence FROM conversation_activities s
+        WHERE s.conversation_id = sqlc.arg(conversation_id) AND s.turn_id IS NOT NULL AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
+    ) GROUP BY turn_id
 )
 SELECT conversation_turns.* FROM conversation_turns
 JOIN active_path AS path ON path.branch_id = conversation_turns.branch_id
 WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
-  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR (EXISTS (SELECT 1 FROM conversation_messages m JOIN coordinator_human_messages h ON h.message_id=m.id WHERE m.turn_id=conversation_turns.id) OR EXISTS (SELECT 1 FROM conversation_activities a WHERE a.turn_id=conversation_turns.id AND a.kind IN ('approval','user_input') AND a.status='pending') OR EXISTS (SELECT 1 FROM conversation_activities s WHERE s.turn_id=conversation_turns.id AND (s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND json_extract(s.detail_json,'$.senderSessionId') IS NULL))))
+  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0
+       OR EXISTS (SELECT 1 FROM conversation_messages m JOIN coordinator_human_messages h ON h.message_id=m.id WHERE m.conversation_id=conversation_turns.conversation_id AND m.turn_id=conversation_turns.id)
+       OR EXISTS (SELECT 1 FROM human_turns ht WHERE ht.turn_id=conversation_turns.id)
+       OR EXISTS (SELECT 1 FROM conversation_activities a WHERE a.turn_id=conversation_turns.id AND a.kind IN ('approval','user_input') AND a.status='pending'))
   AND conversation_turns.promoted_to_turn_id IS NULL
   AND (path.max_sequence IS NULL OR EXISTS (
       SELECT 1 FROM conversation_messages AS lineage_message
@@ -1301,18 +1316,26 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     FROM active_path AS path
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
+),
+human_turns AS (
+    -- First human anchor per turn: a human_request message or Ed's own steer.
+    SELECT turn_id, MIN(seq) AS first_seq FROM (
+        SELECT u.turn_id AS turn_id, u.sequence AS seq FROM coordinator_human_messages hu
+        JOIN conversation_messages u ON u.id = hu.message_id
+        WHERE hu.purpose = 'human_request' AND u.role = 'user' AND u.turn_id IS NOT NULL
+          AND u.conversation_id = sqlc.arg(conversation_id)
+        UNION ALL
+        SELECT s.turn_id, s.sequence FROM conversation_activities s
+        WHERE s.conversation_id = sqlc.arg(conversation_id) AND s.turn_id IS NOT NULL AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
+    ) GROUP BY turn_id
 )
 SELECT conversation_messages.* FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
   AND (CAST(sqlc.arg(human_only) AS INTEGER)=0
        OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id)
-       OR (conversation_messages.role='assistant' AND conversation_messages.turn_id IS NOT NULL AND (EXISTS (
-           SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
-           WHERE u.conversation_id=conversation_messages.conversation_id AND u.turn_id=conversation_messages.turn_id AND u.role='user' AND u.sequence < conversation_messages.sequence)
-           OR EXISTS (
-           SELECT 1 FROM conversation_activities s
-           WHERE s.conversation_id=conversation_messages.conversation_id AND s.turn_id=conversation_messages.turn_id AND s.sequence < conversation_messages.sequence AND (s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND json_extract(s.detail_json,'$.senderSessionId') IS NULL)))))
+       OR (conversation_messages.role='assistant' AND EXISTS (
+           SELECT 1 FROM human_turns ht WHERE ht.turn_id=conversation_messages.turn_id AND ht.first_seq < conversation_messages.sequence)))
   AND conversation_messages.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (
@@ -1557,7 +1580,7 @@ SELECT conversation_activities.* FROM conversation_activities
 JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
 WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
   AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR (conversation_activities.kind IN ('approval','user_input') AND conversation_activities.status='pending')
-       OR (conversation_activities.kind='system' AND json_valid(conversation_activities.detail_json) AND json_extract(conversation_activities.detail_json,'$.event')='steer' AND json_extract(conversation_activities.detail_json,'$.origin')='human' AND json_extract(conversation_activities.detail_json,'$.senderSessionId') IS NULL))
+       OR (conversation_activities.kind='system' AND json_valid(conversation_activities.detail_json) AND json_extract(conversation_activities.detail_json,'$.event')='steer' AND json_extract(conversation_activities.detail_json,'$.origin')='human' AND COALESCE(json_extract(conversation_activities.detail_json,'$.senderSessionId'),'')=''))
   AND conversation_activities.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
   AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (

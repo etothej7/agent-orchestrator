@@ -2258,6 +2258,10 @@ type ListNotificationsResponse struct {
 	NextCursor      string                 `json:"nextCursor,omitempty"`
 	UnreadCount     int                    `json:"unreadCount"`
 	UnresolvedCount int                    `json:"unresolvedCount"`
+	// UnresolvedAskCount is how many coordinator questions (ao ask) still wait on
+	// the human. It is included in unresolvedCount, and drops when the human
+	// replies in the coordinator conversation or dismisses the notification.
+	UnresolvedAskCount int `json:"unresolvedAskCount"`
 }
 
 // MarkNotificationReadRequest is the body of PATCH /api/v1/notifications/{id}.

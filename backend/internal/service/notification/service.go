@@ -118,6 +118,15 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) (ListPage, error)
 		out = append(out, notificationFromRecord(row))
 	}
 	page := ListPage{Notifications: out, UnreadCount: int(unreadCount), UnresolvedCount: int(unresolvedCount)}
+	if counter, ok := m.store.(interface {
+		CountUnresolvedCoordinatorAsks(context.Context) (int64, error)
+	}); ok {
+		asks, err := counter.CountUnresolvedCoordinatorAsks(ctx)
+		if err != nil {
+			return ListPage{}, err
+		}
+		page.UnresolvedAskCount = int(asks)
+	}
 	if hasMore {
 		page.NextCursor = encodeCursor(rows[len(rows)-1])
 	}

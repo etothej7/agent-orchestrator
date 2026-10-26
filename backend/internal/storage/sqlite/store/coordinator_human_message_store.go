@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -64,18 +66,36 @@ func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.S
 	return err
 }
 
-// CoordinatorNoticeLimit caps verified-result notices per window so they cannot
-// become a status channel to the human. Stopped-work notices are not limited.
+// Coordinator notices are bounded so none becomes a status channel. Verified
+// results are limited tightly; stopped work has a generous separate limit so a
+// stop is never starved by results. An identical purpose, story and text inside
+// the dedupe window is announced once.
 const (
-	CoordinatorNoticeLimit  = 3
-	CoordinatorNoticeWindow = 15 * time.Minute
+	CoordinatorNoticeLimit   = 3
+	CoordinatorNoticeWindow  = 15 * time.Minute
+	CoordinatorStopLimit     = 20
+	CoordinatorStopWindow    = time.Hour
+	CoordinatorDedupeWindow  = time.Hour
+	coordinatorDedupeMaxText = 4096
 )
+
+// coordinatorNoticeKey is stable across wording-neutral differences in case and spacing.
+func coordinatorNoticeKey(purpose, storyID, text string) string {
+	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if len(text) > coordinatorDedupeMaxText {
+		text = text[:coordinatorDedupeMaxText]
+	}
+	sum := sha256.Sum256([]byte(purpose + "\x00" + storyID + "\x00" + text))
+	return hex.EncodeToString(sum[:])
+}
 
 func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.ConversationMessage, purpose, storyID string, failedSession domain.SessionID, now time.Time) (string, error) {
 	notice := purpose == "verified_result" || purpose == "stopped_work"
+	dedupeStory := storyID
 	if notice {
 		storyID = "" // informational only: a notice is never bound to story state
 	}
+	recordedID := msg.ID
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "record coordinator decision", func(q *gen.Queries) error {
@@ -124,14 +144,45 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if purpose == "verified_result" {
-			recent, err := q.ListRecentCoordinatorResultTimes(ctx, gen.ListRecentCoordinatorResultTimesParams{Since: now.Add(-CoordinatorNoticeWindow), MaxRows: CoordinatorNoticeLimit})
+		dedupeKey := ""
+		if failedSession == "" {
+			dedupeKey = coordinatorNoticeKey(purpose, dedupeStory, msg.Text)
+			prior, err := q.GetCoordinatorNoticeKey(ctx, dedupeKey)
+			if err == nil && !prior.CreatedAt.Before(now.Add(-CoordinatorDedupeWindow)) {
+				answered := false
+				if !notice {
+					answered, err = q.CoordinatorHumanRequestedSince(ctx, gen.CoordinatorHumanRequestedSinceParams{ConversationID: msg.ConversationID, Since: prior.CreatedAt})
+					if err != nil {
+						return err
+					}
+				}
+				if !answered {
+					recordedID = prior.MessageID // already announced; reach the human once
+					return nil
+				}
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		limit, window := 0, time.Duration(0)
+		switch purpose {
+		case "verified_result":
+			limit, window = CoordinatorNoticeLimit, CoordinatorNoticeWindow
+		case "stopped_work":
+			limit, window = CoordinatorStopLimit, CoordinatorStopWindow
+		}
+		if limit > 0 {
+			recent, err := q.ListRecentCoordinatorNoticeTimes(ctx, gen.ListRecentCoordinatorNoticeTimesParams{Purpose: purpose, Since: now.Add(-window), MaxRows: int64(limit)})
 			if err != nil {
 				return err
 			}
-			if len(recent) >= CoordinatorNoticeLimit {
-				wait := recent[len(recent)-1].Add(CoordinatorNoticeWindow).Sub(now).Round(time.Second)
-				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", fmt.Sprintf("Three verified results were already sent in the last 15 minutes. Retry after %d seconds, or fold this into your next single result. A stopped-work notice is never limited.", max(int(wait.Seconds()), 1)))
+			if len(recent) >= limit {
+				wait := max(int(recent[len(recent)-1].Add(window).Sub(now).Round(time.Second).Seconds()), 1)
+				if purpose == "stopped_work" {
+					return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", fmt.Sprintf("%d stopped-work notices were already sent in the last hour. Retry after %d seconds, or combine these stops into one notice.", limit, wait))
+				}
+				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", fmt.Sprintf("Three verified results were already sent in the last 15 minutes. Retry after %d seconds, or fold this into your next single result. A stopped-work notice is not affected.", wait))
 			}
 		}
 		// A notice never pauses or retargets story work, so it skips both branches.
@@ -180,7 +231,13 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 		if err := q.InsertConversationMessage(ctx, gen.InsertConversationMessageParams{ID: msg.ID, ConversationID: msg.ConversationID, Sequence: sequence, Revision: 1, Role: domain.MessageRoleAssistant, Origin: domain.MessageOriginDaemon, Text: msg.Text, SenderSessionID: msg.SenderSessionID, SenderProjectID: msg.SenderProjectID, SenderDisplayName: msg.SenderDisplayName, CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
-		return q.InsertCoordinatorHumanMessage(ctx, gen.InsertCoordinatorHumanMessageParams{MessageID: msg.ID, Purpose: purpose})
+		if err := q.InsertCoordinatorHumanMessage(ctx, gen.InsertCoordinatorHumanMessageParams{MessageID: msg.ID, Purpose: purpose}); err != nil {
+			return err
+		}
+		if dedupeKey == "" {
+			return nil
+		}
+		return q.UpsertCoordinatorNoticeKey(ctx, gen.UpsertCoordinatorNoticeKeyParams{DedupeKey: dedupeKey, MessageID: msg.ID, CreatedAt: now})
 	})
-	return msg.ID, err
+	return recordedID, err
 }

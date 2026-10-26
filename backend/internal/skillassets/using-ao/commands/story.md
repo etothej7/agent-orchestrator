@@ -69,7 +69,8 @@ ao ask --id label-choice --purpose scope_question --question 'Blue or Green?' --
 
 To tell the human one verified result or that authorized work has stopped (never
 progress, receipts or routine reports; at most three results per 15 minutes, so
-fold related results into one, while a stopped notice is never limited):
+fold related results into one; stopped notices have a generous separate cap of 20
+per hour, and repeating the same message under a new id is announced once):
 
 ```bash
 ao tell --id label-done --kind result --message 'Labels normalize passed independent review and checks at 3f2a9c1.'

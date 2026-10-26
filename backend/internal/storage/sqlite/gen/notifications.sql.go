@@ -42,12 +42,28 @@ func (q *Queries) CountUnreadNotifications(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countUnresolvedCoordinatorAsks = `-- name: CountUnresolvedCoordinatorAsks :one
+SELECT COUNT(*)
+FROM notifications
+WHERE type = 'coordinator_message'
+  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND resolved_at IS NULL
+  AND dismissed_at IS NULL
+`
+
+func (q *Queries) CountUnresolvedCoordinatorAsks(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUnresolvedCoordinatorAsks)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnresolvedNotifications = `-- name: CountUnresolvedNotifications :one
 SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge')
+  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')))
 `
 
 func (q *Queries) CountUnresolvedNotifications(ctx context.Context) (int64, error) {
@@ -466,7 +482,7 @@ SELECT id, session_id, project_id, pr_url, type, title, body, status, created_at
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge')
+  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')))
   AND (
     CAST(?1 AS TEXT) = ''
     OR created_at < ?2
@@ -484,7 +500,8 @@ type ListUnresolvedNotificationsPageParams struct {
 
 // Unresolved is the still-actionable set: the underlying issue has not gone
 // away yet. Terminal facts (pr_merged, pr_closed_unmerged) describe something
-// that already happened, so they are unseen-only and never listed here.
+// that already happened, so they are unseen-only and never listed here. A
+// coordinator question (ao ask) stays here until Ed replies or dismisses it.
 func (q *Queries) ListUnresolvedNotificationsPage(ctx context.Context, arg ListUnresolvedNotificationsPageParams) ([]Notification, error) {
 	rows, err := q.db.QueryContext(ctx, listUnresolvedNotificationsPage, arg.BeforeID, arg.BeforeCreatedAt, arg.PageLimit)
 	if err != nil {
@@ -565,6 +582,70 @@ func (q *Queries) MarkNotificationRead(ctx context.Context, id string) (Notifica
 		&i.Purpose,
 	)
 	return i, err
+}
+
+const resolveAnsweredCoordinatorAsks = `-- name: ResolveAnsweredCoordinatorAsks :many
+UPDATE notifications
+SET resolved_at = ?1
+WHERE type = 'coordinator_message'
+  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND resolved_at IS NULL
+  AND dismissed_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM conversation_messages ask
+    WHERE ask.id = substr(notifications.source_key, 21)
+      AND (
+        EXISTS (
+          SELECT 1 FROM coordinator_human_messages h
+          JOIN conversation_messages reply ON reply.id = h.message_id
+          WHERE h.purpose = 'human_request' AND reply.conversation_id = ask.conversation_id AND reply.sequence > ask.sequence)
+        OR EXISTS (
+          SELECT 1 FROM conversation_activities s
+          WHERE s.conversation_id = ask.conversation_id AND s.sequence > ask.sequence AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')='')
+      )
+  )
+RETURNING id, session_id, project_id, pr_url, type, title, body, status, created_at, resolved_at, dismissed_at, source_key, purpose
+`
+
+// A coordinator question is answered when Ed writes in that conversation after
+// it: a human request, or his own steer into a running turn. The question's
+// message id is carried by the notification's source key. The resolver runs on
+// conversation changes, so this holds for every way Ed can reply.
+func (q *Queries) ResolveAnsweredCoordinatorAsks(ctx context.Context, resolvedAt sql.NullTime) ([]Notification, error) {
+	rows, err := q.db.QueryContext(ctx, resolveAnsweredCoordinatorAsks, resolvedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Notification{}
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.ProjectID,
+			&i.PRURL,
+			&i.Type,
+			&i.Title,
+			&i.Body,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.DismissedAt,
+			&i.SourceKey,
+			&i.Purpose,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const resolvePRNotificationsByType = `-- name: ResolvePRNotificationsByType :many

@@ -22,13 +22,14 @@ LIMIT sqlc.arg(page_limit);
 
 -- Unresolved is the still-actionable set: the underlying issue has not gone
 -- away yet. Terminal facts (pr_merged, pr_closed_unmerged) describe something
--- that already happened, so they are unseen-only and never listed here.
+-- that already happened, so they are unseen-only and never listed here. A
+-- coordinator question (ao ask) stays here until Ed replies or dismisses it.
 -- name: ListUnresolvedNotificationsPage :many
 SELECT *
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge')
+  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')))
   AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
     OR created_at < sqlc.arg(before_created_at)
@@ -60,7 +61,7 @@ SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND type IN ('needs_input', 'ready_to_merge');
+  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')));
 
 -- name: MarkNotificationRead :one
 UPDATE notifications
@@ -183,4 +184,38 @@ UPDATE notifications
 SET dismissed_at = CURRENT_TIMESTAMP,
     status = 'read'
 WHERE id = ?
+  AND dismissed_at IS NULL;
+
+-- A coordinator question is answered when Ed writes in that conversation after
+-- it: a human request, or his own steer into a running turn. The question's
+-- message id is carried by the notification's source key. The resolver runs on
+-- conversation changes, so this holds for every way Ed can reply.
+-- name: ResolveAnsweredCoordinatorAsks :many
+UPDATE notifications
+SET resolved_at = sqlc.arg(resolved_at)
+WHERE type = 'coordinator_message'
+  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND resolved_at IS NULL
+  AND dismissed_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM conversation_messages ask
+    WHERE ask.id = substr(notifications.source_key, 21)
+      AND (
+        EXISTS (
+          SELECT 1 FROM coordinator_human_messages h
+          JOIN conversation_messages reply ON reply.id = h.message_id
+          WHERE h.purpose = 'human_request' AND reply.conversation_id = ask.conversation_id AND reply.sequence > ask.sequence)
+        OR EXISTS (
+          SELECT 1 FROM conversation_activities s
+          WHERE s.conversation_id = ask.conversation_id AND s.sequence > ask.sequence AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')='')
+      )
+  )
+RETURNING *;
+
+-- name: CountUnresolvedCoordinatorAsks :one
+SELECT COUNT(*)
+FROM notifications
+WHERE type = 'coordinator_message'
+  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
+  AND resolved_at IS NULL
   AND dismissed_at IS NULL;

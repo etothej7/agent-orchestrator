@@ -54,4 +54,7 @@ type ListPage struct {
 	// seen stays counted as unresolved until AO closes it.
 	UnreadCount     int
 	UnresolvedCount int
+	// UnresolvedAskCount is how many coordinator questions still wait on the human;
+	// it is part of UnresolvedCount.
+	UnresolvedAskCount int
 }

@@ -149,6 +149,29 @@ func (m *Manager) Resolve(ctx context.Context, res Resolution) error {
 	return m.publishResolved(ctx, resolved)
 }
 
+// ResolveAnsweredCoordinatorAsks closes the coordinator questions Ed has since
+// replied to and publishes the rows it changed. The answer is a durable fact in
+// the coordinator conversation, so this is safe to run on any change and again
+// after a restart.
+func (m *Manager) ResolveAnsweredCoordinatorAsks(ctx context.Context) error {
+	if m == nil || m.store == nil {
+		return errors.New("notify: store is required")
+	}
+	resolver, ok := m.store.(interface {
+		ResolveAnsweredCoordinatorAsks(context.Context, time.Time) ([]domain.NotificationRecord, error)
+	})
+	if !ok {
+		return nil
+	}
+	m.barrier.Lock()
+	defer m.barrier.Unlock()
+	resolved, err := resolver.ResolveAnsweredCoordinatorAsks(ctx, m.clock().UTC())
+	if err != nil {
+		return fmt.Errorf("notify resolve coordinator asks: %w", err)
+	}
+	return m.publishResolved(ctx, resolved)
+}
+
 // Reconcile closes notifications whose resolving transition happened while the
 // daemon was down. Lifecycle only observes live transitions, so without this a
 // restart could strand a needs-input row as unresolved forever.

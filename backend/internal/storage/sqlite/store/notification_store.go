@@ -408,3 +408,24 @@ func notificationsFromGen(rows []gen.Notification) []domain.NotificationRecord {
 	}
 	return out
 }
+
+// ResolveAnsweredCoordinatorAsks closes coordinator questions Ed has since
+// replied to and returns the rows it changed so they can be published.
+func (s *Store) ResolveAnsweredCoordinatorAsks(ctx context.Context, at time.Time) ([]domain.NotificationRecord, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.ResolveAnsweredCoordinatorAsks(ctx, nullTime(at))
+	if err != nil {
+		return nil, fmt.Errorf("resolve answered coordinator asks: %w", err)
+	}
+	return notificationsFromGen(rows), nil
+}
+
+// CountUnresolvedCoordinatorAsks counts coordinator questions still waiting on Ed.
+func (s *Store) CountUnresolvedCoordinatorAsks(ctx context.Context) (int64, error) {
+	n, err := s.qr.CountUnresolvedCoordinatorAsks(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count unresolved coordinator asks: %w", err)
+	}
+	return n, nil
+}

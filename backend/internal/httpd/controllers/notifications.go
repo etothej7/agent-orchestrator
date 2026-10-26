@@ -68,10 +68,11 @@ func (c *NotificationsController) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListNotificationsResponse{
-		Notifications:   notificationResponses(page.Notifications),
-		NextCursor:      page.NextCursor,
-		UnreadCount:     page.UnreadCount,
-		UnresolvedCount: page.UnresolvedCount,
+		Notifications:      notificationResponses(page.Notifications),
+		NextCursor:         page.NextCursor,
+		UnreadCount:        page.UnreadCount,
+		UnresolvedCount:    page.UnresolvedCount,
+		UnresolvedAskCount: page.UnresolvedAskCount,
 	})
 }
 

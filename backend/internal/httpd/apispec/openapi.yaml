@@ -17801,12 +17801,15 @@ components:
           type: array
         unreadCount:
           type: integer
+        unresolvedAskCount:
+          type: integer
         unresolvedCount:
           type: integer
       required:
       - notifications
       - unreadCount
       - unresolvedCount
+      - unresolvedAskCount
       type: object
     ListPRFilesResponse:
       properties:

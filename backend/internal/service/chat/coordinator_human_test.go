@@ -13,13 +13,16 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
+	chatstore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestCoordinatorHumanHTTPHidesStreamingAndBackgroundChatter(t *testing.T) {
@@ -410,7 +413,7 @@ func TestCoordinatorAddressesHumanWithNotificationAndBoundedNotices(t *testing.T
 	}
 	// Notices never pause or retarget work, and need no blocking reason.
 	notice := func(id, purpose string) error {
-		_, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, StoryID: "story", Purpose: purpose, Question: "Verified at abc123."})
+		_, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, StoryID: "story", Purpose: purpose, Question: "Notice " + id + " verified at abc123."})
 		return err
 	}
 	for i, purpose := range []string{"verified_result", "stopped_work", "verified_result", "verified_result"} {
@@ -505,7 +508,7 @@ func TestCoordinatorHumanSteerIntoAutomationTurnIsVisibleAfterwards(t *testing.T
 		t.Fatal(err)
 	}
 	conv := h.ctrl.ConversationID()
-	for _, turn := range []struct{ id, clientID string }{{"steered", "report-batch:steered"}, {"relayed", "report-batch:relayed"}} {
+	for _, turn := range []struct{ id, clientID string }{{"steered", "report-batch:steered"}, {"relayed", "report-batch:relayed"}, {"emptysender", "report-batch:emptysender"}} {
 		if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: turn.id, Origin: domain.MessageOriginAutomation, Text: "Reports since your previous turn", ClientMessageID: turn.clientID}, turn.id+"-turn", h.now()); err != nil {
 			t.Fatal(err)
 		}
@@ -528,6 +531,8 @@ func TestCoordinatorHumanSteerIntoAutomationTurnIsVisibleAfterwards(t *testing.T
 	}
 	steer("steered", "ed", "")
 	steer("relayed", "agent", `,"senderSessionId":"worker-1"`)
+	// An explicitly empty sender is no sender: the Go and SQL rules must agree.
+	steer("emptysender", "empty", `,"senderSessionId":""`)
 
 	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
 	for _, query := range []string{"", "?limit=4"} {
@@ -537,7 +542,7 @@ func TestCoordinatorHumanSteerIntoAutomationTurnIsVisibleAfterwards(t *testing.T
 		if w.Code != 200 || strings.Contains(body, "PRIVATE_BEFORE_") || strings.Contains(body, "AFTER_agent") || strings.Contains(body, "STEER_TEXT_agent") {
 			t.Fatal("automation output or an agent-relayed steer leaked", query, w.Code, body)
 		}
-		for _, want := range []string{"STEER_TEXT_ed", "AFTER_ed"} {
+		for _, want := range []string{"STEER_TEXT_ed", "AFTER_ed", "STEER_TEXT_empty", "AFTER_empty"} {
 			if !strings.Contains(body, want) {
 				t.Fatal("Ed's steer or the reply to it is hidden", want, query, body)
 			}
@@ -545,5 +550,187 @@ func TestCoordinatorHumanSteerIntoAutomationTurnIsVisibleAfterwards(t *testing.T
 		if strings.Contains(body, "ao-steer:") {
 			t.Fatal("provider item key leaked", body)
 		}
+	}
+}
+
+// Repeating the same question, result or stop under a fresh id reaches Ed once;
+// a stop is bounded only by a generous separate cap; an answered question may
+// be asked again.
+func TestCoordinatorNoticeDedupeAndStopCap(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	notifier := &recordingHumanNotifier{}
+	svc := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, Notifier: notifier, Now: h.now})
+	record := func(id, purpose, text string) string {
+		t.Helper()
+		got, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, Purpose: purpose, Question: text, WhyBlocked: "needed"})
+		if err != nil {
+			t.Fatal(id, err)
+		}
+		return got
+	}
+	// Same stop, different id and spacing/case: one message, one notification key.
+	first := record("stop-1", "stopped_work", "Totals work stopped: the fixture repo is missing.")
+	if again := record("stop-2", "stopped_work", "  totals work STOPPED:   the fixture repo is missing. "); again != first {
+		t.Fatalf("same stop announced twice: %s vs %s", first, again)
+	}
+	// A different reason is a different stop.
+	if other := record("stop-3", "stopped_work", "Labels work stopped: provider login expired."); other == first {
+		t.Fatal("distinct stop was swallowed")
+	}
+	keys := map[string]bool{}
+	for _, intent := range notifier.intents {
+		keys[intent.SourceKey] = true
+	}
+	if len(keys) != 2 {
+		t.Fatal("notification keys", keys)
+	}
+	// An identical result is announced once as well.
+	r1 := record("res-1", "verified_result", "Labels verified at abc123.")
+	if r2 := record("res-2", "verified_result", "Labels verified at abc123."); r2 != r1 {
+		t.Fatal("same result announced twice")
+	}
+	// The stop cap is generous (20 per hour) and separate from the result cap.
+	for i := 0; i < chatstore.CoordinatorStopLimit-2; i++ {
+		record(fmt.Sprintf("stop-fill-%d", i), "stopped_work", fmt.Sprintf("Distinct stop %d.", i))
+	}
+	_, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: "stop-over", Purpose: "stopped_work", Question: "One stop too many."})
+	var limited *apierr.Error
+	if !errors.As(err, &limited) || limited.Code != "COORDINATOR_NOTICE_RATE_LIMITED" || !strings.Contains(limited.Message, "Retry after") {
+		t.Fatal("stop cap missing or silent", err)
+	}
+	// Questions: identical while unanswered, askable again once Ed has responded.
+	q1 := record("q-1", "scope_question", "Blue or Green?")
+	if q2 := record("q-2", "scope_question", "Blue or Green?"); q2 != q1 {
+		t.Fatal("identical unanswered question was repeated")
+	}
+	h.advance(time.Second)
+	if _, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-answer", Origin: domain.MessageOriginHuman, Text: "Blue.", ClientMessageID: "ed-answer"}, "ed-answer-turn", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(time.Second)
+	if q3 := record("q-3", "scope_question", "Blue or Green?"); q3 == q1 {
+		t.Fatal("an answered question could not be asked again")
+	}
+}
+
+type recordedNotificationEvents struct{ events []domain.NotificationEvent }
+
+func (r *recordedNotificationEvents) Publish(_ context.Context, event domain.NotificationEvent) error {
+	r.events = append(r.events, event)
+	return nil
+}
+
+// A coordinator question (ao ask) keeps its notification open until Ed writes in
+// that conversation (a message or a steer) or dismisses it; results and stops
+// are one-time facts and never become open items.
+func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	events := &recordedNotificationEvents{}
+	manager := notify.New(notify.Deps{Store: h.st, Publisher: events})
+	svc := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, Notifier: manager, Now: h.now})
+	record := func(id, purpose, text string) {
+		t.Helper()
+		if _, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, Purpose: purpose, Question: text, WhyBlocked: "needed"}); err != nil {
+			t.Fatal(id, err)
+		}
+	}
+	unresolved := func() (ids []string, asks int64) {
+		t.Helper()
+		rows, err := h.st.ListNotifications(ctx, domain.NotificationListUnresolved, time.Time{}, "", 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.Type != domain.NotificationCoordinatorMessage || !domain.IsCoordinatorAskPurpose(row.Purpose) || !row.NeedsResolution() {
+				t.Fatal("only coordinator questions may be open items", row)
+			}
+			ids = append(ids, row.SourceKey)
+		}
+		total, err := h.st.CountUnresolvedNotifications(ctx)
+		if err != nil || int(total) != len(ids) {
+			t.Fatal("unresolved count disagrees with the list", total, ids, err)
+		}
+		asks, err = h.st.CountUnresolvedCoordinatorAsks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids, asks
+	}
+	record("ask-1", "scope_question", "Blue or Green?")
+	record("result-1", "verified_result", "Labels verified at abc123.")
+	record("stop-1", "stopped_work", "Totals work stopped.")
+	if ids, asks := unresolved(); len(ids) != 1 || asks != 1 {
+		t.Fatal("the question must be open and the notices must not be", ids, asks)
+	}
+	// Nothing from Ed yet: the resolver leaves the question open.
+	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := unresolved(); len(ids) != 1 {
+		t.Fatal("question closed before Ed replied", ids)
+	}
+	// Ed replies in the coordinator conversation: the question closes and the
+	// closure is published; the notices were never open and are untouched.
+	h.advance(time.Second)
+	if _, err := h.st.AppendUserMessage(ctx, h.ctrl.ConversationID(), testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "ed-reply", Origin: domain.MessageOriginHuman, Text: "Blue.", ClientMessageID: "ed-reply"}, "ed-reply-turn", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	events.events = nil
+	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ids, asks := unresolved(); len(ids) != 0 || asks != 0 {
+		t.Fatal("answered question stayed open", ids, asks)
+	}
+	if len(events.events) != 1 || events.events[0].Kind != domain.NotificationResolved || events.events[0].Record.Purpose != "scope_question" {
+		t.Fatal("resolution was not published", events.events)
+	}
+	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil || len(events.events) != 1 {
+		t.Fatal("resolution is not idempotent", err, len(events.events))
+	}
+	// A second question closes when Ed steers a running turn instead of sending.
+	record("ask-2", "blocking_decision", "May I stop the labels work?")
+	h.advance(time.Second)
+	conv := h.ctrl.ConversationID()
+	if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "batch", Origin: domain.MessageOriginAutomation, Text: "Reports", ClientMessageID: "report-batch:x"}, "batch-turn", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.BindTurnToProvider(ctx, "batch-turn", "batch-provider", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := unresolved(); len(ids) != 1 {
+		t.Fatal("an automation message answered the question", ids)
+	}
+	if err := h.st.UpsertActivity(ctx, conv, "batch-provider", domain.ConversationActivity{ID: "steer-ed", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(`{"event":"steer","text":"Yes, stop it.","origin":"human"}`), ProviderItemID: "ao-steer:ed"}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ResolveAnsweredCoordinatorAsks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := unresolved(); len(ids) != 0 {
+		t.Fatal("a human steer did not answer the question", ids)
+	}
+	// Dismissal also takes a question off the open list.
+	record("ask-3", "completion_decision", "Is this done?")
+	rows, err := h.st.ListNotifications(ctx, domain.NotificationListUnresolved, time.Time{}, "", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	if _, found, err := h.st.DeleteNotification(ctx, rows[0].ID); err != nil || !found {
+		t.Fatal(found, err)
+	}
+	if ids, asks := unresolved(); len(ids) != 0 || asks != 0 {
+		t.Fatal("a dismissed question stayed open", ids, asks)
 	}
 }

@@ -417,6 +417,12 @@ type CoordinatorHumanMessage struct {
 	Purpose   string
 }
 
+type CoordinatorNoticeKey struct {
+	DedupeKey string
+	MessageID string
+	CreatedAt time.Time
+}
+
 type Cue struct {
 	ID        domain.CueID
 	ProjectID domain.ProjectID
