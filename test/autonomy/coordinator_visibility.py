@@ -101,10 +101,12 @@ class CoordinatorVisibility(a.Harness):
         self.cdp_port = self.free_port()
         env = dict(self.env)
         env.update(AO_KEEP_DAEMON='1', AO_DISABLE_GPU='1', MallocNanoZone='0', ELECTRON_ENABLE_LOGGING='1')
-        log = open(self.root / 'gui.log', 'ab')
-        self.gui = subprocess.Popen([str(self.app_copy / 'Contents/MacOS/agent-orchestrator'), f'--remote-debugging-port={self.cdp_port}'], env=env, cwd=self.root,
-                                    stdout=log, stderr=log, start_new_session=True)
-        log.close()
+        env['AO_GUI_LOG'] = str(self.root / 'gui.log')
+        # Detached through a shell so launchd (not this harness) reaps the GUI: a killed direct child would linger as a
+        # zombie and be miscounted as a surviving process by the teardown check.
+        shell = subprocess.Popen(['/bin/sh', '-c', '"$0" "$@" >> "$AO_GUI_LOG" 2>&1 &', str(self.app_copy / 'Contents/MacOS/agent-orchestrator'),
+                                  f'--remote-debugging-port={self.cdp_port}', '--use-mock-keychain'], env=env, cwd=self.root, start_new_session=True)
+        shell.wait(timeout=30)
         self.track()
         def up():
             try:
@@ -114,6 +116,7 @@ class CoordinatorVisibility(a.Harness):
                 return False
         ok = self.wait(up, 90, step=1.0)
         time.sleep(6)
+        self.result['guiLaunch'] = {'cdpPort': self.cdp_port, 'reachable': bool(ok), 'processStillRunning': any('MacOS/agent-orchestrator' in c for _, (_, _, c) in self.process_rows().items() if str(self.root) in c)}
         return bool(ok)
 
     def ui(self, action, **kw):
@@ -224,6 +227,14 @@ class CoordinatorVisibility(a.Harness):
         self.start()
         self.check('isolated_daemon_ready', True)
         applied_prev = sql(self.data / 'ao.db', 'select count(*), max(version_id) from goose_db_version')[0]
+        if self.args.gui_probe:
+            self.launch_gui()
+            if self.args.hold:
+                (self.root / 'hold').write_text(json.dumps({'root': str(self.root), 'port': self.port, 'cdp': self.cdp_port}))
+                while not (self.root / 'release').exists():
+                    time.sleep(2)
+            self.result['guiProbe'] = {'home': self.ui('open-main-from-home', sessionId='none'), 'sidebar': self.ui('open-main-from-sidebar', sessionId='none')}
+            return
         if self.args.hold:
             (self.root / 'hold').write_text(json.dumps({'root': str(self.root), 'port': self.port}))
             while not (self.root / 'release').exists():
@@ -424,6 +435,7 @@ def main():
     parser.add_argument('--app', type=Path, help='packaged .app: its bundled daemon, acp-runtime and GUI are used (copied into scratch)')
     parser.add_argument('--playwright-dir', default='/private/tmp/ao-personal-66b-4/frontend/node_modules/playwright')
     parser.add_argument('--keep-harness', action='store_true', help='leave the copied coordinator on its original harness')
+    parser.add_argument('--gui-probe', action='store_true', help='debug: start the candidate daemon + GUI only and try the CDP driver')
     parser.add_argument('--hold', action='store_true', help='debug: start the confined scratch daemon and wait for <root>/release')
     parser.add_argument('--standing-wait', type=float, default=150)
     parser.add_argument('--turn-wait', type=float, default=240)
