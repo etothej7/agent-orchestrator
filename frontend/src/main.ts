@@ -96,6 +96,7 @@ import {
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { createCoordinatorBadge } from "./main/coordinator-badge";
 import { confirmFullQuit } from "./main/quit-confirmation";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
@@ -882,7 +883,7 @@ async function createWindowInternal(): Promise<void> {
 					void host.toggleDevToolsForLastFocused().then((state) => {
 						if (!state) fallback();
 					}).catch(fallback);
-				}),
+				}, { appName: app.name, onQuit: () => desktopQuit.requestUserQuit() }),
 			),
 		);
 	} else if (process.platform === "linux") {
@@ -3116,8 +3117,8 @@ if (!app.isPackaged) {
 	});
 }
 
-ipcMain.handle("notifications:setBadge", (_event, count: number) => {
-	if (!mainWindow) return { error: "no mainWindow" };
+/** Sets the launcher badge. macOS's Dock badge needs no window; the Windows overlay does. */
+function applyBadgeCount(count: number): { ok?: boolean; error?: string } {
 	const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 	if (process.platform === "darwin") {
 		const dock = app.dock;
@@ -3128,6 +3129,7 @@ ipcMain.handle("notifications:setBadge", (_event, count: number) => {
 			return { error: String(e) };
 		}
 	} else if (process.platform === "win32") {
+		if (!mainWindow) return { error: "no mainWindow" };
 		if (n > 0) {
 			// Pre-built red dot PNG overlay — indicates unread without needing Canvas.
 			const badgeDataUrl =
@@ -3141,12 +3143,26 @@ ipcMain.handle("notifications:setBadge", (_event, count: number) => {
 		// setBadgeCount drives a numeric launcher badge on Unity only, and only
 		// when the app ships a matching .desktop entry. Other Linux launchers
 		// (KDE, GNOME) expose no equivalent API, so the call is a no-op there.
-		// Surface the boolean result so the renderer can tell the badge was not
-		// applied instead of assuming unconditional success.
 		return { ok: app.setBadgeCount(n) };
 	}
 	return { ok: true };
+}
+
+ipcMain.handle("notifications:setBadge", (_event, count: number) => applyBadgeCount(count));
+
+// The Dock badge is owned here, not by the renderer: with the window closed AO keeps running and
+// there is no renderer to compute it. It follows the daemon's notifications on a short poll.
+const coordinatorBadge = createCoordinatorBadge({
+	getPort: () => (daemonStatus.state === "ready" && daemonStatus.port ? daemonStatus.port : undefined),
+	fetchJson: async (url, timeoutMs) => {
+		const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		return response.ok ? ((await response.json()) as unknown) : undefined;
+	},
+	setBadge: (count) => void applyBadgeCount(count),
 });
+// The renderer just read a result or answered a question: re-read straight away.
+ipcMain.on("coordinator-badge:refresh", () => void coordinatorBadge.refresh());
+app.once("will-quit", () => coordinatorBadge.stop());
 
 ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.handleSetAttentionState(event, state));
 
@@ -3345,6 +3361,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	coordinatorBadge.start();
 	const personalBuild = isPersonalBuild(app.getVersion());
 	if (app.isPackaged && !personalBuild) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
@@ -3478,7 +3495,7 @@ app.whenReady().then(async () => {
 		trayController = createTrayController({
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
-			quitCompletely: () => desktopQuit.quit(),
+			quitCompletely: () => desktopQuit.requestUserQuit(),
 			locale: initialUiSettings.locale,
 		});
 	}

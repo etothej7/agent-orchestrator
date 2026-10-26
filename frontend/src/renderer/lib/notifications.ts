@@ -505,15 +505,6 @@ export function isUnreadCoordinatorTell(notification: Pick<NotificationDTO, "typ
 	);
 }
 
-/**
- * The red Dock badge: open coordinator questions plus unread results and stops. Server state, so it is
- * right on startup; it clears when a tell is seen in the focused chat or a question is answered.
- */
-export function getCoordinatorBadgeCount(cache: NotificationsCache | undefined): number {
-	const openAsks = cache?.pages[0]?.unresolvedAskCount ?? getCachedNotifications(cache).filter(isOpenCoordinatorAsk).length;
-	return openAsks + getCachedNotifications(cache).filter(isUnreadCoordinatorTell).length;
-}
-
 export function getCachedUnreadCount(cache: NotificationsCache | undefined): number {
 	return (
 		cache?.pages[0]?.unreadCount ?? getCachedNotifications(cache).filter((item) => item.status === "unread").length

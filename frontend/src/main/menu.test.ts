@@ -117,3 +117,28 @@ describe("buildMacAppMenuTemplate", () => {
 	});
 
 });
+
+describe("the macOS app menu's Quit", () => {
+	const items = (template: ReturnType<typeof buildMacAppMenuTemplate>) =>
+		(template[0]?.submenu as Array<{ role?: string; label?: string; accelerator?: string; click?: () => void }>) ?? [];
+
+	it("is our own item (not role quit) so a user quit can be told from an AppleEvent quit", () => {
+		const onQuit = vi.fn();
+		const quit = items(buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit })).find((item) => item.label?.startsWith("Quit"));
+		expect(quit?.label).toBe("Quit Agent Orchestrator");
+		expect(quit?.accelerator).toBe("Command+Q");
+		expect(quit?.role).toBeUndefined();
+		quit?.click?.();
+		expect(onQuit).toHaveBeenCalledTimes(1);
+	});
+
+	it("has no role: quit anywhere, and keeps the standard app-menu items", () => {
+		const template = buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit: vi.fn() });
+		expect(JSON.stringify(template)).not.toContain('"role":"quit"');
+		expect(items(template).map((item) => item.role).filter(Boolean)).toEqual(["about", "services", "hide", "hideOthers", "unhide"]);
+	});
+
+	it("falls back to Electron's standard app menu when no quit handler is given", () => {
+		expect(buildMacAppMenuTemplate(vi.fn())[0]).toEqual({ role: "appMenu" });
+	});
+});

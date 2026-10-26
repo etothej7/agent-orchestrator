@@ -2,6 +2,7 @@ import { InternalActivity, isInternalGroup, isInternalItem } from "./InternalAct
 import { CoordinatorMessageBlock } from "./CoordinatorMessageBlock";
 import { CoordinatorAskContext, type CoordinatorAskControls, type CoordinatorAskStatus } from "./coordinator-asks";
 import { isCoordinatorMessage } from "../../lib/coordinator-messages";
+import { refreshCoordinatorBadge } from "../../lib/coordinator-badge";
 import { TurnWorkSummary } from "./TurnWorkSummary";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 import { isSettingsPageOpen } from "../../hooks/useAppShortcut";
@@ -1152,6 +1153,7 @@ function ChatWorkspaceContent({
 			}
 			const replyToAskId = answeringRef.current?.messageId;
 			const sent = await onSend?.(text, attachments, clientMessageId, excerpts, replyToAskId);
+			if (replyToAskId) refreshCoordinatorBadge();
 			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
 			return sent;
 		},
@@ -1194,6 +1196,7 @@ function ChatWorkspaceContent({
 		) => {
 			const replyToAskId = answeringRef.current?.messageId;
 			const outcome = await stableSteer(text, attachments, clientMessageId, recoverOnly, replyToAskId);
+			if (replyToAskId) refreshCoordinatorBadge();
 			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
 			return outcome;
 		},

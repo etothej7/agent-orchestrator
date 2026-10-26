@@ -36,7 +36,6 @@ import {
 	createNotificationsTransport,
 	getCachedNotifications,
 	getBellUnreadCount,
-	getCoordinatorBadgeCount,
 	isBellNotification,
 	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
@@ -189,9 +188,6 @@ export function NotificationRuntime() {
 	// Keeps the unread cache the live stream merges into warm for the bell.
 	useNotificationsQuery("unread");
 	const remoteUnread = useRemoteNotificationHosts("unread");
-	// The Dock badge is the coordinator's: open questions plus results and stops not yet seen in the chat.
-	const historyQuery = useNotificationsQuery("all");
-	const badgeCount = getCoordinatorBadgeCount(historyQuery.data);
 	const params = useParams({ strict: false }) as { hostId?: string; sessionId?: string };
 	const routeRef = useRef(params);
 	routeRef.current = params;
@@ -215,12 +211,8 @@ export function NotificationRuntime() {
 	);
 	useEffect(() => connectRemoteNotificationStreams(queryClient), [queryClient]);
 
-	// Keep the OS launcher badge in sync here rather than in NotificationCenter:
-	// NotificationRuntime is always mounted in the shell, whereas the notification
-	// bell is absent from the Linux topbar and only mounts on the sessions board.
-	useEffect(() => {
-		void aoBridge.notifications.setBadge(badgeCount);
-	}, [badgeCount]);
+	// The launcher/Dock badge is owned by the desktop's main process (main/coordinator-badge.ts):
+	// with the window closed there is no renderer to keep it right.
 
 	useEffect(() => {
 		for (const host of remoteUnread.hosts) {

@@ -20,8 +20,8 @@ import { useReadCoordinatorTells } from "./useReadCoordinatorTells";
 const tellMessage = (id: string, purpose: string, text: string): ConversationItem => ({
 	kind: "message", id, sequence: 1, revision: 1, role: "assistant", origin: "daemon", streaming: false, text, purpose, createdAt: "2026-10-26T12:00:00Z",
 });
-const note = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, body: string, status: "read" | "unread" = "unread"): NotificationDTO => ({
-	id, sessionId: "coord", projectId: "overall", prUrl: "", type: "coordinator_message", purpose, title: id, body, status,
+const note = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, body: string, status: "read" | "unread" = "unread", messageId = id.replace("ntf_", "")): NotificationDTO => ({
+	id, sessionId: "coord", projectId: "overall", prUrl: "", type: "coordinator_message", purpose, messageId, title: id, body, status,
 	createdAt: "2026-10-26T12:00:01Z", target: { kind: "session", sessionId: "coord" },
 });
 

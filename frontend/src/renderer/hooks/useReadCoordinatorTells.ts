@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { coordinatorMessageKind, notificationForMessage } from "../lib/coordinator-messages";
+import { refreshCoordinatorBadge } from "../lib/coordinator-badge";
 import { isUnreadCoordinatorTell } from "../lib/notifications";
 import type { ConversationItem } from "../types/conversation";
 import { useMarkAllNotificationsReadMutation, useNotificationsQuery } from "./useNotificationsQuery";
@@ -48,6 +49,9 @@ export function useReadCoordinatorTells(enabled: boolean, onScreen: boolean, ite
 		const fresh = unreadSeen.filter((id) => !requested.current.has(id));
 		if (fresh.length === 0) return;
 		for (const id of fresh) requested.current.add(id);
-		mutate(fresh, { onError: () => fresh.forEach((id) => requested.current.delete(id)) });
+		mutate(fresh, {
+			onSuccess: refreshCoordinatorBadge,
+			onError: () => fresh.forEach((id) => requested.current.delete(id)),
+		});
 	}, [focused, mutate, onScreen, unreadSeen]);
 }

@@ -45,7 +45,6 @@ import {
 	clearAllNotifications,
 	createNotificationsTransport,
 	getBellUnreadCount,
-	getCoordinatorBadgeCount,
 	isBellNotification,
 	deleteNotification,
 	fetchNotificationsPage,
@@ -982,17 +981,5 @@ describe("coordinator message helpers", () => {
 		expect(types.filter((type) => isBellNotification({ type }))).toEqual(["needs_input", "ready_to_merge"]);
 		const unread = types.map((type) => notification({ id: type, type, status: "unread" }));
 		expect(getBellUnreadCount(cache(unread, unread.length))).toBe(2);
-	});
-
-	it("badge = open questions (from the daemon) + unread results and stops", () => {
-		const items = [coordinator("verified_result", "unread"), coordinator("stopped_work", "read"), coordinator("blocking_decision", "unread"), notification({ id: "agent", status: "unread" })];
-		expect(getCoordinatorBadgeCount(cache(items, 3, 2))).toBe(3);
-		expect(getCoordinatorBadgeCount(cache([coordinator("stopped_work", "read")], 0, 0))).toBe(0);
-		expect(getCoordinatorBadgeCount(undefined)).toBe(0);
-	});
-
-	it("a question answered or dismissed no longer counts; reading a tell clears it", () => {
-		expect(getCoordinatorBadgeCount(cache([coordinator("blocking_decision", "read", { resolvedAt: "2026-06-16T11:00:00Z" })], 0, 0))).toBe(0);
-		expect(getCoordinatorBadgeCount(cache([coordinator("verified_result", "read")], 0, 0))).toBe(0);
 	});
 });

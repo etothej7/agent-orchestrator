@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { NotificationDTO, NotificationsCache } from "../lib/notifications";
 import { NotificationRuntime } from "./NotificationCenter";
@@ -76,41 +76,17 @@ function renderRuntimeOnly() {
 	);
 }
 
-describe("NotificationRuntime badge sync", () => {
-	it("syncs the launcher badge without the notification bell being mounted", async () => {
+describe("NotificationRuntime badge", () => {
+	it("leaves the launcher badge to the desktop's main process, which keeps it right with no window", async () => {
 		setBadge.mockClear();
-		// Two open questions and one unread result; a read stop and ordinary unread agent notifications do not count.
 		unreadCache = cacheWith([
 			coordinator("tell-unread", "verified_result", "unread"),
-			coordinator("stop-read", "stopped_work", "read"),
-			coordinator("ask-open-1", "blocking_decision", "unread"),
-			coordinator("ask-open-2", "scope_question", "read"),
-		], 2);
+			coordinator("ask-open", "blocking_decision", "unread"),
+		], 1);
 
 		renderRuntimeOnly();
+		await new Promise((resolve) => setTimeout(resolve, 50));
 
-		// The badge must update purely from the always-mounted runtime, independent
-		// of NotificationCenter, which Linux hides from the topbar and only mounts
-		// on the sessions board.
-		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(3));
-		expect(setBadge).not.toHaveBeenCalledWith(notifications.length);
-	});
-
-	it("is clear when nothing waits on Ed, whatever else is unread", async () => {
-		setBadge.mockClear();
-		unreadCache = cacheWith([coordinator("stop-read", "stopped_work", "read")], 0);
-
-		renderRuntimeOnly();
-
-		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(0));
-	});
-
-	it("takes the open-question count from the daemon, not from the loaded page", async () => {
-		setBadge.mockClear();
-		unreadCache = cacheWith([], 4);
-
-		renderRuntimeOnly();
-
-		await waitFor(() => expect(setBadge).toHaveBeenCalledWith(4));
+		expect(setBadge).not.toHaveBeenCalled();
 	});
 });

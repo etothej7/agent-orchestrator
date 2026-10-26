@@ -198,9 +198,9 @@ surface (`npm run sqlc`, `npm run api`).
   app-owned daemon, and enabled mobile access remain alive. Reopening creates a
   fresh window. Quit/Cmd+Q (and the tray's **Quit AO Completely**) fully exit the
   app, and the app-owned daemon stops after its grace period; the unsaved-draft
-  confirmation still applies, and a person-initiated quit while agents work (or
-  Stay Awake holds a closed-lid Mac) asks Keep Running / Quit Anyway first (not for
-  shutdown or update relaunch). Desktop browser targets stop with the window.
+  confirmation still applies, and a person-initiated quit (Quit/Cmd-Q, tray) while agents work (or
+  Stay Awake holds a closed-lid Mac) asks Keep Running / Quit Anyway first (never
+  for an AppleEvent/installer quit, logout, shutdown or update relaunch). Desktop browser targets stop with the window.
   Updates and system shutdown exit the app as before.
 - Shell: sidebar (projects + sessions, add/remove project), sessions board,
   session view + inspector, project settings, pull-requests page,
