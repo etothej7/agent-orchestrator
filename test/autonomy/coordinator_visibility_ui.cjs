@@ -104,7 +104,7 @@ async function main() {
       await page.goto('app://renderer/index.html#/workspace');
       await page.waitForTimeout(3500);
       out.homeRoute = await count();
-      out.homeStatus = await page.getByRole('status').filter({ hasText: /needs you/i }).count();
+      out.homeStatus = await page.getByRole('status').filter({ hasText: /waiting for your answer/i }).count();
     } else if (action === 'attention') {
       // The needs-you marker (sidebar Main coordinator row, Home entry).
       const labelled = await page.locator('[aria-label*="needs you" i], [title*="needs you" i]').count();
