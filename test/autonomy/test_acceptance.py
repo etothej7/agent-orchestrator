@@ -650,6 +650,7 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
     def test_idle_manager_cdc_wake_requires_idle_gate_link_and_bound(self):
         out = a.idle_wake_evidence(*self.idle_case(), now=1e12)
         self.assertTrue(out['passed'] and out['decided'])
+        self.assertEqual(out['preDoneStoryContinueCount'], 0)
         self.assertEqual((out['managerIdleSeconds'], out['wake']['seconds'], out['wake']['recipientState']), (40, 8, 'idle'))
         self.assertEqual((out['nextManagerAction']['eventId'], out['nextManagerAction']['seconds']), ('act', 12))
         busy = a.idle_wake_evidence(*self.idle_case(manager_end='2026-01-01T00:00:55Z'), now=1e12)
