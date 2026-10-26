@@ -38,16 +38,23 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if !strings.Contains(manager, "Repo Manager Reporting Chain") || !strings.Contains(manager, `ao report "<summary or suggestion>"`) {
 		t.Fatal("repo manager cannot report upward")
 	}
-	for _, want := range []string{"Ending your turn:", "Do not poll, sleep, loop or check on them", "AO queues a new turn for you when a participant files a phase-ending report", "Do not end your turn with a handoff undelivered"} {
+	for _, want := range []string{"Ending your turn:", "Do not poll, sleep, loop or check on them", "AO queues a new turn for you right away when a worker or reviewer on one of your stories files a done, needs-input or stuck report", "Do not end your turn with a handoff undelivered"} {
 		if !strings.Contains(manager, want) {
 			t.Fatalf("repo manager lacks the built-in end-turn rule %q", want)
+		}
+	}
+	for _, want := range []string{"files a done, needs-input or stuck report", "five-minute settlement window"} {
+		if !strings.Contains(manager, want) {
+			t.Fatalf("repo manager end-turn rule lacks %q", want)
 		}
 	}
 	if strings.Contains(manager, "end your turn immediately") || !strings.Contains(manager, "Keep working in the same turn for as long as there is authorized work") {
 		t.Fatal("end-turn rule must not cut off in-turn assignment, handoff or finding work")
 	}
-	if !strings.Contains(overall, "end your turn instead of polling managers") || !strings.Contains(overall, "when a repo manager reports to you, and when a story has no assigned manager") {
-		t.Fatal("overall coordinator lacks the delegate-then-end-turn rule")
+	for _, want := range []string{"end your turn instead of polling managers", "when a repo manager reports done, needs-input or stuck to you", "a manager's checkpoint is batched", "when a story has no assigned manager"} {
+		if !strings.Contains(overall, want) {
+			t.Fatalf("overall coordinator delegation rule lacks %q", want)
+		}
 	}
 	if strings.Contains(overall, "AO wakes you with their reports and story events") {
 		t.Fatal("coordinator prompt promises wakes that story continuations do not send it")

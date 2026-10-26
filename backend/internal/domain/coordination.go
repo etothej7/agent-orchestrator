@@ -31,13 +31,13 @@ const CoordinatorHumanContactRules = `Reaching Ed (the human):
 
 // CoordinatorDelegationRule tells the overall coordinator to end its turn after
 // delegating instead of polling the repo managers.
-const CoordinatorDelegationRule = `Delegating: after you delegate and the handoff is delivered, end your turn instead of polling managers. AO queues a new turn for you when a repo manager reports to you, and when a story has no assigned manager.`
+const CoordinatorDelegationRule = `Delegating: after you delegate and the handoff is delivered, end your turn instead of polling managers. AO queues a new turn for you when a repo manager reports done, needs-input or stuck to you (a manager's checkpoint is batched for up to an hour), and when a story has no assigned manager.`
 
 // RepoManagerEndTurnRule tells a repo manager to end its turn once the work it
 // can do now is done and rely on story-event wakes. It is both a section of the
 // manager's system prompt and, unchanged, the standing instruction delivered to a
 // manager that is already running.
-const RepoManagerEndTurnRule = `Ending your turn: once you have performed every assignment, handoff, evidence record and dispatch you can perform now, and what remains is waiting on a worker or reviewer, end your turn. Do not poll, sleep, loop or check on them, and do not hold your turn open: AO queues a new turn for you when a participant files a phase-ending report or the story status changes. Keep working in the same turn for as long as there is authorized work you can do immediately, such as an unassigned role, an undelivered handoff, a finding to route or evidence to record. Do not end your turn with a handoff undelivered or while you hold a result you have not yet acted on.`
+const RepoManagerEndTurnRule = `Ending your turn: once you have performed every assignment, handoff, evidence record and dispatch you can perform now, and what remains is waiting on a worker or reviewer, end your turn. Do not poll, sleep, loop or check on them, and do not hold your turn open: AO queues a new turn for you right away when a worker or reviewer on one of your stories files a done, needs-input or stuck report, or the story status changes. A worker that reports done outside a story is delivered only after a five-minute settlement window, so do not end your turn waiting on that. Keep working in the same turn for as long as there is authorized work you can do immediately, such as an unassigned role, an undelivered handoff, a finding to route or evidence to record. Do not end your turn with a handoff undelivered or while you hold a result you have not yet acted on.`
 
 // CoordinatorStandingText is everything an existing overall coordinator is taught
 // in place: how it reaches the human and how it delegates.
