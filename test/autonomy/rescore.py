@@ -56,6 +56,8 @@ def rescore(source):
         'inTurnTransitionRowCount': sum(1 for r in in_turn if r['sourceKind'] == 'transition'),
         'transitionRowsAreWakeEvidence': False, 'idleManagerCdcWakeProven': False,
         'originalResultImmutable': True, 'originalVerdict': 'ACCEPTED' if original.get('passed') else 'NOT ACCEPTED'}
+    required = [r for r in rows if r['required']]
+    h.check('report_dispatch_latency_bounded', bool(required) and all(r.get('passed') for r in required))
     h.check('parallelism_at_most_four', bool(samples) and h.result['maxActiveWorkers'] <= 4)
     return h.result
 
