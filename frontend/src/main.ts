@@ -375,6 +375,8 @@ const desktopQuit = createDesktopQuitController({
 	quit: () => app.quit(),
 	relaunch: () => app.relaunch(),
 });
+// A requested update relaunch is armed here, once the quit can no longer be stopped.
+app.on("will-quit", () => desktopQuit.handleWillQuit());
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
 let browserStreamLink: BrowserStreamLinkHandle | null = null;

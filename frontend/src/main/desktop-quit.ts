@@ -22,6 +22,7 @@ export function createDesktopQuitController(options: {
 	relaunch(): void;
 }) {
 	let draftLeaveConfirmed = false;
+	let relaunchRequested = false;
 
 	return {
 		/** The `before-quit` handler. True when the quit was held for the draft confirmation. */
@@ -31,6 +32,9 @@ export function createDesktopQuitController(options: {
 			if (options.confirmDraftLeave()) {
 				draftLeaveConfirmed = true;
 				options.quit();
+			} else {
+				// The quit was called off, so a relaunch that rode on it is too.
+				relaunchRequested = false;
 			}
 			return true;
 		},
@@ -48,15 +52,22 @@ export function createDesktopQuitController(options: {
 		},
 		/**
 		 * Update retry: start a fresh AO after this one exits. The draft confirmation comes
-		 * first: a relaunch armed before a declined prompt would fire on the next exit of any kind.
+		 * first, and the relaunch itself is only armed at `will-quit` (see handleWillQuit), so
+		 * nothing that cancels the quit afterwards can leave a stray relaunch behind.
 		 */
 		relaunchAndQuit(): void {
 			if (options.draftRiskCount() > 0 && !draftLeaveConfirmed) {
 				if (!options.confirmDraftLeave()) return;
 				draftLeaveConfirmed = true;
 			}
-			options.relaunch();
+			relaunchRequested = true;
 			options.quit();
+		},
+		/** The `will-quit` handler: the quit can no longer be stopped, so arm a requested relaunch now. */
+		handleWillQuit(): void {
+			if (!relaunchRequested) return;
+			relaunchRequested = false;
+			options.relaunch();
 		},
 	};
 }

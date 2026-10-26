@@ -5,12 +5,12 @@ import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./d
  * A stand-in for Electron's app: `quit()` raises `before-quit`; the app exits unless the
  * handler prevented it.
  */
-function harness(options: { drafts?: number; confirm?: boolean[] } = {}) {
+function harness(options: { drafts?: number | (() => number); confirm?: boolean[] } = {}) {
 	const answers = [...(options.confirm ?? [])];
 	const log: string[] = [];
 	let exited = 0;
 	const controller = createDesktopQuitController({
-		draftRiskCount: () => options.drafts ?? 0,
+		draftRiskCount: () => (typeof options.drafts === "function" ? options.drafts() : options.drafts ?? 0),
 		confirmDraftLeave: () => {
 			log.push("ask");
 			return answers.shift() ?? false;
@@ -22,8 +22,10 @@ function harness(options: { drafts?: number; confirm?: boolean[] } = {}) {
 		quit() {
 			log.push("quit");
 			const event = { prevented: false, preventDefault() { this.prevented = true; } };
-			if (!controller.handleBeforeQuit(event)) {
-				if (!event.prevented) exited += 1;
+			if (!controller.handleBeforeQuit(event) && !event.prevented) {
+				// Nothing stopped it: will-quit fires, then the process exits.
+				controller.handleWillQuit();
+				exited += 1;
 			}
 		},
 	};
@@ -62,11 +64,17 @@ describe("desktop quit", () => {
 		expect(exits()).toBe(1);
 	});
 
-	it("an update relaunch starts the new AO, then exits", () => {
+	it("an update relaunch quits, and starts the new AO only once the quit cannot be stopped (will-quit)", () => {
 		const { controller, log, exits } = harness();
 		controller.relaunchAndQuit();
-		expect(log).toEqual(["relaunch", "quit"]);
+		expect(log).toEqual(["quit", "relaunch"]);
 		expect(exits()).toBe(1);
+	});
+
+	it("a plain quit never relaunches", () => {
+		const { app, log } = harness();
+		app.quit();
+		expect(log).toEqual(["quit"]);
 	});
 
 	describe("unsaved drafts", () => {
@@ -106,8 +114,27 @@ describe("desktop quit", () => {
 		it("relaunches once the draft prompt is accepted, without asking again", () => {
 			const accepted = harness({ drafts: 2, confirm: [true] });
 			accepted.controller.relaunchAndQuit();
-			expect(accepted.log).toEqual(["ask", "relaunch", "quit"]);
+			expect(accepted.log).toEqual(["ask", "quit", "relaunch"]);
 			expect(accepted.exits()).toBe(1);
+		});
+
+		it("a draft that appears after the relaunch was requested holds the quit and leaves no relaunch behind", () => {
+			let drafts = 0;
+			const raced = harness({ drafts: () => drafts, confirm: [false] });
+			// relaunchAndQuit sees no drafts, then one appears before before-quit runs.
+			const quit = raced.controller.relaunchAndQuit.bind(raced.controller);
+			drafts = 0;
+			const original = raced.app.quit.bind(raced.app);
+			raced.app.quit = () => { drafts = 1; original(); };
+			quit();
+			expect(raced.exits()).toBe(0);
+			expect(raced.log).toEqual(["quit", "ask"]);
+			// The drafts are gone; a later plain quit must not start a new AO.
+			drafts = 0;
+			raced.app.quit = original;
+			raced.app.quit();
+			expect(raced.exits()).toBe(1);
+			expect(raced.log).not.toContain("relaunch");
 		});
 
 		it("tells the window-close handler a confirmed quit need not ask again, until reset", () => {
