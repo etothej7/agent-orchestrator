@@ -9,7 +9,19 @@
  */
 
 /** The notification types defined by `backend/internal/domain/notification.go`. */
-export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
+export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged" | "coordinator_message";
+
+/**
+ * `coordinator_message` purposes that need Ed: the `ao ask` purposes, and work
+ * that stopped (`ao tell --kind stopped`, which says "needs you"). A verified
+ * result is the only coordinator message that is just good news.
+ */
+const COORDINATOR_URGENT_PURPOSES: ReadonlySet<string> = new Set([
+	"scope_question",
+	"blocking_decision",
+	"completion_decision",
+	"stopped_work",
+]);
 
 /**
  * Whether to fire the Windows/Linux taskbar flash. Restricted to the
@@ -19,7 +31,7 @@ export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | 
  * The macOS dock bounce is deliberately NOT gated by this allowlist — every
  * notification bounces there, with urgency carried by {@link dockBounceType}.
  */
-const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge"]);
+const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge", "coordinator_message"]);
 
 /** Whether this notification type should flash the Windows/Linux taskbar. */
 export function shouldSignalAttention(type: string | undefined): boolean {
@@ -80,10 +92,13 @@ export function toastSilent(
 
 /**
  * macOS dock bounce style. A blocked agent waiting on the user keeps bouncing
- * until the app is activated ("critical"); anything else bounces once
+ * until the app is activated ("critical"), and so does the coordinator asking Ed
+ * for a decision or reporting stopped work; anything else bounces once
  * ("informational"). This is where urgency lives, so every notification can
- * signal without a merged PR nagging as insistently as a blocked agent.
+ * signal without a merged PR or a verified result nagging as insistently as a
+ * blocked agent.
  */
-export function dockBounceType(type: string | undefined): "critical" | "informational" {
-	return type === "needs_input" ? "critical" : "informational";
+export function dockBounceType(type: string | undefined, purpose?: string): "critical" | "informational" {
+	if (type === "needs_input") return "critical";
+	return type === "coordinator_message" && purpose !== undefined && COORDINATOR_URGENT_PURPOSES.has(purpose) ? "critical" : "informational";
 }

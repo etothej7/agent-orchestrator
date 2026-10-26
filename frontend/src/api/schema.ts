@@ -5420,6 +5420,8 @@ export interface components {
         ConversationActivityResponse: {
             /** @enum {string} */
             activityKind: "command" | "file_change" | "plan" | "reasoning" | "approval" | "usage" | "error" | "system" | "mcp_tool" | "auto_review" | "user_input" | "ao_action";
+            /** @enum {string} */
+            audience?: "human" | "internal";
             createdAt: string;
             detail?: {
                 [key: string]: unknown;
@@ -5511,7 +5513,8 @@ export interface components {
             status: string;
         };
         ConversationMessageResponse: {
-            audience?: string;
+            /** @enum {string} */
+            audience?: "human" | "internal";
             clientMessageId?: string;
             content?: components["schemas"]["ConversationContentSummaryResponse"][];
             continuation?: boolean;
@@ -5647,6 +5650,8 @@ export interface components {
             truncated?: boolean;
         };
         ConversationTurnResponse: {
+            /** @enum {string} */
+            audience?: "human" | "internal";
             completedAt?: null | string;
             diff?: components["schemas"]["ConversationTurnDiffResponse"];
             errorMessage?: string;
@@ -5991,10 +5996,10 @@ export interface components {
         HumanDecisionRequest: {
             id: string;
             /** @enum {string} */
-            purpose: "scope_question" | "blocking_decision" | "completion_decision";
+            purpose: "scope_question" | "blocking_decision" | "completion_decision" | "verified_result" | "stopped_work";
             question: string;
             storyId?: string;
-            whyBlocked: string;
+            whyBlocked?: string;
         };
         HumanDecisionResponse: {
             id: string;
@@ -6153,6 +6158,7 @@ export interface components {
             nextCursor?: string;
             notifications: components["schemas"]["NotificationResponse"][];
             unreadCount: number;
+            unresolvedAskCount: number;
             unresolvedCount: number;
         };
         ListPRFilesResponse: {
@@ -6325,6 +6331,8 @@ export interface components {
             id: string;
             prUrl: string;
             projectId: string;
+            /** @enum {string} */
+            purpose?: "scope_question" | "blocking_decision" | "completion_decision" | "verified_result" | "stopped_work";
             /** Format: date-time */
             resolvedAt?: null | string;
             sessionId: string;
@@ -6336,7 +6344,7 @@ export interface components {
             target: components["schemas"]["NotificationTarget"];
             title: string;
             /** @enum {string} */
-            type: "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged" | "review_completed" | "review_changes_requested";
+            type: "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged" | "review_completed" | "review_changes_requested" | "coordinator_message";
         };
         NotificationTarget: {
             /** @enum {string} */
@@ -16300,6 +16308,8 @@ export interface operations {
                 beforeSequence?: null | number;
                 /** @description Maximum combined messages and activities to return. Defaults to 200. */
                 limit?: null | number;
+                /** @description Set to all to open the internal-activity view of the overall coordinator conversation: every stored message, turn and activity instead of what is shown to the human. Omit for the default view. */
+                audience?: "all" | null;
             };
             header?: never;
             path: {

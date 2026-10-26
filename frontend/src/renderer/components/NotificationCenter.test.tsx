@@ -212,7 +212,7 @@ function notificationQueryResult(
 					notifications,
 					nextCursor: hasNextPage ? "older" : undefined,
 					unreadCount: unreadNotifications.length,
-					unresolvedCount: 2,
+					unresolvedCount: 2, unresolvedAskCount: 0,
 				},
 			],
 		},
@@ -525,7 +525,7 @@ describe("NotificationCenter", () => {
 					notifications: allNotifications,
 					nextCursor: "older" as string | undefined,
 					unreadCount: 3,
-					unresolvedCount: 2,
+					unresolvedCount: 2, unresolvedAskCount: 0,
 				},
 			],
 		};
@@ -535,13 +535,13 @@ describe("NotificationCenter", () => {
 					notifications: allNotifications,
 					nextCursor: "older",
 					unreadCount: 3,
-					unresolvedCount: 2,
+					unresolvedCount: 2, unresolvedAskCount: 0,
 				},
 				{
 					notifications: [laterUnread],
 					nextCursor: undefined,
 					unreadCount: 3,
-					unresolvedCount: 2,
+					unresolvedCount: 2, unresolvedAskCount: 0,
 				},
 			];
 		});
@@ -551,7 +551,7 @@ describe("NotificationCenter", () => {
 			notifications: unreadNotifications,
 			nextCursor: "older-unread",
 			unreadCount: 3,
-			unresolvedCount: 2,
+			unresolvedCount: 2, unresolvedAskCount: 0,
 		};
 		const unreadQuery = {
 			...notificationQueryResult("unread", { hasNextPage: true }),
@@ -639,7 +639,7 @@ describe("NotificationCenter", () => {
 	it("shows the empty state when the all list loaded with nothing", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
 		}));
 		renderNotificationCenter();
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
@@ -651,7 +651,7 @@ describe("NotificationCenter", () => {
 	it("surfaces a failed refresh over an unrelated cached empty page", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status, { isError: status === "all" }),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
 		}));
 		renderNotificationCenter();
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
@@ -663,7 +663,7 @@ describe("NotificationCenter", () => {
 	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status, { isError: status === "all" }),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
 		}));
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		applyNotificationsCleared(queryClient, {
@@ -686,6 +686,126 @@ describe("NotificationCenter", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-1" },
+		});
+	});
+
+	describe("coordinator messages (ao ask / ao tell)", () => {
+		const message = (purpose: NonNullable<NotificationDTO["purpose"]>, title: string, body: string, status: "read" | "unread" = "unread"): NotificationDTO => ({
+			id: `ntf_${purpose}`,
+			sessionId: "coord-1",
+			projectId: "overall",
+			prUrl: "",
+			type: "coordinator_message",
+			purpose,
+			title,
+			body,
+			status,
+			createdAt: "2026-07-21T12:00:00Z",
+			target: { kind: "session", sessionId: "coord-1" },
+		});
+		const ask = message("blocking_decision", "Pick the migration order", "Both plans touch billing. Which first?");
+		const result = message("verified_result", "Story 12 verified", "Fixed at abc123; all checks passed.");
+		const stopped = message("stopped_work", "Work stopped on story 14", "The manager exited and cannot be restarted.");
+		const scope = message("scope_question", "Is the export in scope?", "The brief does not say.");
+		const completion = message("completion_decision", "Ready to call story 9 done?", "Evidence attached.");
+
+		function showOnly(...items: NotificationDTO[]) {
+			const query = notificationQueryResult("all");
+			query.data.pages[0].notifications = items;
+			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? query : notificationQueryResult(status)));
+			workspaceQueryMock.mockReturnValue({
+				data: [{ id: "overall", name: "Coordinator storage", sessions: [{ id: "coord-1", isTerminated: false, status: "working", title: "Main conversation" }] }],
+				isError: false, isPending: false, isSuccess: true, refetch: vi.fn(),
+			});
+		}
+
+		it("shows the coordinator's own title and message with a purpose label for each kind", async () => {
+			showOnly(ask, scope, completion, result, stopped);
+			renderNotificationCenter();
+			await clickOpen();
+			const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+			expect(rows).toHaveLength(5);
+			const row = (title: string) => rows.find((candidate) => within(candidate).queryByLabelText(title))!;
+			expect(within(row("Pick the migration order")).getByText("Decision needed")).toBeInTheDocument();
+			expect(within(row("Pick the migration order")).getByText("Both plans touch billing. Which first?")).toBeInTheDocument();
+			expect(within(row("Is the export in scope?")).getByText("Scope question")).toBeInTheDocument();
+			expect(within(row("Ready to call story 9 done?")).getByText("Completion decision")).toBeInTheDocument();
+			expect(within(row("Story 12 verified")).getByText("Verified result")).toBeInTheDocument();
+			expect(within(row("Work stopped on story 14")).getByText("Work stopped")).toBeInTheDocument();
+		});
+
+		it("tells a decision, a result and stopped work apart by icon as well as colour", async () => {
+			showOnly(ask, result, stopped);
+			renderNotificationCenter();
+			await clickOpen();
+			const iconOf = (title: string) => {
+				const row = within(screen.getByRole("list")).getAllByRole("listitem").find((candidate) => within(candidate).queryByLabelText(title))!;
+				return row.querySelector("svg")!;
+			};
+			const classes = [iconOf("Pick the migration order"), iconOf("Story 12 verified"), iconOf("Work stopped on story 14")].map((icon) => icon.getAttribute("class"));
+			expect(new Set(classes.map((value) => value?.match(/lucide-[\w-]+/)?.[0])).size).toBe(3);
+			expect(iconOf("Story 12 verified").parentElement).toHaveClass("text-success");
+			expect(iconOf("Pick the migration order").parentElement).toHaveClass("text-warning");
+		});
+
+		it("opens the coordinator conversation from the row and never offers restore for it", async () => {
+			showOnly(ask);
+			renderNotificationCenter();
+			await clickOpen();
+			expect(screen.queryByRole("button", { name: "Restore session" })).not.toBeInTheDocument();
+			await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
+			expect(navigateMock).toHaveBeenCalledWith({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: "overall", sessionId: "coord-1" },
+			});
+		});
+
+		describe("opening a coordinator message", () => {
+			const workspacesWith = (sessions: unknown[]) => workspaceQueryMock.mockReturnValue({
+				data: [{ id: "overall", name: "Coordinator storage", sessions }],
+				isError: false, isPending: false, isSuccess: true, refetch: vi.fn(),
+			});
+			const configured = () => {
+				const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+				client.setQueryData(["coordination"], { coordinatorProjectId: "overall" });
+				return client;
+			};
+
+			it("goes to the running coordinator when the sending session has ended", async () => {
+				showOnly(ask);
+				workspacesWith([
+					{ id: "coord-1", kind: "orchestrator", isTerminated: true, status: "terminated", title: "Old", createdAt: "2026-07-20T00:00:00Z" },
+					{ id: "coord-2", kind: "orchestrator", isTerminated: false, status: "working", title: "Main conversation", createdAt: "2026-07-21T00:00:00Z" },
+				]);
+				renderNotificationCenter(configured());
+				await clickOpen();
+				await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
+				await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
+					to: "/projects/$projectId/sessions/$sessionId",
+					params: { projectId: "overall", sessionId: "coord-2" },
+				}));
+				expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ params: { projectId: "overall", sessionId: "coord-1" } }));
+			});
+
+			it("falls back to the sending session when no coordinator is running, and never starts one", async () => {
+				showOnly(ask);
+				workspacesWith([{ id: "coord-1", kind: "orchestrator", isTerminated: true, status: "terminated", title: "Old" }]);
+				renderNotificationCenter(configured());
+				await clickOpen();
+				await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
+				await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
+					to: "/projects/$projectId/sessions/$sessionId",
+					params: { projectId: "overall", sessionId: "coord-1" },
+				}));
+			});
+		});
+
+		it("keeps an unknown purpose readable instead of dropping the notification", async () => {
+			showOnly({ ...ask, purpose: undefined });
+			renderNotificationCenter();
+			await clickOpen();
+			expect(screen.getByLabelText("Pick the migration order")).toBeInTheDocument();
+			expect(screen.getByText("Both plans touch billing. Which first?")).toBeInTheDocument();
 		});
 	});
 
@@ -751,7 +871,7 @@ describe("NotificationCenter", () => {
 					{
 						notifications: [legacyReady],
 						unreadCount: 1,
-						unresolvedCount: 1,
+						unresolvedCount: 1, unresolvedAskCount: 0,
 					},
 				],
 			},
@@ -827,7 +947,7 @@ describe("NotificationCenter", () => {
 										},
 									],
 									unreadCount: 0,
-									unresolvedCount: 0,
+									unresolvedCount: 0, unresolvedAskCount: 0,
 								},
 							],
 						},

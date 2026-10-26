@@ -126,6 +126,8 @@ export interface ConversationTurn {
 	hasRetryAttempt?: boolean;
 	/** Durable human-prompt fact, independent of the loaded history page. */
 	hasHumanPrompt?: boolean;
+	/** Present only on the coordinator's unfiltered view; see ConversationMessage. */
+	audience?: ConversationAudienceTag;
 	errorMessage?: string;
 	usageLimit?: ConversationUsageLimit;
 	requestedAt: string;
@@ -205,8 +207,13 @@ export interface ConversationMessage {
 	senderDisplayName?: string;
 	/** The sender's idempotency key. Lets the local echo and this row share one identity. */
 	clientMessageId?: string;
+	/** Present only on the coordinator's unfiltered view: `internal` is what the default view hides. */
+	audience?: ConversationAudienceTag;
 	createdAt: string;
 }
+
+/** How the daemon labels an item when the whole transcript is requested. */
+export type ConversationAudienceTag = "human" | "internal";
 
 export interface ConversationBranchPoint {
 	turnId: string;
@@ -656,6 +663,8 @@ export interface ConversationActivity {
 	 * from this list and never from a fixed set.
 	 */
 	decisions?: DecisionOption[];
+	/** Present only on the coordinator's unfiltered view; see ConversationMessage. */
+	audience?: ConversationAudienceTag;
 	createdAt: string;
 }
 

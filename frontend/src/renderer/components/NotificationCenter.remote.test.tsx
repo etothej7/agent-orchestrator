@@ -45,10 +45,10 @@ let remoteWorkspaceFailed = false;
 let remoteTerminatedA = false;
 let remoteErrorB = false;
 const page = (item: NotificationDTO): NotificationsPage => ({
-	notifications: [item], unreadCount: 1, unresolvedCount: 1,
+	notifications: [item], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 0,
 });
 const remotePage = (items: NotificationDTO[]): NotificationsPage => ({
-	notifications: items, unreadCount: items.length, unresolvedCount: items.length,
+	notifications: items, unreadCount: items.length, unresolvedCount: items.length, unresolvedAskCount: 0,
 });
 const query = (item: NotificationDTO) => ({
 	data: { pageParams: [""], pages: [page(item)] },

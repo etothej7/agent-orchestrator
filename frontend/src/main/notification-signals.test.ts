@@ -10,7 +10,7 @@ import {
 	type NotificationType,
 } from "./notification-signals";
 
-const ALL_TYPES: NotificationType[] = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"];
+const ALL_TYPES: NotificationType[] = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged", "coordinator_message"];
 
 describe("shouldToast", () => {
 	it("fires a toast for every backend notification type", () => {
@@ -30,6 +30,10 @@ describe("shouldSignalAttention", () => {
 	it("flashes the taskbar for the actionable types", () => {
 		expect(shouldSignalAttention("needs_input")).toBe(true);
 		expect(shouldSignalAttention("ready_to_merge")).toBe(true);
+	});
+
+	it("signals for anything the coordinator deliberately addresses to the human", () => {
+		expect(shouldSignalAttention("coordinator_message")).toBe(true);
 	});
 
 	it("does not flash the taskbar for informational PR outcomes", () => {
@@ -99,9 +103,23 @@ describe("dockBounceType", () => {
 	});
 
 	it("bounces once for the other backend types", () => {
-		for (const type of ALL_TYPES.filter((t) => t !== "needs_input")) {
+		for (const type of ALL_TYPES.filter((t) => t !== "needs_input" && t !== "coordinator_message")) {
 			expect(dockBounceType(type)).toBe("informational");
 		}
+	});
+
+	it.each(["scope_question", "blocking_decision", "completion_decision", "stopped_work"])(
+		"keeps bouncing while the coordinator needs Ed (%s)",
+		(purpose) => expect(dockBounceType("coordinator_message", purpose)).toBe("critical"),
+	);
+
+	it.each(["verified_result", undefined])(
+		"bounces once when the coordinator only has good news (%s)",
+		(purpose) => expect(dockBounceType("coordinator_message", purpose)).toBe("informational"),
+	);
+
+	it("never lets a purpose escalate another type", () => {
+		expect(dockBounceType("pr_merged", "blocking_decision")).toBe("informational");
 	});
 
 	it("bounces once for unknown or missing types", () => {

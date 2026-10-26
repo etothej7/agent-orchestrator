@@ -1,17 +1,19 @@
 import { MoreHorizontal } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
 import { useProviderSwitchCommand } from "../hooks/useConversation";
 import { agentLabel } from "../lib/agent-options";
 import { apiErrorMessage } from "../lib/api-client";
+import { useShowInternalActivity } from "../stores/conversation-audience-store";
 import { useUiStore } from "../stores/ui-store";
-import type { WorkspaceSession } from "../types/workspace";
+import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace";
 import { AgentModelPicker, DismissButton, switchEffort, type PendingAgentSwitch } from "./chat/AgentSwitchPicker";
 import { ProviderMark } from "./chat/ProviderMark";
 import type { SessionInterfaceMode } from "../hooks/useSessionInterfaceTransition";
 import { RoundedInterfaceIcon } from "./SessionInterfaceSwitch";
 import { TopbarButton } from "./TopbarButton";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 const NO_CHOICES = { models: [], modelLabel: "", efforts: [] };
 
@@ -45,7 +47,12 @@ export function SessionTabMenu({
 	// Agent switching ships behind Developer Mode for its first week.
 	const switching = useUiStore((state) => state.developerMode) && switchTarget === "chat";
 	const agentSwitch = { projectId: session.workspaceId, hostId, pending, onPendingChange: setPending };
-	if (!switchAction && (switchControl || !switching)) return switchControl ? <div className="inline-flex shrink-0 items-center">{switchControl}</div> : null;
+	// The main coordinator's conversation hides routine processing; this opens it, off until asked.
+	const mayBeMainCoordinator = !hostId && switchTarget === "tui" && isOrchestratorSession(session);
+	const coordination = useCoordinationQuery(mayBeMainCoordinator);
+	const isMainCoordinator = mayBeMainCoordinator && coordination.data?.coordinatorProjectId === session.workspaceId;
+	const [showInternal, setShowInternal] = useShowInternalActivity(session.id);
+	if (!switchAction && (switchControl || (!switching && !isMainCoordinator))) return switchControl ? <div className="inline-flex shrink-0 items-center">{switchControl}</div> : null;
 	const switchNow = () => {
 		if (!pending) return;
 		const { harness: targetHarness, model, fastMode, ultracode, autoCompactWindow } = pending;
@@ -95,6 +102,11 @@ export function SessionTabMenu({
 						<RoundedInterfaceIcon target={switchTarget} className="size-icon-lg" />
 						{switchTarget === "chat" ? t("agentSwitch.switchToChat") : t("agentSwitch.switchToTerminal")}
 					</DropdownMenuItem>
+				) : null}
+				{isMainCoordinator ? (
+					<DropdownMenuCheckboxItem checked={showInternal} onCheckedChange={setShowInternal}>
+						{t("workspace.showInternalActivity")}
+					</DropdownMenuCheckboxItem>
 				) : null}
 			</DropdownMenuContent>
 		</DropdownMenu>

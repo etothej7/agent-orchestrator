@@ -5,7 +5,7 @@ import { setEventsConnectionState } from "./events-connection";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
-import { conversationQueryKey, conversationQueryRoot, refreshRemoteConversation } from "../hooks/useConversation";
+import { conversationQueryRoot, conversationSessionQueryKey, refreshRemoteConversation } from "../hooks/useConversation";
 import {
 	reviewerConversationQueryKey,
 	reviewerConversationQueryRoot,
@@ -263,7 +263,9 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					pendingEditorHandoffSessions.clear();
 				}
 				for (const sessionId of pendingConversationSessions) {
-					invalidate(conversationQueryKey(sessionId));
+					// Both audiences of the coordinator conversation: a reply that just became visible
+					// must reach whichever view is open, and the other must not come back stale.
+					invalidate(conversationSessionQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
 				for (const sessionId of pendingReviewSessions) {

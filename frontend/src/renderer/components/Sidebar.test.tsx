@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -568,6 +568,97 @@ describe("Sidebar", () => {
 		await userEvent.click(teamEntry);
 		expect(navigateMock).toHaveBeenLastCalledWith({ to: "/team" });
 	});
+	describe("Main coordinator entry", () => {
+		const coordinatorSession: WorkspaceSession = {
+			...session,
+			id: "coord-1",
+			workspaceId: "overall",
+			workspaceName: "Coordinator storage",
+			title: "Main conversation",
+			kind: "orchestrator",
+		};
+		const overall: WorkspaceSummary = { ...workspace, id: "overall", name: "Coordinator storage", sessions: [coordinatorSession] };
+		const configured = (client: QueryClient) => client.setQueryData(["coordination"], { coordinatorProjectId: "overall" });
+
+		it("pins Main coordinator above Workspace while the coordinator project stays out of the repository list", () => {
+			renderSidebar({ workspaces: [workspace, overall], seed: configured });
+			const main = screen.getByRole("button", { name: "Main coordinator" });
+			const home = screen.getByRole("button", { name: "Workspace" });
+			expect(main.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+			expect(document.querySelector('[data-project-id="overall"]')).not.toBeInTheDocument();
+			expect(document.querySelector(`[data-project-id="${workspace.id}"]`)).toBeInTheDocument();
+		});
+
+		it("opens the newest active coordinator conversation without spawning another", async () => {
+			renderSidebar({ workspaces: [overall], seed: configured });
+			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
+			expect(navigateMock).toHaveBeenLastCalledWith({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: "overall", sessionId: "coord-1" },
+			});
+			expect(spawnMock).not.toHaveBeenCalled();
+		});
+
+		it("never starts or replaces a coordinator: with none running (or the list not loaded yet) it sends you to Home", async () => {
+			renderSidebar({ workspaces: [{ ...overall, sessions: [] }], seed: configured });
+			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
+			await waitFor(() => expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" }));
+			expect(spawnMock).not.toHaveBeenCalled();
+			// A terminated coordinator is not "running" either: it is not reopened and not replaced.
+			navigateMock.mockClear();
+			cleanup();
+			renderSidebar({ workspaces: [{ ...overall, sessions: [{ ...coordinatorSession, isTerminated: true, status: "terminated" }] }], seed: configured });
+			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
+			await waitFor(() => expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" }));
+			expect(spawnMock).not.toHaveBeenCalled();
+		});
+
+		it("marks the entry current while the coordinator project is open", () => {
+			mockParams.projectId = "overall";
+			mockParams.sessionId = "coord-1";
+			renderSidebar({ workspaces: [overall], seed: configured });
+			expect(screen.getByRole("button", { name: "Main coordinator" })).toHaveAttribute("aria-current", "page");
+		});
+
+		it("is absent until coordination names a coordinator project", () => {
+			renderSidebar({ workspaces: [workspace, overall], seed: (client) => client.setQueryData(["coordination"], { coordinatorProjectId: "" }) });
+			expect(screen.queryByRole("button", { name: "Main coordinator" })).not.toBeInTheDocument();
+		});
+
+		it("shows a persistent needs-you marker while the daemon counts an unanswered coordinator question, and drops it once resolved", async () => {
+			const withAsks = (unresolvedAskCount: number) => (client: QueryClient) => {
+				configured(client);
+				// "read" (the panel was opened) is not "answered": only the daemon's unresolved count drives the dot.
+				client.setQueryData(["notifications", "history", "all"], {
+					pageParams: [""],
+					pages: [{ notifications: [], unreadCount: 0, unresolvedCount: unresolvedAskCount, unresolvedAskCount }],
+				});
+			};
+			renderSidebar({ workspaces: [overall], seed: withAsks(1) });
+			expect(await screen.findByRole("button", { name: "Main coordinator, needs you" })).toBeInTheDocument();
+			cleanup();
+			renderSidebar({ workspaces: [overall], seed: withAsks(0) });
+			expect(screen.getByRole("button", { name: "Main coordinator" })).toBeInTheDocument();
+			expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument();
+		});
+
+		it("follows live ask events: a new ask raises the dot and its resolution clears it", async () => {
+			// Keep the history request in flight: the live stream, not a refetch, is what moves the count here.
+			getMock.mockImplementation(() => new Promise(() => undefined));
+			let client!: QueryClient;
+			renderSidebar({ workspaces: [overall], seed: (queryClient) => {
+				client = queryClient;
+				configured(queryClient);
+				queryClient.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] });
+			} });
+			expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument();
+			act(() => client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 1 }] }));
+			expect(await screen.findByRole("button", { name: "Main coordinator, needs you" })).toBeInTheDocument();
+			act(() => client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] }));
+			await waitFor(() => expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument());
+		});
+	});
+
 	it("creates local or remote projects from the header button", async () => {
 		const user = userEvent.setup();
 		renderSidebar({

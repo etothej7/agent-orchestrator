@@ -3032,7 +3032,7 @@ function cancelDockBounce(): void {
 
 ipcMain.handle(
 	"notifications:show",
-	(_event, notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) => {
+	(_event, notification: { id: string; title: string; body?: string; type?: string; purpose?: string; watched?: boolean }) => {
 		if (!notification.id || !mainWindow) return;
 		// "Already looking" = the window has focus, or the renderer reports the
 		// prompt itself is on screen (`watched`). Visual signals are skipped then.
@@ -3088,7 +3088,7 @@ ipcMain.handle(
 				// the new id, so only attach one at a time.
 				const hadPendingBounce = pendingBounce !== null;
 				cancelDockBounce();
-				const bounceType = dockBounceType(notification.type);
+				const bounceType = dockBounceType(notification.type, notification.purpose);
 				const id = app.dock.bounce(bounceType);
 				if (typeof id === "number" && id >= 0) {
 					pendingBounce = { id, critical: bounceType === "critical" };

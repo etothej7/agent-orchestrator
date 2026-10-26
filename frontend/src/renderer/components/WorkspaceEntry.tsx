@@ -1,36 +1,20 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
+import { useCoordinatorAskPending } from "../hooks/useCoordinatorAskPending";
+import { useOpenMainCoordinator } from "../hooks/useOpenMainCoordinator";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
-import { apiErrorMessage } from "../lib/api-client";
-import { useNavigateToSession } from "../lib/navigate-to-session";
-import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { useUiStore } from "../stores/ui-store";
-import { newestActiveOrchestrator } from "../types/workspace";
 import { Button } from "./ui/button";
 
 export function WorkspaceEntry() {
 	const { t } = useTranslation();
-	const config = useCoordinationQuery();
 	const workspace = useWorkspaceQuery({ includeCloud: false });
-	const navigate = useNavigateToSession();
-	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState("");
-	const projectId = config.data?.coordinatorProjectId;
-	async function open() {
-		if (!projectId) return;
-		setBusy(true); setError("");
-		try {
-			const row = workspace.data?.find(project => project.id === projectId);
-			const existing = row && newestActiveOrchestrator(row.sessions);
-			const id = existing?.id ?? await spawnOrchestrator(projectId, "sidebar", false, "chat");
-			navigate(projectId, id);
-		} catch (err) { setError(apiErrorMessage(err)); } finally { setBusy(false); }
-	}
+	const main = useOpenMainCoordinator(workspace.data);
+	const needsYou = useCoordinatorAskPending(main.projectId);
 	return <main className="min-h-0 flex-1 overflow-auto p-6">
 		<h1 className="text-xl font-semibold">{t("workspace.home")}</h1>
 		<p className="my-4 text-muted-foreground">{t("workspace.homeDescription")}</p>
-		{error || config.isError || workspace.isError ? <p role="alert">{error || t("workspace.teamError")}</p> : null}
-		{projectId ? <Button disabled={busy || !workspace.isSuccess} onClick={() => void open()}>{t("workspace.openMain")}</Button> : <Button disabled={!config.isSuccess} onClick={() => useUiStore.getState().openGlobalSettings("general")}>{t("workspace.configure")}</Button>}
+		{main.error || main.configError || workspace.isError ? <p role="alert">{main.error || t("workspace.teamError")}</p> : null}
+		{needsYou ? <p role="status" className="mb-3 flex items-center gap-2 text-sm text-foreground"><span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-status-needs-you" />{t("workspace.coordinatorWaiting")}</p> : null}
+		{main.projectId ? <Button disabled={main.busy || !workspace.isSuccess} onClick={() => void main.open({ spawn: true })}>{t("workspace.openMain")}</Button> : <Button disabled={!main.configLoaded} onClick={() => useUiStore.getState().openGlobalSettings("general")}>{t("workspace.configure")}</Button>}
 	</main>;
 }

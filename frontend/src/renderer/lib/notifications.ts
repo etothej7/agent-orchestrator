@@ -28,6 +28,18 @@ const MAX_CONFIRMED_NOTIFICATION_DELETIONS = 256;
  */
 const UNRESOLVABLE_TYPES = new Set(["needs_input", "ready_to_merge"]);
 
+/** `ao ask` purposes: the coordinator is waiting on Ed, so the message stays open until he answers. */
+const COORDINATOR_ASK_PURPOSES = new Set(["scope_question", "blocking_decision", "completion_decision"]);
+
+/** A coordinator question that is still waiting for Ed. */
+export function isOpenCoordinatorAsk(notification: Pick<NotificationDTO, "type" | "purpose" | "resolvedAt">): boolean {
+	return (
+		notification.type === "coordinator_message" &&
+		COORDINATOR_ASK_PURPOSES.has(notification.purpose ?? "") &&
+		!notification.resolvedAt
+	);
+}
+
 type NotificationsQueryKey = typeof unreadNotificationsQueryKey | typeof recentNotificationsQueryKey;
 
 type LiveNotificationEvent =
@@ -64,7 +76,7 @@ export function notificationsQueryKey(status: NotificationListStatus): Notificat
 }
 
 function isUnresolved(notification: NotificationDTO): boolean {
-	return UNRESOLVABLE_TYPES.has(notification.type) && !notification.resolvedAt;
+	return (UNRESOLVABLE_TYPES.has(notification.type) && !notification.resolvedAt) || isOpenCoordinatorAsk(notification);
 }
 
 export async function fetchNotificationsPage(
@@ -89,6 +101,7 @@ export async function fetchNotificationsPage(
 		nextCursor: data?.nextCursor,
 		unreadCount: data?.unreadCount ?? notifications.filter((item) => item.status === "unread").length,
 		unresolvedCount: data?.unresolvedCount ?? notifications.filter(isUnresolved).length,
+		unresolvedAskCount: data?.unresolvedAskCount ?? notifications.filter(isOpenCoordinatorAsk).length,
 	};
 }
 
@@ -152,12 +165,14 @@ export function applyResolvedNotification(queryClient: QueryClient, notification
 			if (!existing) return current;
 			found = true;
 			const unresolvedDelta = Number(isUnresolved(notification)) - Number(isUnresolved(existing));
+			const askDelta = Number(isOpenCoordinatorAsk(notification)) - Number(isOpenCoordinatorAsk(existing));
 			return {
 				...current,
 				pages: current.pages.map((page) => ({
 					...page,
 					notifications: page.notifications.map((item) => (item.id === notification.id ? notification : item)),
 					unresolvedCount: Math.max(0, page.unresolvedCount + unresolvedDelta),
+					unresolvedAskCount: Math.max(0, page.unresolvedAskCount + askDelta),
 				})),
 			};
 		});
@@ -216,6 +231,7 @@ function removeNotificationFromCaches(
 					notifications: page.notifications.filter((item) => item.id !== notification.id),
 					unreadCount: Math.max(0, page.unreadCount - Number(notification.status === "unread")),
 					unresolvedCount: Math.max(0, page.unresolvedCount - Number(isUnresolved(notification))),
+					unresolvedAskCount: Math.max(0, page.unresolvedAskCount - Number(isOpenCoordinatorAsk(notification))),
 				})),
 			};
 		});
@@ -280,6 +296,7 @@ export function rollbackOptimisticNotificationDelete(queryClient: QueryClient, i
 						: page.notifications,
 				unreadCount: page.unreadCount + Number(state.notification.status === "unread"),
 				unresolvedCount: page.unresolvedCount + Number(isUnresolved(state.notification)),
+				unresolvedAskCount: page.unresolvedAskCount + Number(isOpenCoordinatorAsk(state.notification)),
 			}));
 			return { ...current, pages };
 		});
@@ -303,6 +320,7 @@ function mergeNotificationIntoCache(
 						notifications: [notification],
 						unreadCount: notification.status === "unread" ? 1 : 0,
 						unresolvedCount: isUnresolved(notification) ? 1 : 0,
+						unresolvedAskCount: isOpenCoordinatorAsk(notification) ? 1 : 0,
 					},
 				],
 			};
@@ -312,11 +330,13 @@ function mergeNotificationIntoCache(
 		const unreadDelta = (notification.status === "unread" ? 1 : 0) - (existing?.status === "unread" ? 1 : 0);
 		const unresolvedDelta =
 			(isUnresolved(notification) ? 1 : 0) - (existing && isUnresolved(existing) ? 1 : 0);
+		const askDelta = (isOpenCoordinatorAsk(notification) ? 1 : 0) - (existing && isOpenCoordinatorAsk(existing) ? 1 : 0);
 		const pages = current.pages.map((page) => ({
 			...page,
 			notifications: page.notifications.map((item) => (item.id === notification.id ? notification : item)),
 			unreadCount: Math.max(0, page.unreadCount + unreadDelta),
 			unresolvedCount: Math.max(0, page.unresolvedCount + unresolvedDelta),
+			unresolvedAskCount: Math.max(0, page.unresolvedAskCount + askDelta),
 		}));
 
 		if (existing) {
@@ -354,7 +374,7 @@ export function markAllCachedNotificationsRead(
 	if (ids.length === 0) {
 		queryClient.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, (current) => {
 			if (!current) {
-				return { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] };
+				return { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] };
 			}
 			return {
 				pageParams: [""],
@@ -363,6 +383,7 @@ export function markAllCachedNotificationsRead(
 						notifications: [],
 						unreadCount: 0,
 						unresolvedCount: current.pages[0]?.unresolvedCount ?? 0,
+						unresolvedAskCount: current.pages[0]?.unresolvedAskCount ?? 0,
 					},
 				],
 			};
@@ -425,7 +446,7 @@ export function applyNotificationsCleared(queryClient: QueryClient, clear: Notif
 	for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 		queryClient.setQueryData<NotificationsCache>(queryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }],
 		});
 	}
 	const recentSnapshot = queryClient.getQueryData<NotificationsCache>(recentNotificationsQueryKey);
@@ -551,6 +572,7 @@ export function createNotificationsTransport(
 						title: event.notification.title,
 						body: event.notification.body || undefined,
 						type: event.notification.type,
+						purpose: event.notification.purpose,
 						watched: event.watched,
 					});
 				}

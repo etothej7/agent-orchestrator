@@ -1,4 +1,6 @@
 import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
+import { useCoordinatorAskPending } from "../hooks/useCoordinatorAskPending";
+import { useOpenMainCoordinator } from "../hooks/useOpenMainCoordinator";
 import { useQueryClient } from "@tanstack/react-query";
 import { paidPlanBadge, useCloudBilling } from "../hooks/useCloudBilling";
 import { useTranslation } from "react-i18next";
@@ -27,6 +29,7 @@ import {
 	FolderOpen,
 	LogIn,
 	LogOut,
+	MessagesSquare,
 	MoreVertical,
 	PanelLeft,
 	Pencil,
@@ -623,6 +626,12 @@ export function Sidebar({
 	const remoteNavigate = useNavigate();
 	const selection = useSelection();
 	const coordination = useCoordinationQuery();
+	const mainCoordinator = useOpenMainCoordinator(workspaces);
+	const mainCoordinatorNeedsYou = useCoordinatorAskPending(mainCoordinator.projectId);
+	const mainCoordinatorError = mainCoordinator.error;
+	useEffect(() => {
+		if (mainCoordinatorError) useUiStore.getState().showGlobalToast(t("workspace.mainCoordinatorOpenFailed"), mainCoordinatorError, "error");
+	}, [mainCoordinatorError, t]);
 	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	// List behavior (force-open sections, lifted Show more caps) belongs to the
@@ -1020,6 +1029,20 @@ export function Sidebar({
 					</SidebarGroup>
 				) : null}
 				<SidebarMenu className="mb-3 gap-0.5 group-data-[collapsible=icon]:gap-1">
+					{mainCoordinator.projectId ? (
+						<SidebarMenuItem>
+							<SidebarTopNavRow
+								active={selection.activeProjectId === mainCoordinator.projectId}
+								attention={mainCoordinatorNeedsYou ? t("workspace.needsYou") : undefined}
+								disabled={mainCoordinator.busy}
+								icon={<MessagesSquare aria-hidden="true" />}
+								label={t("workspace.mainCoordinator")}
+								// Opens the running coordinator; with none (or a list still loading) Home is where one is started.
+								onClick={() => void mainCoordinator.open().then((outcome) => { if (outcome === "none") void remoteNavigate({ to: "/workspace" }); })}
+								tooltip={isCollapsed ? t("workspace.mainCoordinator") : undefined}
+							/>
+						</SidebarMenuItem>
+					) : null}
 					<SidebarMenuItem><SidebarTopNavRow active={selection.isWorkspace} icon={<FolderOpen aria-hidden="true" />} label={t("workspace.home")} onClick={() => void remoteNavigate({ to: "/workspace" })} tooltip={isCollapsed ? t("workspace.home") : undefined} /></SidebarMenuItem>
 					<SidebarMenuItem><SidebarTopNavRow active={selection.isTeam} icon={<User aria-hidden="true" />} label={t("workspace.team")} onClick={() => void remoteNavigate({ to: "/team" })} tooltip={isCollapsed ? t("workspace.team") : undefined} /></SidebarMenuItem>
 					<SidebarMenuItem>
@@ -3322,6 +3345,7 @@ function SectionDisclosure({
  * (NavRowHighlight pill, foreground text, instant) cannot drift apart. */
 function SidebarTopNavRow({
 	active = false,
+	attention,
 	disabled,
 	icon,
 	label,
@@ -3330,6 +3354,8 @@ function SidebarTopNavRow({
 	trailing,
 }: {
 	active?: boolean;
+	/** Something here needs the person; drawn as a dot and named in the accessible label. */
+	attention?: string;
 	disabled?: boolean;
 	icon: ReactNode;
 	label: string;
@@ -3339,7 +3365,7 @@ function SidebarTopNavRow({
 }) {
 	return (
 		<SidebarMenuButton
-			aria-label={label}
+			aria-label={attention ? `${label}, ${attention}` : label}
 			className={cn(
 				NAV_ROW_CLASS,
 				SIDEBAR_ROW_CLASS,
@@ -3362,6 +3388,9 @@ function SidebarTopNavRow({
 				<span className="sidebar-expanded-chrome relative z-[1] ml-auto shrink-0 font-sans text-caption text-passive group-data-[collapsible=icon]:hidden">
 					{trailing}
 				</span>
+			) : null}
+			{attention ? (
+				<span aria-hidden="true" className="relative z-[1] ml-auto size-2 shrink-0 rounded-full bg-status-needs-you group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:top-1" />
 			) : null}
 		</SidebarMenuButton>
 	);

@@ -1,3 +1,4 @@
+import { InternalActivity, isInternalGroup, isInternalItem } from "./InternalActivity";
 import { TurnWorkSummary } from "./TurnWorkSummary";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 import { isSettingsPageOpen } from "../../hooks/useAppShortcut";
@@ -4016,6 +4017,7 @@ export function Timeline({
 							>
 								<TurnGroup
 									group={group}
+									startsInternalRun={!(index > 0 && isInternalGroup(groups[index - 1]!.items))}
 									startup={showStartup && group.turnId === openingTurnId ? startup : undefined}
 									onSelectAnnotation={selectAnnotation}
 									activityDisclosureOverrides={activityDisclosureOverrides}
@@ -4258,6 +4260,7 @@ const TurnGroup = memo(function TurnGroup({
 	newHumanMessageIds,
 	startup,
 	onSelectAnnotation,
+	startsInternalRun = true,
 }: {
 	group: TimelineGroup;
 	activityDisclosureOverrides: Readonly<Record<string, boolean>>;
@@ -4298,6 +4301,8 @@ const TurnGroup = memo(function TurnGroup({
 	/** The opening turn of a starting session: its setup checklist. */
 	startup?: ComponentProps<typeof SessionStartup>;
 	onSelectAnnotation?: (annotation: { text: string; messageId?: string; revision?: number }) => void;
+	/** First of a run of consecutive internal turns: the only one that shows the visible label. */
+	startsInternalRun?: boolean;
 }) {
 	const { t } = useTranslation();
 	const hasTerminalFailure =
@@ -4365,7 +4370,7 @@ const TurnGroup = memo(function TurnGroup({
 		const timer = window.setTimeout(() => setShowSettledStatus(true), 440);
 		return () => window.clearTimeout(timer);
 	}, [group.live]);
-	const renderRun = (run: TimelineRun) =>
+	const renderRunBase = (run: TimelineRun) =>
 		run.kind === "activities" ? (
 			<ActivityRun
 				key={run.key}
@@ -4414,6 +4419,15 @@ const TurnGroup = memo(function TurnGroup({
 				onSelectAnnotation={onSelectAnnotation}
 			/>
 		);
+	// On the unfiltered coordinator view, a turn is marked once as a whole; inside a
+	// turn Ed started, only the runs the default view would hide are marked.
+	const internalGroup = isInternalGroup(group.items);
+	const renderRun = (run: TimelineRun) =>
+		!internalGroup && run.items.every(isInternalItem) ? (
+			<InternalActivity key={run.key}>{renderRunBase(run)}</InternalActivity>
+		) : (
+			renderRunBase(run)
+		);
 	// One flat keyed list rather than a slot per section, so a run keeps its element
 	// when the turn settles: the final answer leaving the worked runs, or a notice
 	// moving out from among them, does not remount it or drop the reader's selection.
@@ -4453,7 +4467,7 @@ const TurnGroup = memo(function TurnGroup({
 	}
 	if (outcome) body.push(...noticeRuns.map(renderRun));
 	if (finalRun) body.push(renderRun(finalRun));
-	return (
+	const turn = (
 		<div className="flex min-w-0 flex-col gap-2.5">
 			{body}
 			{/* Both of these are current state of the turn rather than steps in it, which
@@ -4501,6 +4515,7 @@ const TurnGroup = memo(function TurnGroup({
 			) : null}
 		</div>
 	);
+	return internalGroup ? <InternalActivity showLabel={startsInternalRun}>{turn}</InternalActivity> : turn;
 });
 
 function TurnLiveStatus({

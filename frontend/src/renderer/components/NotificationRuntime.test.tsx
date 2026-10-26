@@ -32,7 +32,7 @@ const notifications: NotificationDTO[] = [
 ];
 
 const unreadCache: NotificationsCache = {
-	pages: [{ notifications, nextCursor: undefined, unreadCount: notifications.length, unresolvedCount: notifications.length }],
+	pages: [{ notifications, nextCursor: undefined, unreadCount: notifications.length, unresolvedCount: notifications.length, unresolvedAskCount: 0 }],
 	pageParams: [""],
 };
 
