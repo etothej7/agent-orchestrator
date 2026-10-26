@@ -102,6 +102,8 @@ class CoordinatorVisibility(a.Harness):
         env = dict(self.env)
         env.update(AO_KEEP_DAEMON='1', AO_DISABLE_GPU='1', MallocNanoZone='0', ELECTRON_ENABLE_LOGGING='1')
         env['AO_GUI_LOG'] = str(self.root / 'gui.log')
+        env['CV_HOOK_LOG'] = str(self.root / 'main-hook.log')
+        env['NODE_OPTIONS'] = '--require=' + str(Path(__file__).with_name('cv_main_hook.js').resolve())
         # Detached through a shell so launchd (not this harness) reaps the GUI: a killed direct child would linger as a
         # zombie and be miscounted as a surviving process by the teardown check.
         shell = subprocess.Popen(['/bin/sh', '-c', '"$0" "$@" >> "$AO_GUI_LOG" 2>&1 &', str(self.app_copy / 'Contents/MacOS/agent-orchestrator'),
@@ -118,6 +120,17 @@ class CoordinatorVisibility(a.Harness):
         time.sleep(6)
         self.result['guiLaunch'] = {'cdpPort': self.cdp_port, 'reachable': bool(ok), 'processStillRunning': any('MacOS/agent-orchestrator' in c for _, (_, _, c) in self.process_rows().items() if str(self.root) in c)}
         return bool(ok)
+
+    def hook_events(self):
+        path = self.root / 'main-hook.log'
+        out = []
+        if path.exists():
+            for line in path.read_text(errors='replace').splitlines():
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+        return out
 
     def ui(self, action, **kw):
         node = '/Users/edstockman/.local/share/fnm/node-versions/v24.14.0/installation/bin/node'
@@ -316,7 +329,7 @@ class CoordinatorVisibility(a.Harness):
             r['f_coordinatorProjectFindableInUi'] = {'homeOpenMain': home, 'sidebarMainCoordinatorRow': side}
             r['ui_defaultView'] = view
             self.check('f_coordinator_findable_via_home_open_main_and_sidebar_row', home.get('reachedCoordinatorSession') and side.get('sidebarRowPresent') and side.get('reachedCoordinatorSession'))
-            self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('toggleLabelPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
+            self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
 
         # (a) a human message gets a visible reply.
         a_key = 'cv-a-' + self.token
@@ -387,6 +400,15 @@ class CoordinatorVisibility(a.Harness):
             note = self.ui('notifications', title='Your coordinator needs a decision', purposeLabel='Scope question')
             r['b_notificationRenderedInUi'] = note
             self.check('b_notification_rendered_in_ui_with_purpose', note.get('ok') and note.get('bellPresent') and note.get('titlePresent') and note.get('purposeLabelPresent'))
+            attention = self.ui('attention')
+            r['b_needsYouMarkerAfterAsk'] = attention
+            self.check('b_needs_you_marker_visible_until_answered', attention.get('ok') and attention.get('needsYouElements', 0) >= 1)
+            hooks = self.hook_events()
+            bounces = [e.get('type') for e in hooks if e['kind'] == 'dock-bounce']
+            toasts = [e for e in hooks if e['kind'] == 'notification-show']
+            r['b_electronOnlyPaths'] = {'hookLoaded': any(e['kind'] == 'hook' for e in hooks), 'dockBounceTypes': bounces, 'osToastRequests': len(toasts),
+                                        'note': 'recorded by a test-only main-process hook that intercepts (does not display) Electron Notification.show and app.dock.bounce; the OS-level display is not observed'}
+            self.check('electron_dock_bounce_critical_and_os_toast_requested_for_coordinator_ask', 'critical' in bounces and len(toasts) >= 1)
             ui_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
             marker = 'cv-live-' + self.token
             sent = self.ui('send', text='Reply with one short sentence confirming you can see this message in the live chat. Take no other action.', marker=marker)
@@ -400,9 +422,14 @@ class CoordinatorVisibility(a.Harness):
                 live.update(turnState=end[0] if end else 'timeout', visibleReplySnippets=len(snippets), check=check)
             r['a_replyRendersLiveWithoutRefreshInUi'] = live
             self.check('a_reply_renders_live_in_ui_without_reload', sent.get('ok') and live.get('turnState') == 'completed' and live.get('check', {}).get('markerStillPresent') and live.get('check', {}).get('replySnippetMatches', 0) >= 1)
+            time.sleep(3)
+            attention2 = self.ui('attention')
+            ask = [n for n in self.notifications() if n.get('type') == 'coordinator_message' and n.get('purpose') in PURPOSES_ASK]
+            r['b_askResolvedWhenEdReplies'] = {'needsYouElementsAfterReply': attention2.get('needsYouElements'), 'askNotifications': [{'id': n['id'], 'resolvedAt': bool(n.get('resolvedAt'))} for n in ask]}
+            self.check('b_ask_resolved_and_marker_cleared_after_ed_reply', attention2.get('ok') and attention2.get('needsYouElements') == 0 and bool(ask) and all(n.get('resolvedAt') for n in ask))
             tog = self.ui('toggle')
             r['e_hiddenContentOpensViaUiToggle'] = tog
-            self.check('e_internal_activity_toggle_reveals_and_hides', tog.get('ok') and tog.get('switchPresent') and tog.get('internalBefore') == 0 and tog.get('internalAfterOn', 0) > 0 and tog.get('internalLabelsPresent') and tog.get('internalAfterOff') == 0)
+            self.check('e_internal_activity_toggle_reveals_and_hides', tog.get('ok') and tog.get('menuItemPresent') and tog.get('checkedBefore') is False and tog.get('internalBefore') == 0 and tog.get('internalAfterOn', 0) > 0 and tog.get('internalLabelPresent') and tog.get('checkedWhenReopened') and tog.get('internalAfterOff') == 0)
 
         # (d, continued) the coordinator was not killed or respawned and no replacement session exists.
         after_sessions = sql(self.data / 'ao.db', 'select id, num, created_at, kind, harness, project_id, is_terminated from sessions order by id')

@@ -65,17 +65,32 @@ async function main() {
       out.replySnippetCandidates = (args.snippets || []).length;
       out.internalBlocks = await internalCount();
     } else if (action === 'toggle') {
-      const sw = page.locator('[data-testid="coordinator-audience-bar"] [role="switch"]');
-      out.switchPresent = (await sw.count()) > 0;
+      // Final UI: Session actions (...) menu -> "Show internal activity" checkbox item, off by default.
+      const trigger = page.locator('[data-session-actions-trigger]');
+      out.actionsTriggerPresent = (await trigger.count()) > 0;
       out.internalBefore = await internalCount();
-      await sw.first().click();
+      const itemIn = () => page.getByRole('menuitemcheckbox', { name: /Show internal activity/i });
+      await trigger.first().click();
+      await page.waitForTimeout(800);
+      out.menuItemPresent = (await itemIn().count()) > 0;
+      out.checkedBefore = out.menuItemPresent ? (await itemIn().first().getAttribute('aria-checked')) === 'true' : null;
+      if (out.menuItemPresent) await itemIn().first().click();
       await page.waitForTimeout(2500);
       out.internalAfterOn = await internalCount();
-      out.internalLabelsPresent = (await page.locator('[data-audience="internal"] >> text=Internal').count()) > 0;
-      out.switchChecked = (await sw.first().getAttribute('aria-checked')) === 'true';
-      await sw.first().click();
+      out.internalLabelPresent = (await page.locator('[data-audience="internal"] >> text=Internal activity').count()) > 0;
+      out.internalGroupsNamedForAssistiveTech = (await page.locator('[data-audience="internal"][role="group"][aria-label="Internal activity"]').count()) > 0;
+      await page.keyboard.press('Escape');
+      await trigger.first().click();
+      await page.waitForTimeout(800);
+      out.checkedWhenReopened = (await itemIn().first().getAttribute('aria-checked')) === 'true';
+      await itemIn().first().click();
       await page.waitForTimeout(1500);
       out.internalAfterOff = await internalCount();
+    } else if (action === 'attention') {
+      // The needs-you marker (sidebar Main coordinator row, Home entry).
+      const labelled = await page.locator('[aria-label*="needs you" i], [title*="needs you" i]').count();
+      const texted = await page.getByText(/needs you/i).count();
+      out.needsYouElements = labelled + texted;
     } else if (action === 'notifications') {
       const bell = page.getByRole('button', { name: /notification/i });
       out.bellPresent = (await bell.count()) > 0;
