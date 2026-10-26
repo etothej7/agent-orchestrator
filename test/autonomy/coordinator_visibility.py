@@ -192,6 +192,14 @@ class CoordinatorVisibility(a.Harness):
 
     def run_cv(self):
         r = self.result
+        r['controlledConditions'] = [
+            'scratch HOME/AO data under a 0700 scratch root; daemon confined with sandbox-exec (writes only to scratch, live ~/.ao unreadable)',
+            'database is a fresh read-only SQLite backup of the live DB; the copied Claude coordinator is marked terminated and a new Codex coordinator is created by the previous (66b) build',
+            'coordinator provider is Codex via a read-only auth link (Claude credentials are not reachable from scratch and are not extracted)',
+            'packaged GUI (when --app) is launched unconfined with --use-mock-keychain so it never touches the real keychain; scratch only',
+            'needs-Ed and routine-report stimuli are synthetic automation messages sent through the daemon send path with a worker sender, not a real worker report',
+            'persistent host survival across the daemon swap is reproduced by stopping only the daemon; adoption of the live Claude host is not reproducible here'
+        ]
         r.update(scenario='coordinator-visibility', kind='targeted_coordinator_visibility_backend_not_acceptance', autonomyAccepted=False)
         r['harnessSha'] = subprocess.check_output(['/usr/bin/git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'], text=True).strip()
         r['harnessSourceSha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
