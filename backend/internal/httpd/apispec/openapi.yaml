@@ -18308,6 +18308,8 @@ components:
           type: string
         id:
           type: string
+        messageId:
+          type: string
         prUrl:
           type: string
         projectId:

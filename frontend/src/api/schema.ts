@@ -6346,6 +6346,7 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             id: string;
+            messageId?: string;
             prUrl: string;
             projectId: string;
             /** @enum {string} */

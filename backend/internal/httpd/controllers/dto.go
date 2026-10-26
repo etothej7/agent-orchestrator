@@ -2243,6 +2243,10 @@ type NotificationResponse struct {
 	// purposes (scope_question, blocking_decision, completion_decision) or the
 	// ao tell purposes (verified_result, stopped_work).
 	Purpose string `json:"purpose,omitempty" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
+	// MessageID is the coordinator conversation message this notification announces
+	// (decision-<askId> for a question), set only for coordinator_message. It lets a
+	// chat block find its notification, and it is the value replyToAskId takes.
+	MessageID string `json:"messageId,omitempty"`
 	// Resolution says how a resolved coordinator question was closed: answered (the
 	// reply named it) or coordinator (the coordinator recorded it answered).
 	Resolution string `json:"resolution,omitempty" enum:"answered,coordinator"`

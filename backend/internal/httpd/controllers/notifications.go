@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -277,6 +278,7 @@ func notificationResponse(n notificationsvc.Notification) NotificationResponse {
 		Body:       n.Body,
 		Purpose:    n.Purpose,
 		Resolution: n.Resolution, ResolutionNote: n.ResolutionNote,
+		MessageID:  coordinatorMessageID(n.NotificationRecord),
 		Status:     string(n.Status),
 		CreatedAt:  n.CreatedAt,
 		ResolvedAt: optionalTime(n.ResolvedAt),
@@ -299,6 +301,7 @@ func notificationResponseFromRecord(rec domain.NotificationRecord) NotificationR
 		Body:       rec.Body,
 		Purpose:    rec.Purpose,
 		Resolution: rec.Resolution, ResolutionNote: rec.ResolutionNote,
+		MessageID:  coordinatorMessageID(rec),
 		Status:     string(rec.Status),
 		CreatedAt:  rec.CreatedAt,
 		ResolvedAt: optionalTime(rec.ResolvedAt),
@@ -311,4 +314,14 @@ func notificationTargetFromRecord(rec domain.NotificationRecord) NotificationTar
 		return NotificationTarget{Kind: "pr", SessionID: string(rec.SessionID), PRURL: rec.PRURL}
 	}
 	return NotificationTarget{Kind: "session", SessionID: string(rec.SessionID)}
+}
+
+// coordinatorMessageID names the conversation message a coordinator notification
+// announces. Its source key is "coordinator-message:<message id>"; the key itself
+// stays internal.
+func coordinatorMessageID(rec domain.NotificationRecord) string {
+	if rec.Type != domain.NotificationCoordinatorMessage {
+		return ""
+	}
+	return strings.TrimPrefix(rec.SourceKey, "coordinator-message:")
 }
