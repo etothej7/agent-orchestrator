@@ -90,14 +90,14 @@ func (s *Service) RecordHumanDecision(ctx context.Context, id domain.SessionID, 
 	// The notification is keyed by the message, so a retry after a lost response
 	// completes a missing one without raising a second.
 	if s.notifier != nil {
-		if err := s.notifier.Notify(ctx, humanNotification(id, rec.ProjectID, rec.DisplayName, messageID, decision, text, s.now())); err != nil {
+		if err := s.notifier.Notify(ctx, humanNotification(id, rec.ProjectID, rec.DisplayName, messageID, decision, s.now())); err != nil {
 			return "", err
 		}
 	}
 	return messageID, nil
 }
 
-func humanNotification(id domain.SessionID, project domain.ProjectID, name, messageID string, decision HumanDecision, text string, at time.Time) ports.NotificationIntent {
+func humanNotification(id domain.SessionID, project domain.ProjectID, name, messageID string, decision HumanDecision, at time.Time) ports.NotificationIntent {
 	title := "Your coordinator needs a decision"
 	switch decision.Purpose {
 	case "verified_result":

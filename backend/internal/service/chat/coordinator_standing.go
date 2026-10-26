@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -53,8 +54,11 @@ func (s *Service) DeliverCoordinatorStandingInstructions(ctx context.Context) (b
 		return false, nil
 	}
 	conversation, err := s.store.ConversationForSession(ctx, target.ID)
-	if err != nil {
+	if errors.Is(err, domain.ErrNoConversation) {
 		return false, nil // not provisioned yet; try again later
+	}
+	if err != nil {
+		return false, err
 	}
 	revision := domain.CoordinatorStandingRevision()
 	handle := CoordinatorStandingMessageID(revision)

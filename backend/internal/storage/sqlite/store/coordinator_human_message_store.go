@@ -133,9 +133,8 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", "Too many coordinator notices recently; fold this into your next single notice")
 			}
 		}
-		if notice {
-			// A notice never pauses or retargets story work.
-		} else if storyID == "" && failedSession == "" {
+		// A notice never pauses or retargets story work, so it skips both branches.
+		if !notice && storyID == "" && failedSession == "" {
 			rows, err := q.ListWorkspaceStories(ctx)
 			if err != nil {
 				return err
