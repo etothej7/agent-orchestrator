@@ -38,6 +38,17 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if !strings.Contains(manager, "Repo Manager Reporting Chain") || !strings.Contains(manager, `ao report "<summary or suggestion>"`) {
 		t.Fatal("repo manager cannot report upward")
 	}
+	for _, want := range []string{"Ending your turn:", "Do not poll, sleep, loop or check on them", "AO queues a new turn for you when a participant files a phase-ending report", "Do not end your turn with a handoff undelivered"} {
+		if !strings.Contains(manager, want) {
+			t.Fatalf("repo manager lacks the built-in end-turn rule %q", want)
+		}
+	}
+	if strings.Contains(manager, "end your turn immediately") || !strings.Contains(manager, "Keep working in the same turn for as long as there is authorized work") {
+		t.Fatal("end-turn rule must not cut off in-turn assignment, handoff or finding work")
+	}
+	if !strings.Contains(overall, "end your turn instead of polling managers") {
+		t.Fatal("overall coordinator lacks the delegate-then-end-turn rule")
+	}
 	if strings.Contains(manager, "ao report --message") {
 		t.Fatal("prompt uses a nonexistent report CLI flag")
 	}

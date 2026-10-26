@@ -439,3 +439,140 @@ func TestAutonomousPhaseReportCDCBypassesSettlement(t *testing.T) {
 		}
 	}
 }
+
+// A freshly queued manager turn is durable before its provider reports the
+// session active. The first assignment turn already advances the checkpoint, so
+// a continuation sent in that window only queues a redundant turn behind it.
+func TestStoryContinuationWaitsForManagersOwnOpenTurn(t *testing.T) {
+	db, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now().UTC()
+	for _, id := range []string{"repo", "coordinator"} {
+		if err = db.UpsertProject(ctx, domain.ProjectRecord{ID: id, Path: t.TempDir(), RegisteredAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = db.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: "coordinator", ManagedProjectIDs: []domain.ProjectID{"repo"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := db.CreateSession(ctx, domain.SessionRecord{ProjectID: "repo", Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.CreateSession(ctx, domain.SessionRecord{ProjectID: "coordinator", Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.CreateConversation(ctx, "phase-thread", domain.ConversationScopeSession, "repo", manager.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateEpic(ctx, domain.Epic{ID: "epic", Title: "TEST open turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateStory(ctx, domain.Story{ID: "story", EpicID: "epic", Title: "TEST open turn", Autonomous: true, Status: "backlog", Revision: 1, ProjectIDs: []domain.ProjectID{"repo"}, Assignments: []domain.StoryAssignment{{SessionID: manager.ID, Role: "manager"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The assignment turn is queued while the session still reads idle.
+	if _, err = db.AppendUserMessage(ctx, "phase-thread", manager.ID, "phase-generation", domain.ConversationMessage{ID: "assignment", ClientMessageID: "assignment", Text: "TEST assignment", Origin: domain.MessageOriginAutomation}, "turn-assignment", now); err != nil {
+		t.Fatal(err)
+	}
+	sender := &phaseTurnSender{db: db, sent: make(chan ports.ChatUserMessage, 4)}
+	events := cdc.NewBroadcaster()
+	poller := cdc.NewPoller(db, events, cdc.PollerConfig{Interval: 10 * time.Millisecond})
+	if err = poller.SeekToHead(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pollDone := poller.Start(ctx)
+	recovered := make(chan struct{})
+	close(recovered)
+	runner := &storysvc.Continuations{Store: db, Stories: &storysvc.Service{Store: db}, Sender: sender}
+	done := startStoryContinuations(ctx, recovered, events, runner, slog.New(slog.DiscardHandler))
+	defer func() { cancel(); <-done; <-pollDone }()
+
+	select {
+	case msg := <-sender.sent:
+		t.Fatal("continuation queued behind the manager's own open turn", msg.ClientMessageID)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err = db.SettleTurnByID(ctx, "turn-assignment", domain.TurnStateCompleted, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Provider activity updates wake CDC in production; make that wake explicit.
+	if err = db.UpdateSession(ctx, manager); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-sender.sent:
+		if !strings.Contains(msg.Text, "Story story;") {
+			t.Fatal("wrong story", msg.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuation was not retained after the manager's turn settled")
+	}
+}
+
+type reportSubmissions struct{ targets []domain.SessionID }
+
+func (r *reportSubmissions) Submit(_ context.Context, target domain.SessionID, _, _ string) error {
+	r.targets = append(r.targets, target)
+	return nil
+}
+func (r *reportSubmissions) Interrupt(context.Context, domain.SessionID) error { return nil }
+
+// With the real store, a worker's settled Done for an already-Done autonomous
+// story is acknowledged without a manager turn; an open story's Done still wakes.
+func TestOutboxDoneForAlreadyDoneStoryDoesNotWakeManager(t *testing.T) {
+	db, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err = db.UpsertProject(ctx, domain.ProjectRecord{ID: "repo", Path: t.TempDir(), RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := db.CreateSession(ctx, domain.SessionRecord{ProjectID: "repo", Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := db.CreateSession(ctx, domain.SessionRecord{ProjectID: "repo", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateEpic(ctx, domain.Epic{ID: "epic", Title: "TEST outbox"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, status := range map[string]string{"finished": "done", "open": "in_review"} {
+		story := domain.Story{ID: id, EpicID: "epic", Title: "TEST " + id, Autonomous: true, Status: status, Revision: 1, ProjectIDs: []domain.ProjectID{"repo"}, Assignments: []domain.StoryAssignment{{SessionID: manager.ID, Role: "manager"}, {SessionID: worker.ID, Role: "worker"}}}
+		if err = db.CreateStory(ctx, story); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reports := reportsvc.New(reportsvc.Deps{Store: db, Now: func() time.Time { return now }})
+	for _, id := range []string{"finished", "open"} {
+		if _, err = reports.Create(ctx, reportsvc.CreateInput{SessionID: worker.ID, StoryID: id, ClientReportID: "done-" + id, State: domain.ReportDone, Note: "worker finished " + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	delivery := &reportSubmissions{}
+	later := now.Add(domain.ReportSettlementWindow + time.Second)
+	coordinator := reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: db, Delivery: delivery, Now: func() time.Time { return later }})
+	if _, err = coordinator.RunDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivery.targets) != 1 || delivery.targets[0] != manager.ID {
+		t.Fatalf("manager submissions = %v, want exactly one for the open story", delivery.targets)
+	}
+	pending, err := db.ListPendingReportSchedule(ctx, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("redundant report left pending: %+v", pending)
+	}
+}

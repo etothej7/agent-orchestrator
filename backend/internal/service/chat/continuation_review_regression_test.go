@@ -371,6 +371,10 @@ func (s unavailableContinuationTurn) TurnByID(context.Context, string) (domain.C
 	return domain.ConversationTurn{}, errors.New("temporary read failure")
 }
 
+// Embedding the interface (not the store) hides SessionHasOpenTurn. It models
+// the race where the owner's turn is queued after the continuation's busy check.
+type unawareOfOpenTurns struct{ storysvc.ContinuationStore }
+
 func TestWaitingContinuationBackoffDoesNotChurnLedgerOrCDC(t *testing.T) {
 	for _, mode := range []string{"running", "queued", "unknown"} {
 		t.Run(mode, func(t *testing.T) {
@@ -381,9 +385,13 @@ func TestWaitingContinuationBackoffDoesNotChurnLedgerOrCDC(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if mode == "queued" {
+				c.Store = unawareOfOpenTurns{h.st}
+			}
 			if err := c.RunOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
+			c.Store = h.st
 			initial, _, _ := h.st.GetStoryContinuation(ctx, "s")
 			turn, err := h.st.TurnByID(ctx, initial.TurnID)
 			if err != nil {
