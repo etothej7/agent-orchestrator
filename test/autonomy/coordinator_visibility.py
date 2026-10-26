@@ -102,9 +102,6 @@ class CoordinatorVisibility(a.Harness):
         env = dict(self.env)
         env.update(AO_KEEP_DAEMON='1', AO_DISABLE_GPU='1', MallocNanoZone='0', ELECTRON_ENABLE_LOGGING='1')
         env['AO_GUI_LOG'] = str(self.root / 'gui.log')
-        env['CV_HOOK_LOG'] = str(self.root / 'main-hook.log')
-        env['CV_HOOK_CMD'] = str(self.root / 'hook-cmd.json')
-        env['NODE_OPTIONS'] = '--require=' + str(Path(__file__).with_name('cv_main_hook.js').resolve())
         # Detached through a shell so launchd (not this harness) reaps the GUI: a killed direct child would linger as a
         # zombie and be miscounted as a surviving process by the teardown check.
         shell = subprocess.Popen(['/bin/sh', '-c', '"$0" "$@" >> "$AO_GUI_LOG" 2>&1 &', str(self.app_copy / 'Contents/MacOS/agent-orchestrator'),
@@ -122,37 +119,52 @@ class CoordinatorVisibility(a.Harness):
         self.result['guiLaunch'] = {'cdpPort': self.cdp_port, 'reachable': bool(ok), 'processStillRunning': any('MacOS/agent-orchestrator' in c for _, (_, _, c) in self.process_rows().items() if str(self.root) in c)}
         return bool(ok)
 
-    def hook_events(self):
-        path = self.root / 'main-hook.log'
-        out = []
-        if path.exists():
-            for line in path.read_text(errors='replace').splitlines():
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    pass
-        return out
+    def gui_pid(self):
+        key = str(self.app_copy / 'Contents/MacOS/agent-orchestrator')
+        for pid, (_, _, command) in self.process_rows().items():
+            if command.startswith(key):
+                return pid
+        return None
 
-    def window(self, cmd):
-        ident = f'{cmd}-{time.time()}'
-        (self.root / 'hook-cmd.json').write_text(json.dumps({'id': ident, 'cmd': cmd}))
-        done = self.wait(lambda: next((e for e in self.hook_events() if e['kind'] == 'window-cmd' and e.get('id') == ident), None), 15, step=0.5)
-        return done or {'error': 'no confirmation from main-process hook'}
+    def wants_attention(self):
+        """macOS Launch Services flag set while the app is asking for the user's attention (a dock bounce)."""
+        pid = self.gui_pid()
+        if not pid:
+            return None
+        asn = subprocess.run(['/usr/bin/lsappinfo', 'find', f'pid={pid}'], capture_output=True, text=True).stdout.strip()
+        if not asn:
+            return None
+        out = subprocess.run(['/usr/bin/lsappinfo', 'info', '-only', 'LSWantsAttention', asn], capture_output=True, text=True).stdout
+        m = re.search(r'LSWantsAttention"?=(\w+)', out)
+        return (m.group(1) == 'true') if m else None
 
     def refocus(self):
-        # Focus cancels a pending dock bounce; minimise again so the next alert finds the app "not looking".
-        f = self.window('focus'); time.sleep(2)
-        m = self.window('minimize'); time.sleep(1.5)
-        self.window_states = {'afterFocus': f, 'afterMinimize': m}
+        # Activating the scratch app cancels a pending dock bounce; hand focus back so the next alert finds it "not looking".
+        subprocess.run(['/usr/bin/open', str(self.app_copy)], capture_output=True)
+        time.sleep(3)
+        subprocess.run(['/usr/bin/open', '-a', 'Finder'], capture_output=True)
+        time.sleep(2)
+        self.window_states = {'attentionAfterRefocus': self.wants_attention()}
 
-    def alerts_since(self):
-        events = self.hook_events()
-        fresh = events[self.hook_mark:]
-        self.hook_mark = len(events)
-        total = self.ui('sound-count').get('soundInvocations', 0)
-        sound = total - self.sound_mark
-        self.sound_mark = total
-        return {'dockBounceTypes': [e.get('type') for e in fresh if e['kind'] == 'dock-bounce'], 'osToastTitles': [e.get('title') for e in fresh if e['kind'] == 'notification-show'], 'soundInvocations': sound}
+    def banners_since(self, start_epoch):
+        start = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_epoch - 1))
+        out = subprocess.run(['/usr/bin/log', 'show', '--start', start, '--info', '--predicate',
+                              'process == "usernoted" AND eventMessage CONTAINS "Presenting" AND eventMessage CONTAINS "dev.agent-orchestrator.desktop"'],
+                             capture_output=True, text=True).stdout
+        return sum(1 for line in out.splitlines() if 'as banner' in line)
+
+    def alert_probe(self, fire):
+        """Fire one alert and observe: OS banner (usernoted log), dock attention (LSWantsAttention at +4 s and +14 s), renderer sound."""
+        self.refocus()
+        before_sound = self.ui('sound-count').get('soundInvocations', 0)
+        t0 = time.time()
+        sent = fire()
+        time.sleep(4)
+        a4 = self.wants_attention()
+        time.sleep(10)
+        a14 = self.wants_attention()
+        sound = self.ui('sound-count').get('soundInvocations', 0) - before_sound
+        return {'sendStatus': sent, 'bannersPresented': self.banners_since(t0), 'wantsAttentionAt4s': a4, 'wantsAttentionAt14s': a14, 'soundInvocations': sound}
 
     def decision(self, key, purpose, text):
         return self.api('POST', f'/api/v1/sessions/{COORD}/conversation/human-decisions', {'id': key, 'purpose': purpose, 'question': text}, timeout=60)[0]
@@ -176,9 +188,6 @@ class CoordinatorVisibility(a.Harness):
             if len(out) >= limit:
                 break
         return out
-
-    hook_mark = 0
-    sound_mark = 0
 
     def use_binary(self, path):
         self.args.daemon = path
@@ -373,10 +382,7 @@ class CoordinatorVisibility(a.Harness):
             r['ui_defaultView'] = view
             self.check('f_coordinator_findable_via_home_open_main_and_sidebar_row', home.get('reachedCoordinatorSession') and side.get('sidebarRowPresent') and side.get('reachedCoordinatorSession'))
             inst = self.ui('instrument')
-            self.refocus()
-            self.hook_mark = len(self.hook_events())
-            self.sound_mark = 0
-            r['alertInstrumentation'] = {'rendererSoundRecorder': inst, 'hookEventsAtStart': self.hook_mark, 'windowStates': getattr(self, 'window_states', None), 'note': 'window minimised via the main-process hook so the app is not looking; sound recorded as invoked (not played)'}
+            r['alertInstrumentation'] = {'rendererSoundRecorder': inst, 'method': 'OS banner from the usernoted unified log; dock attention from lsappinfo LSWantsAttention; sound recorded in the renderer (not played)'}
             self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
 
         # (a) a human message gets a visible reply.
@@ -402,7 +408,7 @@ class CoordinatorVisibility(a.Harness):
         c_text = ('Routine report from worker agent-orchestrator-4 (state: checkpoint, story routine-demo): tests ran green on the scratch branch; nothing is needed from Ed. '
                   'Record it internally and continue.')
         if self.args.app:
-            self.refocus(); self.alerts_since()
+            self.refocus(); c_t0 = time.time(); c_sound0 = self.ui('sound-count').get('soundInvocations', 0)
         c_status, _ = self.send_automation(c_text, 'agent-orchestrator-4')
         c_turn = self.wait(lambda: self.newest_turn_after(c_mark), 40)
         c_res = {'sendStatus': c_status, 'turnStarted': bool(c_turn)}
@@ -414,20 +420,16 @@ class CoordinatorVisibility(a.Harness):
                          newStoredMessagesInAllView=len(new_all), newMessagesTaggedInternal=all(all_view[i].get('audience') == 'internal' for i in new_all),
                          newCoordinatorNotifications=len([n for n in self.notifications() if n.get('type') == 'coordinator_message']) - len(n_before))
         if self.args.app:
-            time.sleep(3)
-            c_res['alerts'] = self.alerts_since()
-            self.check('c_routine_report_raises_no_toast_bounce_or_sound', not c_res['alerts']['dockBounceTypes'] and not c_res['alerts']['osToastTitles'] and c_res['alerts']['soundInvocations'] == 0)
+            time.sleep(4)
+            c_res['alerts'] = {'bannersPresented': self.banners_since(c_t0), 'wantsAttention': self.wants_attention(), 'soundInvocations': self.ui('sound-count').get('soundInvocations', 0) - c_sound0}
+            self.check('c_routine_report_raises_no_banner_bounce_or_sound', c_res['alerts']['bannersPresented'] == 0 and not c_res['alerts']['wantsAttention'] and c_res['alerts']['soundInvocations'] == 0)
         r['c_routineReportHidden'] = c_res
         self.check('c_routine_report_hidden_no_notification', c_res.get('turnState') == 'completed' and c_res.get('newVisibleMessages') == 0 and c_res.get('newStoredMessagesInAllView', 0) >= 1 and c_res.get('newMessagesTaggedInternal') and c_res.get('newCoordinatorNotifications') == 0)
 
         if self.args.app:
-            self.refocus(); self.alerts_since()
-            v_status = self.decision('cv-verified-' + self.token, 'verified_result', 'Verified: the scratch acceptance check passed on the candidate build.')
-            time.sleep(6)
-            v = self.alerts_since()
-            r['alerts_verifiedResultInformational'] = dict(v, sendStatus=v_status, via='POST human-decisions (the endpoint `ao tell --kind result` uses)')
-            self.check('electron_verified_result_raises_informational_bounce_and_os_toast', v_status < 400 and v['dockBounceTypes'] == ['informational'] and any('Verified result' in (t or '') for t in v['osToastTitles']))
-            self.refocus(); self.alerts_since()
+            v = self.alert_probe(lambda: self.decision('cv-verified-' + self.token, 'verified_result', 'Verified: the scratch acceptance check passed on the candidate build.'))
+            r['alerts_verifiedResultInformational'] = dict(v, via='POST human-decisions (the endpoint `ao tell --kind result` uses)')
+            self.check('verified_result_raises_os_banner_and_sound_and_no_lasting_dock_attention', v['sendStatus'] < 400 and v['bannersPresented'] >= 1 and v['wantsAttentionAt14s'] is False)
 
         # (b) a report that needs Ed produces a visible message AND a notification.
         n_before = [n['id'] for n in self.notifications() if n.get('type') == 'coordinator_message']
@@ -435,6 +437,8 @@ class CoordinatorVisibility(a.Harness):
         b_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
         b_text = ('Report from worker agent-orchestrator-4 (state: needs_input, story needs-ed-demo): the repository has two valid ways to rename the public setting. '
                   'Option A keeps a deprecated alias for one release; option B removes the old name immediately and breaks existing configs. The agents cannot choose between them without the product owner.')
+        if self.args.app:
+            self.refocus(); b_t0 = time.time(); b_sound0 = self.ui('sound-count').get('soundInvocations', 0)
         b_status, _ = self.send_automation(b_text, 'agent-orchestrator-4')
         b_turn = self.wait(lambda: self.newest_turn_after(b_mark), 40)
         b_res = {'sendStatus': b_status, 'turnStarted': bool(b_turn)}
@@ -463,21 +467,20 @@ class CoordinatorVisibility(a.Harness):
             note = self.ui('notifications', title='Your coordinator needs a decision', purposeLabel='Scope question')
             r['b_notificationRenderedInUi'] = note
             self.check('b_notification_rendered_in_ui_with_purpose', note.get('ok') and note.get('bellPresent') and note.get('titlePresent') and note.get('purposeLabelPresent'))
-            time.sleep(3)
-            ask_alerts = self.alerts_since()
-            r['b_electronAlertsForAsk'] = dict(ask_alerts, note='main-process hook records (does not display) Notification.show and app.dock.bounce; OS banner and bounce display are not observed')
-            self.check('electron_ask_raises_critical_dock_bounce_and_os_toast', ask_alerts['dockBounceTypes'] == ['critical'] and any('needs a decision' in (t or '') for t in ask_alerts['osToastTitles']))
+            time.sleep(4)
+            ask_a4 = self.wants_attention()
+            time.sleep(10)
+            ask_alerts = {'bannersPresented': self.banners_since(b_t0), 'wantsAttentionAt4sAfterTurn': ask_a4, 'wantsAttentionAt14sAfterTurn': self.wants_attention(), 'soundInvocations': self.ui('sound-count').get('soundInvocations', 0) - b_sound0}
+            r['b_alertsForAsk'] = ask_alerts
+            self.check('ask_raises_os_banner_sound_and_lasting_critical_dock_attention', ask_alerts['bannersPresented'] >= 1 and ask_alerts['wantsAttentionAt14sAfterTurn'] is True)
             attention = self.ui('attention-routes')
             r['b_needsYouMarkerWhileAskOpen'] = attention
-            self.check('b_needs_you_marker_on_sidebar_row_and_home_while_ask_open', attention.get('ok') and attention.get('coordinatorRoute', 0) >= 1 and attention.get('homeRoute', 0) > attention.get('coordinatorRoute', 0))
+            self.check('b_needs_you_marker_on_sidebar_row_and_home_while_ask_open', attention.get('ok') and attention.get('coordinatorRoute', 0) >= 1 and attention.get('homeStatus', 0) >= 1)
             self.ui('open-main-from-sidebar', sessionId=COORD)
-            self.refocus(); self.alerts_since()
-            st_status = self.decision('cv-stopped-' + self.token, 'stopped_work', 'Authorized scratch work has stopped and needs a decision from Ed before it can continue.')
-            time.sleep(6)
-            sw = self.alerts_since()
-            r['alerts_stoppedWorkCritical'] = dict(sw, sendStatus=st_status, via='POST human-decisions (the endpoint `ao tell --kind stopped` uses)')
-            self.check('electron_stopped_work_raises_critical_dock_bounce_and_os_toast', st_status < 400 and sw['dockBounceTypes'] == ['critical'] and any('stopped' in (t or '').lower() for t in sw['osToastTitles']))
-            self.refocus(); self.alerts_since()
+            sw = self.alert_probe(lambda: self.decision('cv-stopped-' + self.token, 'stopped_work', 'Authorized scratch work has stopped and needs a decision from Ed before it can continue.'))
+            r['alerts_stoppedWorkCritical'] = dict(sw, via='POST human-decisions (the endpoint `ao tell --kind stopped` uses)')
+            self.check('stopped_work_raises_os_banner_sound_and_lasting_critical_dock_attention', sw['sendStatus'] < 400 and sw['bannersPresented'] >= 1 and sw['wantsAttentionAt14s'] is True)
+            self.refocus()
             ui_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
             marker = 'cv-live-' + self.token
             sent = self.ui('send', text='Reply with one short sentence confirming you can see this message in the live chat. Take no other action.', marker=marker)
@@ -494,8 +497,8 @@ class CoordinatorVisibility(a.Harness):
             time.sleep(3)
             attention2 = self.ui('attention-routes')
             ask = [n for n in self.notifications() if n.get('type') == 'coordinator_message' and n.get('purpose') in PURPOSES_ASK]
-            r['b_askResolvedWhenEdReplies'] = {'needsYouAfterReply': {'coordinatorRoute': attention2.get('coordinatorRoute'), 'homeRoute': attention2.get('homeRoute')}, 'askNotifications': [{'id': n['id'], 'resolvedAt': bool(n.get('resolvedAt'))} for n in ask]}
-            self.check('b_ask_resolved_and_marker_cleared_after_ed_reply', attention2.get('ok') and attention2.get('coordinatorRoute') == 0 and attention2.get('homeRoute') == 0 and bool(ask) and all(n.get('resolvedAt') for n in ask))
+            r['b_askResolvedWhenEdReplies'] = {'needsYouAfterReply': {'coordinatorRoute': attention2.get('coordinatorRoute'), 'homeStatus': attention2.get('homeStatus')}, 'askNotifications': [{'id': n['id'], 'resolvedAt': bool(n.get('resolvedAt'))} for n in ask]}
+            self.check('b_ask_resolved_and_marker_cleared_after_ed_reply', attention2.get('ok') and attention2.get('coordinatorRoute') == 0 and attention2.get('homeStatus') == 0 and bool(ask) and all(n.get('resolvedAt') for n in ask))
             self.ui('open-main-from-sidebar', sessionId=COORD)
             tog = self.ui('toggle')
             r['e_hiddenContentOpensViaUiToggle'] = tog
