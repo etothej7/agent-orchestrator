@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
 
 import acceptance as a
 
@@ -96,6 +97,45 @@ class CoordinatorVisibility(a.Harness):
                                  'bytes': target.stat().st_size, 'coordinatorProviderOverride': {'from': 'claude-code', 'to': 'codex', 'reason': 'scratch HOME cannot reach the Claude credentials; they are not extracted'},
                                  'originalCoordinatorConversationSettings': [list(r) for r in before]}
 
+    def launch_gui(self):
+        self.cdp_port = self.free_port()
+        env = dict(self.env)
+        env.update(AO_KEEP_DAEMON='1', AO_DISABLE_GPU='1', MallocNanoZone='0', ELECTRON_ENABLE_LOGGING='1')
+        log = open(self.root / 'gui.log', 'ab')
+        self.gui = subprocess.Popen([str(self.app_copy / 'Contents/MacOS/agent-orchestrator'), f'--remote-debugging-port={self.cdp_port}'], env=env, cwd=self.root,
+                                    stdout=log, stderr=log, start_new_session=True)
+        log.close()
+        self.track()
+        def up():
+            try:
+                with urllib.request.urlopen(f'http://127.0.0.1:{self.cdp_port}/json/version', timeout=2) as r:
+                    return r.status == 200
+            except OSError:
+                return False
+        ok = self.wait(up, 90, step=1.0)
+        time.sleep(6)
+        return bool(ok)
+
+    def ui(self, action, **kw):
+        node = '/Users/edstockman/.local/share/fnm/node-versions/v24.14.0/installation/bin/node'
+        run = subprocess.run([node, str(Path(__file__).with_name('coordinator_visibility_ui.cjs')), str(self.args.playwright_dir), str(self.cdp_port), action, json.dumps(kw)],
+                             capture_output=True, text=True, timeout=400, env={'PATH': '/usr/bin:/bin'})
+        try:
+            return json.loads(run.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {'ok': False, 'error': 'no json from ui driver'}
+
+    def visible_texts(self, limit=6, role=None, turn=None, minlen=60):
+        default, _ = self.visible_ids()
+        ids = list(default)
+        out = []
+        for mid, text, r, t in sql(self.data / 'ao.db', 'select id, text, role, turn_id from conversation_messages where id in (%s) order by sequence desc' % ','.join('?' * len(ids)), *ids) if ids else []:
+            if len((text or '').strip()) > minlen and (role is None or r == role) and (turn is None or t == turn):
+                out.append(text)
+            if len(out) >= limit:
+                break
+        return out
+
     def use_binary(self, path):
         self.args.daemon = path
         link = self.root / 'bin/ao'
@@ -152,6 +192,15 @@ class CoordinatorVisibility(a.Harness):
         r.update(scenario='coordinator-visibility', kind='targeted_coordinator_visibility_backend_not_acceptance', autonomyAccepted=False)
         r['harnessSha'] = subprocess.check_output(['/usr/bin/git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'], text=True).strip()
         r['harnessSourceSha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        if self.args.app:
+            self.app_copy = self.root / 'app/Agent Orchestrator.app'
+            self.app_copy.parent.mkdir(parents=True)
+            subprocess.run(['/usr/bin/ditto', str(self.args.app), str(self.app_copy)], check=True)
+            seal = subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(self.app_copy)], capture_output=True)
+            self.check('packaged_app_copy_seal_valid', seal.returncode == 0)
+            self.args.daemon = self.app_copy / 'Contents/Resources/daemon/ao'
+            self.env['AO_ACP_RUNTIME_DIR'] = str(self.app_copy / 'Contents/Resources/acp-runtime')
+            self.env['AO_APP_RUN_ID'] = 'cv-' + self.token
         data = self.args.daemon.read_bytes()
         r['binary'] = {'path': str(self.args.daemon), 'sha256': hashlib.sha256(data).hexdigest()}
         meta = subprocess.check_output(['go', 'version', '-m', str(self.args.daemon)], text=True, cwd=self.root)
@@ -237,6 +286,19 @@ class CoordinatorVisibility(a.Harness):
         r['d_existingCoordinatorStandingInstruction'] = d
         self.check('d_standing_instruction_delivered_hidden', d['delivered'] and d.get('turnState') == 'completed' and d.get('hiddenInDefaultView') and d.get('taggedInternalInAllView') and d.get('assistantRepliesHiddenInDefault'))
 
+        gui = {}
+        if self.args.app:
+            gui_up = self.launch_gui()
+            self.check('packaged_gui_attached_to_scratch_daemon', gui_up)
+            home = self.ui('open-main-from-home', sessionId=COORD)
+            side = self.ui('open-main-from-sidebar', sessionId=COORD, coordinatorProjectName='overall-coordinator')
+            view = self.ui('default-view', snippets=self.visible_texts(8))
+            gui = {'f_openMainFromHome': home, 'f_mainCoordinatorSidebarRow': side, 'defaultView': view}
+            r['f_coordinatorProjectFindableInUi'] = {'homeOpenMain': home, 'sidebarMainCoordinatorRow': side}
+            r['ui_defaultView'] = view
+            self.check('f_coordinator_findable_via_home_open_main_and_sidebar_row', home.get('reachedCoordinatorSession') and side.get('sidebarRowPresent') and side.get('reachedCoordinatorSession'))
+            self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('toggleLabelPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
+
         # (a) a human message gets a visible reply.
         a_key = 'cv-a-' + self.token
         a_status, _ = self.send_human('Reply with one short sentence acknowledging this test message. Take no other action.', a_key)
@@ -302,6 +364,27 @@ class CoordinatorVisibility(a.Harness):
                    any(p in PURPOSES_ASK | {'stopped_work', 'verified_result'} for p in b_res.get('visiblePurposes', [])) and
                    any(n.get('type') == 'coordinator_message' and n.get('sessionId') == COORD for n in b_res.get('newNotifications', [])))
 
+        if self.args.app:
+            note = self.ui('notifications', title='Your coordinator needs a decision', purposeLabel='Scope question')
+            r['b_notificationRenderedInUi'] = note
+            self.check('b_notification_rendered_in_ui_with_purpose', note.get('ok') and note.get('bellPresent') and note.get('titlePresent') and note.get('purposeLabelPresent'))
+            ui_mark = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() - 2))
+            marker = 'cv-live-' + self.token
+            sent = self.ui('send', text='Reply with one short sentence confirming you can see this message in the live chat. Take no other action.', marker=marker)
+            ui_turn = self.wait(lambda: self.newest_turn_after(ui_mark), 60)
+            live = {'send': sent, 'turnStarted': bool(ui_turn)}
+            if ui_turn:
+                end = self.wait_turn(ui_turn, self.args.turn_wait)
+                snippets = self.visible_texts(3, role='assistant', turn=ui_turn, minlen=12)
+                time.sleep(2)
+                check = self.ui('check-live', marker=marker, snippets=snippets)
+                live.update(turnState=end[0] if end else 'timeout', visibleReplySnippets=len(snippets), check=check)
+            r['a_replyRendersLiveWithoutRefreshInUi'] = live
+            self.check('a_reply_renders_live_in_ui_without_reload', sent.get('ok') and live.get('turnState') == 'completed' and live.get('check', {}).get('markerStillPresent') and live.get('check', {}).get('replySnippetMatches', 0) >= 1)
+            tog = self.ui('toggle')
+            r['e_hiddenContentOpensViaUiToggle'] = tog
+            self.check('e_internal_activity_toggle_reveals_and_hides', tog.get('ok') and tog.get('switchPresent') and tog.get('internalBefore') == 0 and tog.get('internalAfterOn', 0) > 0 and tog.get('internalLabelsPresent') and tog.get('internalAfterOff') == 0)
+
         # (d, continued) the coordinator was not killed or respawned and no replacement session exists.
         after_sessions = sql(self.data / 'ao.db', 'select id, num, created_at, kind, harness, project_id, is_terminated from sessions order by id')
         coord_after = [row for row in after_sessions if row[0] == COORD][0]
@@ -335,9 +418,11 @@ def main():
     parser.add_argument('--expect-previous-sha256', required=True)
     parser.add_argument('--expect-sha256', required=True)
     parser.add_argument('--expect-revision', required=True)
-    parser.add_argument('--acp-runtime-dir', type=Path, required=True)
+    parser.add_argument('--acp-runtime-dir', type=Path, help='defaults to the packaged app copy when --app is given')
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
+    parser.add_argument('--app', type=Path, help='packaged .app: its bundled daemon, acp-runtime and GUI are used (copied into scratch)')
+    parser.add_argument('--playwright-dir', default='/private/tmp/ao-personal-66b-4/frontend/node_modules/playwright')
     parser.add_argument('--keep-harness', action='store_true', help='leave the copied coordinator on its original harness')
     parser.add_argument('--hold', action='store_true', help='debug: start the confined scratch daemon and wait for <root>/release')
     parser.add_argument('--standing-wait', type=float, default=150)
@@ -351,7 +436,8 @@ def main():
     harness = None
     try:
         harness = CoordinatorVisibility(args)
-        harness.env['AO_ACP_RUNTIME_DIR'] = str(args.acp_runtime_dir.resolve())
+        if args.acp_runtime_dir:
+            harness.env['AO_ACP_RUNTIME_DIR'] = str(args.acp_runtime_dir.resolve())
         harness.env['PATH'] += ':/Users/edstockman/.local/bin:/opt/homebrew/bin'
         a.signal.signal(a.signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
         harness.run_cv()
