@@ -1179,7 +1179,7 @@ func Run(buildVersion string) error {
 			}
 		}()
 		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
-		standingInstructionsDone = startStandingInstructions(ctx, done, cdcPipe.Broadcaster, chatSvc, 30*time.Second, 5*time.Minute, 10*time.Minute, log)
+		standingInstructionsDone = startStandingInstructions(ctx, done, cdcPipe.Broadcaster, chatSvc, 30*time.Second, 5*time.Minute, 0, log)
 		askResolutionDone = startCoordinatorAskResolution(ctx, done, cdcPipe.Broadcaster, notificationWriter, 500*time.Millisecond, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone

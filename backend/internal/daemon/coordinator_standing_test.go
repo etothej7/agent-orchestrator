@@ -45,7 +45,7 @@ func TestStandingInstructionsWaitForRecoveryRetryCoordinatorOnlyUntilDeliveredAn
 	events := cdc.NewBroadcaster()
 	// The coordinator is missing once, then delivered; the manager attempt fails twice.
 	d := &scriptedStanding{coordinatorResults: []bool{false, true}, managerErr: errors.New("uncertain send")}
-	done := startStandingInstructions(ctx, recovered, events, d, 5*time.Millisecond, 20*time.Millisecond, time.Hour, slog.New(slog.DiscardHandler))
+	done := startStandingInstructions(ctx, recovered, events, d, 5*time.Millisecond, 20*time.Millisecond, 0, slog.New(slog.DiscardHandler))
 	time.Sleep(30 * time.Millisecond)
 	if d.coordinatorCalls.Load() != 0 || d.managerCalls.Load() != 0 {
 		t.Fatal("delivered before provider recovery completed")

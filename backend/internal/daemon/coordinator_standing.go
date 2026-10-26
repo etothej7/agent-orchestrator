@@ -29,8 +29,8 @@ func standingInstructionBackoff(base, limit time.Duration, failures int) time.Du
 // replacing them. Every delivery is one durable message per rule revision, so it
 // never resends. The coordinator is retried, with capped backoff, only until it
 // has the rules. Managers are re-checked when a story's assignments change (the
-// workspace change events) so one assigned later is still taught; a quiet
-// safety timer covers a missed event.
+// workspace change events) so one assigned later is still taught; an optional
+// safety timer (zero disables it) covers a missed event.
 func startStandingInstructions(ctx context.Context, recovered <-chan struct{}, events *cdc.Broadcaster, deliverer standingInstructionDeliverer, retry, retryLimit, safety time.Duration, log *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	wake := make(chan struct{}, 1)
@@ -75,12 +75,17 @@ func startStandingInstructions(ctx context.Context, recovered <-chan struct{}, e
 			} else {
 				failures = 0
 			}
+			// Nothing pending and no safety timer: sleep until an assignment event.
+			var timeout <-chan time.Time
 			timer := time.NewTimer(wait)
+			if wait > 0 {
+				timeout = timer.C
+			}
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				return
-			case <-timer.C:
+			case <-timeout:
 			case <-wake:
 				timer.Stop()
 				// Coalesce a burst of assignment events into one pass.
