@@ -13,6 +13,21 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const countCoordinatorNoticesSince = `-- name: CountCoordinatorNoticesSince :one
+SELECT COUNT(*) FROM coordinator_human_messages h
+JOIN conversation_messages m ON m.id=h.message_id
+WHERE h.purpose IN ('verified_result','stopped_work') AND m.created_at >= ?1
+`
+
+// Non-blocking notices (verified results, stopped work) are the only way a
+// coordinator can address the human without a question, so they are bounded.
+func (q *Queries) CountCoordinatorNoticesSince(ctx context.Context, since time.Time) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCoordinatorNoticesSince, since)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getCoordinatorHumanMessage = `-- name: GetCoordinatorHumanMessage :one
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation, h.purpose FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id WHERE h.message_id=?
@@ -87,9 +102,20 @@ func (q *Queries) InsertCoordinatorHumanMessage(ctx context.Context, arg InsertC
 
 const listCoordinatorHumanMessages = `-- name: ListCoordinatorHumanMessages :many
 SELECT h.message_id, h.purpose FROM coordinator_human_messages h
-JOIN conversation_messages m ON m.id=h.message_id WHERE m.conversation_id = ?
+JOIN conversation_messages m ON m.id=h.message_id WHERE m.conversation_id = ?1
+UNION ALL
+SELECT m.id AS message_id, 'human_reply' AS purpose FROM conversation_messages m
+WHERE m.conversation_id = ?1 AND m.role='assistant' AND m.turn_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM coordinator_human_messages x WHERE x.message_id=m.id)
+  AND EXISTS (
+      SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
+      WHERE u.turn_id=m.turn_id AND u.role='user' AND u.sequence < m.sequence)
 `
 
+// Explicitly labeled messages, plus assistant output that replies to the human:
+// an assistant message is a human_reply when its turn holds an earlier
+// human_request user message. Automation-started turns have none, so their
+// output stays internal unless it was explicitly addressed to the human.
 func (q *Queries) ListCoordinatorHumanMessages(ctx context.Context, conversationID string) ([]CoordinatorHumanMessage, error) {
 	rows, err := q.db.QueryContext(ctx, listCoordinatorHumanMessages, conversationID)
 	if err != nil {

@@ -59,13 +59,26 @@ Manual stories remain manual.
 ## Human contact is actionable only
 
 Routine coordinator output, report batches and receipt acknowledgments remain
-internal. For an actual scope question use:
+internal. The coordinator's output is shown to the human only when it answers a
+message the human typed; anything else must be addressed with `ao ask` or `ao tell`,
+each of which shows a message and raises a notification. For an actual scope question use:
 
 ```bash
 ao ask --id label-choice --purpose scope_question --question 'Blue or Green?' --why-blocked 'The required label is not specified.'
 ```
 
-Only the overall coordinator can use this path. Include `--story <story-id>`
+To tell the human one verified result or that authorized work has stopped (never
+progress, receipts or routine reports; at most three per 15 minutes, so fold
+related facts into one):
+
+```bash
+ao tell --id label-done --kind result --message 'Labels normalize passed independent review and checks at 3f2a9c1.'
+ao tell --id label-stopped --kind stopped --message 'Totals work stopped: the fixture repo is missing.' --story totals-fee
+```
+
+Retain `--id` on retry; a retry never notifies twice. `ao tell` never pauses a story.
+
+Only the overall coordinator can use `ao ask` and `ao tell`. Include `--story <story-id>`
 for adopted work: the decision and its requester-owned story pause are persisted
 atomically, and normal answer delivery resolves that exact question. An unscoped
 decision is rejected while autonomous work exists. Other allowed purposes are

@@ -278,6 +278,7 @@ func TestCoordinatedNotificationsOnlyContactHumanForAction(t *testing.T) {
 		{"review result belongs to manager", "worker", "repo", domain.ActivityIdle, domain.NotificationReviewCompleted, 0},
 		{"review findings belong to manager", "worker", "repo", domain.ActivityIdle, domain.NotificationReviewChangesRequested, 0},
 		{"real permission blocker", "worker", "repo", domain.ActivityBlocked, domain.NotificationNeedsInput, 1},
+		{"coordinator explicitly addresses the human", "coord-1", "coord", domain.ActivityIdle, domain.NotificationCoordinatorMessage, 1},
 		{"uncoordinated session unchanged", "other", "repo", domain.ActivityWaitingInput, domain.NotificationNeedsInput, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

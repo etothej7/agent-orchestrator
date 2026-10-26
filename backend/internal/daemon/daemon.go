@@ -336,6 +336,7 @@ func Run(buildVersion string) error {
 	var sessMgr sessionLifecycle
 	chatSvc := chatsvc.New(chatsvc.Options{
 		Store:               store,
+		Notifier:            notificationWriter,
 		Sessions:            store,
 		Renders:             attachmentstore.New(cfg.DataDir),
 		DataDir:             cfg.DataDir,
@@ -1123,6 +1124,7 @@ func Run(buildVersion string) error {
 	var startupReconcileDone <-chan struct{}
 	var usageLimitResumeDone <-chan struct{}
 	var storyContinuationsDone <-chan struct{}
+	var standingInstructionsDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1176,6 +1178,7 @@ func Run(buildVersion string) error {
 			}
 		}()
 		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
+		standingInstructionsDone = startCoordinatorStandingInstructions(ctx, done, chatSvc, 30*time.Second, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone
 		go func() {
@@ -1223,6 +1226,9 @@ func Run(buildVersion string) error {
 	// via defer) avoids the LIFO trap where a Stop() that blocks on ctx-cancel
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
+	if standingInstructionsDone != nil {
+		<-standingInstructionsDone
+	}
 	if storyContinuationsDone != nil {
 		<-storyContinuationsDone
 	}

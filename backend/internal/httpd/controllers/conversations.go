@@ -906,8 +906,24 @@ func (c *ConversationsController) snapshot(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	// audience=all opens the internal-activity view: the same conversation with
+	// the overall coordinator's human audience filter off. The default view is
+	// unchanged and nothing is removed from storage.
+	internal := false
+	switch audience := r.URL.Query().Get("audience"); audience {
+	case "":
+	case "all":
+		internal = true
+	default:
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CONVERSATION_AUDIENCE_INVALID", "audience must be omitted or all", nil)
+		return
+	}
 	var snapshot chatsvc.Snapshot
-	if paged, ok := c.Svc.(pagedConversationService); ok {
+	if full, ok := c.Svc.(interface {
+		InternalSnapshotPage(ctx context.Context, session domain.SessionID, beforeSequence, limit int64) (chatsvc.Snapshot, error)
+	}); ok && internal {
+		snapshot, err = full.InternalSnapshotPage(r.Context(), session, before, limit)
+	} else if paged, ok := c.Svc.(pagedConversationService); ok {
 		snapshot, err = paged.SnapshotPage(r.Context(), session, before, limit)
 	} else {
 		snapshot, err = c.Svc.Snapshot(r.Context(), session)
@@ -918,8 +934,18 @@ func (c *ConversationsController) snapshot(w http.ResponseWriter, r *http.Reques
 	}
 	if gate, ok := c.Svc.(interface {
 		HumanSnapshot(context.Context, chatsvc.Snapshot) (chatsvc.Snapshot, error)
-	}); ok {
+	}); ok && !internal {
 		snapshot, err = gate.HumanSnapshot(r.Context(), snapshot)
+		if err != nil {
+			writeConversationError(w, r, err)
+			return
+		}
+	} else if marker, ok := c.Svc.(interface {
+		TagSnapshotAudience(context.Context, chatsvc.Snapshot) (chatsvc.Snapshot, error)
+	}); ok && internal {
+		// Every item says whether the default view would show it, so the client
+		// can mark internal activity without guessing.
+		snapshot, err = marker.TagSnapshotAudience(r.Context(), snapshot)
 		if err != nil {
 			writeConversationError(w, r, err)
 			return
@@ -1361,6 +1387,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, turn := range s.Turns {
 		out.Turns = append(out.Turns, ConversationTurnResponse{
+			Audience:        turn.Audience,
 			ID:              turn.ID,
 			State:           string(turn.State),
 			ProviderTurnID:  turn.ProviderTurnID,
@@ -1410,6 +1437,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, activity := range s.Activities {
 		out.Activities = append(out.Activities, ConversationActivityResponse{
+			Audience:       activity.Audience,
 			Kind:           "activity",
 			ID:             activity.ID,
 			TurnID:         activity.TurnID,

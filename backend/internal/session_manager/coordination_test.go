@@ -26,6 +26,14 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 			t.Fatal("manager prompt advertises a worker-only creation key")
 		}
 	}
+	for _, want := range []string{"Reaching Ed (the human)", "ao ask --id", "ao tell --id", "--kind result|stopped", "Never use it for progress", "At most three notices", "shown to Ed only when it answers a message Ed typed"} {
+		if !strings.Contains(overall, want) {
+			t.Fatalf("overall coordinator lacks the human-contact rule %q", want)
+		}
+	}
+	if strings.Contains(overall, "Ordinary assistant output is internal; it does not reach the human") {
+		t.Fatal("prompt still says all output is hidden from the human")
+	}
 	manager := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleOrchestrator, Project: promptProject{ID: "api"}, Coordination: assignment})
 	if !strings.Contains(manager, "Repo Manager Reporting Chain") || !strings.Contains(manager, `ao report "<summary or suggestion>"`) {
 		t.Fatal("repo manager cannot report upward")

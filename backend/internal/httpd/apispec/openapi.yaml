@@ -6365,6 +6365,20 @@ paths:
           type:
           - "null"
           - integer
+      - description: 'Set to all to open the internal-activity view of the overall
+          coordinator conversation: every stored message, turn and activity instead
+          of what is shown to the human. Omit for the default view.'
+        in: query
+        name: audience
+        schema:
+          description: 'Set to all to open the internal-activity view of the overall
+            coordinator conversation: every stored message, turn and activity instead
+            of what is shown to the human. Omit for the default view.'
+          enum:
+          - all
+          type:
+          - "null"
+          - string
       responses:
         "200":
           content:
@@ -15835,6 +15849,11 @@ components:
           - user_input
           - ao_action
           type: string
+        audience:
+          enum:
+          - human
+          - internal
+          type: string
         createdAt:
           type: string
         detail:
@@ -16063,6 +16082,9 @@ components:
     ConversationMessageResponse:
       properties:
         audience:
+          enum:
+          - human
+          - internal
           type: string
         clientMessageId:
           type: string
@@ -16418,6 +16440,11 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
+        audience:
+          enum:
+          - human
+          - internal
+          type: string
         completedAt:
           type:
           - "null"
@@ -17335,6 +17362,8 @@ components:
           - scope_question
           - blocking_decision
           - completion_decision
+          - verified_result
+          - stopped_work
           type: string
         question:
           type: string
@@ -17346,7 +17375,6 @@ components:
       - id
       - purpose
       - question
-      - whyBlocked
       type: object
     HumanDecisionResponse:
       properties:
@@ -18230,6 +18258,14 @@ components:
           type: string
         projectId:
           type: string
+        purpose:
+          enum:
+          - scope_question
+          - blocking_decision
+          - completion_decision
+          - verified_result
+          - stopped_work
+          type: string
         resolvedAt:
           format: date-time
           type:
@@ -18256,6 +18292,7 @@ components:
           - pr_closed_unmerged
           - review_completed
           - review_changes_requested
+          - coordinator_message
           type: string
       required:
       - id

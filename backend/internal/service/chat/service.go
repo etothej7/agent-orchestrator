@@ -57,6 +57,7 @@ type Service struct {
 	reader                 SnapshotReader
 	pageReader             SnapshotPageReader
 	humanPageReader        SnapshotPageReader
+	notifier               HumanNotifier
 	sessions               SessionReader
 	drivers                ports.ChatDriverRegistry
 	activity               ActivityRecorder
@@ -164,8 +165,11 @@ type Options struct {
 	PageReader SnapshotPageReader
 	// HumanPageReader preserves bounded pagination for the quiet coordinator view.
 	HumanPageReader SnapshotPageReader
-	Sessions        SessionReader
-	Drivers         ports.ChatDriverRegistry
+	// Notifier raises the human notification for an explicit coordinator
+	// message. Nil records the message without one.
+	Notifier HumanNotifier
+	Sessions SessionReader
+	Drivers  ports.ChatDriverRegistry
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
@@ -216,6 +220,7 @@ func New(opts Options) *Service {
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
 		humanPageReader:        opts.HumanPageReader,
+		notifier:               opts.Notifier,
 		sessions:               opts.Sessions,
 		drivers:                opts.Drivers,
 		activity:               opts.Activity,
@@ -2077,6 +2082,18 @@ func (s *Service) snapshotForReviewRows(review domain.Review, rows ConversationR
 // SnapshotPage reads one bounded timeline page. The live conversation metadata
 // remains current on every page; only turns/messages/activities are windowed.
 func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (Snapshot, error) {
+	return s.snapshotPage(ctx, id, beforeSequence, limit, false)
+}
+
+// InternalSnapshotPage is SnapshotPage without the overall coordinator's human
+// audience: every stored message, turn and activity, for the explicit
+// internal-activity view. Nothing is deleted or hidden at rest; the default
+// view only chooses what to show.
+func (s *Service) InternalSnapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (Snapshot, error) {
+	return s.snapshotPage(ctx, id, beforeSequence, limit, true)
+}
+
+func (s *Service) snapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64, internal bool) (Snapshot, error) {
 	record, err := s.requireChatSession(ctx, id)
 	if err != nil {
 		return Snapshot{}, err
@@ -2099,7 +2116,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		return s.Snapshot(ctx, id)
 	}
 	reader := s.pageReader
-	if s.humanPageReader != nil {
+	if s.humanPageReader != nil && !internal {
 		human, err := s.isHumanCoordinator(ctx, record.ProjectID)
 		if err != nil {
 			return Snapshot{}, err

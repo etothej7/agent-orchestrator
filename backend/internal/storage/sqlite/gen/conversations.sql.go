@@ -3078,7 +3078,11 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = ?1
-  AND (CAST(?2 AS INTEGER)=0 OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id))
+  AND (CAST(?2 AS INTEGER)=0
+       OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id)
+       OR (conversation_messages.role='assistant' AND conversation_messages.turn_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
+           WHERE u.turn_id=conversation_messages.turn_id AND u.role='user' AND u.sequence < conversation_messages.sequence)))
   AND conversation_messages.sequence < ?3
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (

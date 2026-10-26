@@ -1,7 +1,7 @@
 -- name: CreateNotification :one
 INSERT INTO notifications (
-    id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key, purpose
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetNotificationBySourceKey :one

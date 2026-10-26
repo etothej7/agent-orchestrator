@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 )
@@ -45,7 +47,15 @@ func TestCoordinatorHumanHTTPHidesStreamingAndBackgroundChatter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := h.st.AppendAssistantDelta(ctx, conv, "item", "human-provider", "PRIVATE_RECEIPT_ACK", "ack", h.now()); err != nil {
+	// Output of the turn Ed started is his answer; output of turns started by
+	// reports or forwarded agent text is internal.
+	if err := h.st.AppendAssistantDelta(ctx, conv, "item", "human-provider", "REPLY_TO_ED", "ack", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.AppendAssistantDelta(ctx, conv, "report-item", "report-provider", "PRIVATE_REPORT_REPLY", "report-reply", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.AppendAssistantDelta(ctx, conv, "forwarded-item", "forwarded-provider", "PRIVATE_FORWARDED_REPLY", "forwarded-reply", h.now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.st.UpsertActivity(ctx, conv, "human-provider", domain.ConversationActivity{ID: "reasoning", Kind: domain.ActivityKindReasoning, Status: domain.ActivityStatusRunning, Summary: "PRIVATE_REASONING", Detail: []byte(`{"raw":"PRIVATE_PROVIDER"}`)}, h.now()); err != nil {
@@ -76,7 +86,7 @@ func TestCoordinatorHumanHTTPHidesStreamingAndBackgroundChatter(t *testing.T) {
 		return body
 	}
 	first := read()
-	if !strings.Contains(first, "Build the agreed harmless feature") || !strings.Contains(first, "actual-permission") {
+	if !strings.Contains(first, "Build the agreed harmless feature") || !strings.Contains(first, "actual-permission") || !strings.Contains(first, "REPLY_TO_ED") || !strings.Contains(first, `"purpose":"human_reply"`) {
 		t.Fatal(first)
 	}
 	decision := chatsvc.HumanDecision{ID: "scope-decision", Purpose: "scope_question", Question: "Should the label be Blue or Green?", WhyBlocked: "The required label is not specified."}
@@ -98,7 +108,7 @@ func TestCoordinatorHumanHTTPHidesStreamingAndBackgroundChatter(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(snapshot)
-	if !strings.Contains(string(raw), "PRIVATE_RECEIPT_ACK") {
+	if !strings.Contains(string(raw), "PRIVATE_REPORT_REPLY") || !strings.Contains(string(raw), "PRIVATE_FORWARDED_REPLY") {
 		t.Fatal("internal history was mutated")
 	}
 	// The purpose gate applies to every new load, not just a client-side hide.
@@ -244,5 +254,236 @@ assert a.classify_message(bad)=="non_actionable_or_unclassified"
 	cmd.Stdin = strings.NewReader(body)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("actual acceptance classifier: %v\n%s", err, out)
+	}
+}
+
+// Visibility follows what started the turn, whatever prompt the coordinator was
+// launched with: Ed's replies show, automation's chatter does not, and an
+// explicit question to Ed shows wherever it was asked.
+func TestCoordinatorReplyVisibilityIsTurnScoped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	conv := h.ctrl.ConversationID()
+	turns := []struct {
+		id, clientID string
+		origin       domain.MessageOrigin
+		sender, text string
+		reply        string
+	}{
+		{"ask", "ask-1", domain.MessageOriginHuman, "", "Ed asks how the story is going", "REPLY_ANSWERING_ED"},
+		{"empty-id", "", domain.MessageOriginHuman, "", "Ed typed this without a client id", "REPLY_TO_EMPTY_ID"},
+		{"batch", "report-batch:rpt_1", domain.MessageOriginAutomation, "", "Reports since your previous turn: routine", "PRIVATE_BATCH_CHATTER"},
+		{"continue", "story-continue-abc-1-1", domain.MessageOriginAutomation, "", "AO internal story continuation", "PRIVATE_CONTINUE_CHATTER"},
+		{"worker", "worker-send", domain.MessageOriginHuman, "worker-1", "A worker message", "PRIVATE_WORKER_CHATTER"},
+	}
+	for _, turn := range turns {
+		_, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: turn.id, Origin: turn.origin, Text: turn.text, SenderSessionID: turn.sender, ClientMessageID: turn.clientID}, turn.id+"-turn", h.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = h.st.BindTurnToProvider(ctx, turn.id+"-turn", turn.id+"-provider", h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err = h.st.AppendAssistantDelta(ctx, conv, turn.id+"-item", turn.id+"-provider", turn.reply, turn.id+"-reply", h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err = h.st.UpsertActivity(ctx, conv, turn.id+"-provider", domain.ConversationActivity{ID: turn.id + "-reasoning", Kind: domain.ActivityKindReasoning, Status: domain.ActivityStatusCompleted, Summary: "PRIVATE_REASONING_" + turn.id}, h.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A question to Ed from inside an automation-started turn stays visible.
+	if _, err := h.svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: "scope", Purpose: "scope_question", Question: "EXPLICIT_QUESTION_TO_ED", WhyBlocked: "scope unclear"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	for _, query := range []string{"", "?limit=3"} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation"+query, nil))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		if strings.Contains(body, "PRIVATE_") {
+			t.Fatal("automation-started output or reasoning leaked", query, body)
+		}
+		for _, want := range []string{"EXPLICIT_QUESTION_TO_ED", "Ed typed this without a client id", "REPLY_TO_EMPTY_ID"} {
+			if !strings.Contains(body, want) {
+				t.Fatal("missing visible item", want, query, body)
+			}
+		}
+		if query == "" {
+			for _, want := range []string{"REPLY_ANSWERING_ED", "Ed asks how the story is going"} {
+				if !strings.Contains(body, want) {
+					t.Fatal("missing visible item", want, body)
+				}
+			}
+		}
+	}
+	// Nothing is lost: the explicit internal view opens every stored item.
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation?audience=all", nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	for _, want := range []string{"PRIVATE_BATCH_CHATTER", "PRIVATE_CONTINUE_CHATTER", "PRIVATE_WORKER_CHATTER", "PRIVATE_REASONING_batch", "REPLY_ANSWERING_ED", "EXPLICIT_QUESTION_TO_ED"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatal("internal view lost", want, w.Body.String())
+		}
+	}
+	var tagged struct {
+		Turns      []struct{ ID, Audience string }                `json:"turns"`
+		Messages   []struct{ ID, Audience, Purpose, Text string } `json:"messages"`
+		Activities []struct{ ID, Audience string }                `json:"activities"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tagged); err != nil {
+		t.Fatal(err)
+	}
+	audience := map[string]string{}
+	for _, m := range tagged.Messages {
+		if m.Audience != "human" && m.Audience != "internal" {
+			t.Fatal("untagged message", m)
+		}
+		audience[strings.SplitN(m.Text, "\n", 2)[0]] = m.Audience
+	}
+	for text, want := range map[string]string{"REPLY_ANSWERING_ED": "human", "EXPLICIT_QUESTION_TO_ED": "human", "REPLY_TO_EMPTY_ID": "human", "PRIVATE_BATCH_CHATTER": "internal", "PRIVATE_CONTINUE_CHATTER": "internal", "PRIVATE_WORKER_CHATTER": "internal", "Reports since your previous turn: routine": "internal"} {
+		if audience[text] != want {
+			t.Fatalf("message %q audience = %q, want %q", text, audience[text], want)
+		}
+	}
+	for _, a := range tagged.Activities {
+		if a.Audience != "internal" {
+			t.Fatal("reasoning must be tagged internal", a)
+		}
+	}
+	turnAudience := map[string]string{}
+	for _, turn := range tagged.Turns {
+		turnAudience[turn.ID] = turn.Audience
+	}
+	if turnAudience["ask-turn"] != "human" || turnAudience["batch-turn"] != "internal" || turnAudience["continue-turn"] != "internal" {
+		t.Fatal("turn audiences", turnAudience)
+	}
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation?audience=everyone", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatal("unknown audience accepted", w.Code)
+	}
+}
+
+type recordingHumanNotifier struct{ intents []ports.NotificationIntent }
+
+func (n *recordingHumanNotifier) Notify(_ context.Context, intent ports.NotificationIntent) error {
+	n.intents = append(n.intents, intent)
+	return nil
+}
+
+// The two ways to address Ed both show a message and raise a notification;
+// notices never pause work and cannot become a chatter channel.
+func TestCoordinatorAddressesHumanWithNotificationAndBoundedNotices(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject, ManagedProjectIDs: []domain.ProjectID{"repo"}}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.CreateEpic(ctx, domain.Epic{ID: "epic", Title: "TEST notices"}); err != nil {
+		t.Fatal(err)
+	}
+	story := domain.Story{ID: "story", EpicID: "epic", Title: "TEST notices", Autonomous: true, Status: "in_progress", Revision: 1, ProjectIDs: []domain.ProjectID{"repo"}}
+	if err := h.st.CreateStory(ctx, story); err != nil {
+		t.Fatal(err)
+	}
+	notifier := &recordingHumanNotifier{}
+	svc := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, Notifier: notifier, Now: h.now})
+
+	// A blocking question pauses its story and notifies once, even when retried.
+	ask := chatsvc.HumanDecision{ID: "q", StoryID: "story", Purpose: "scope_question", Question: "Blue or Green?", WhyBlocked: "Unspecified."}
+	for range 2 {
+		if _, err := svc.RecordHumanDecision(ctx, testSession, ask); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paused, err := h.st.GetStory(ctx, "story")
+	if err != nil || paused.Question == "" {
+		t.Fatal("ask must pause the story", paused, err)
+	}
+	// Notices never pause or retarget work, and need no blocking reason.
+	notice := func(id, purpose string) error {
+		_, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, StoryID: "story", Purpose: purpose, Question: "Verified at abc123."})
+		return err
+	}
+	for i, purpose := range []string{"verified_result", "stopped_work", "verified_result"} {
+		if err := notice(fmt.Sprintf("n%d", i), purpose); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := notice("n0", "verified_result"); err != nil {
+		t.Fatal("retry of an accepted notice must be a no-op", err)
+	}
+	err = notice("n3", "verified_result")
+	var limited *apierr.Error
+	if !errors.As(err, &limited) || limited.Code != "COORDINATOR_NOTICE_RATE_LIMITED" {
+		t.Fatal("fourth notice inside the window was not bounded", err)
+	}
+	after, err := h.st.GetStory(ctx, "story")
+	if err != nil || after.Question != paused.Question || after.Revision != paused.Revision {
+		t.Fatal("a notice changed the story", after, err)
+	}
+	if len(notifier.intents) != 2+3+1 {
+		// the ask and its retry, three accepted notices, and the retry of n0;
+		// the retries share a source key, so the store raises each notification once.
+		t.Fatal("notifications", len(notifier.intents))
+	}
+	keys := map[string]int{}
+	for _, intent := range notifier.intents {
+		if intent.Type != domain.NotificationCoordinatorMessage || intent.SessionID != testSession || intent.Title == "" || intent.Body == "" {
+			t.Fatal("unusable notification", intent)
+		}
+		keys[intent.SourceKey]++
+	}
+	if len(keys) != 4 || keys["coordinator-message:decision-n0"] != 2 {
+		t.Fatal("notification keys must be per message so retries dedupe", keys)
+	}
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation", nil))
+	if body := w.Body.String(); !strings.Contains(body, "Blue or Green?") || !strings.Contains(body, `"purpose":"verified_result"`) || !strings.Contains(body, `"purpose":"stopped_work"`) {
+		t.Fatal("notices must be visible to Ed", body)
+	}
+}
+
+// An existing coordinator learns the current rules in place: one durable
+// internal message per rule revision, never resent, never shown to Ed.
+func TestCoordinatorStandingInstructionsDeliverOncePerRevisionAndStayInternal(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	sends := len(h.conv.sentTexts())
+	for range 3 {
+		delivered, err := h.svc.DeliverCoordinatorStandingInstructions(ctx)
+		if err != nil || !delivered {
+			t.Fatal(delivered, err)
+		}
+	}
+	texts := h.conv.sentTexts()[sends:]
+	if len(texts) != 1 || !strings.Contains(texts[0], "ao tell --id") || !strings.Contains(texts[0], domain.CoordinatorStandingRevision()) || !strings.Contains(texts[0], "Do not reply to Ed about it") {
+		t.Fatal("standing instruction not delivered exactly once", texts)
+	}
+	conv := h.ctrl.ConversationID()
+	if _, found, err := h.st.ConversationMessageByClientID(ctx, conv, chatsvc.CoordinatorStandingMessageID(domain.CoordinatorStandingRevision())); err != nil || !found {
+		t.Fatal("delivery is not durable", found, err)
+	}
+	// The coordinator's answer to the update is internal housekeeping.
+	if err := h.st.AppendAssistantDelta(ctx, conv, "standing-item", "standing-provider", "PRIVATE_STANDING_ACK", "standing-ack", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation", nil))
+	if body := w.Body.String(); strings.Contains(body, "PRIVATE_") || strings.Contains(body, "AO standing instruction update") {
+		t.Fatal("standing instruction surfaced to Ed", body)
 	}
 }

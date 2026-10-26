@@ -19,6 +19,11 @@ func TestCoordinatorAudienceUpgradePreservesExistingPublicHistory(t *testing.T) 
 	mustExec(t, db, `INSERT INTO conversation_messages(id,conversation_id,sequence,role,origin,text,client_message_id,created_at,updated_at) VALUES
  ('old-user','history-conv',1,'user','human','Earlier Ed request','old-client',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
  ('old-assistant','history-conv',2,'assistant','provider','Earlier public assistant answer','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	// Ed's session-opening prompt predates client ids; a provider import has a
+	// provider item and also no client id.
+	mustExec(t, db, `INSERT INTO conversation_messages(id,conversation_id,sequence,role,origin,text,client_message_id,provider_item_id,created_at,updated_at) VALUES
+ ('opening-prompt','history-conv',-2,'user','human','Ed opening prompt without client id','','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+ ('provider-import','history-conv',-1,'user','human','PRIVATE_PROVIDER_IMPORT','','imported-item',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 	if err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +48,10 @@ func TestCoordinatorAudienceUpgradePreservesExistingPublicHistory(t *testing.T) 
 	for _, msg := range public.Messages {
 		text += msg.Text + "\n"
 	}
-	if !strings.Contains(text, "Earlier Ed request") || !strings.Contains(text, "Earlier public assistant answer") || strings.Contains(text, "PRIVATE_") || len(public.Activities) != 0 {
+	if !strings.Contains(text, "Ed opening prompt without client id") || !strings.Contains(text, "Earlier Ed request") || !strings.Contains(text, "Earlier public assistant answer") || strings.Contains(text, "PRIVATE_") || len(public.Activities) != 0 {
 		t.Fatal(text, public.Activities)
 	}
-	if len(rows.Messages) != 3 || len(rows.Activities) != 1 {
+	if len(rows.Messages) != 5 || len(rows.Activities) != 1 {
 		t.Fatal("durable source history changed", rows)
 	}
 	var integrity string

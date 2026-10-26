@@ -2232,13 +2232,17 @@ type NotificationTarget struct {
 
 // NotificationResponse is one stored notification returned by the API.
 type NotificationResponse struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"sessionId"`
-	ProjectID string    `json:"projectId"`
-	PRURL     string    `json:"prUrl"`
-	Type      string    `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged,review_completed,review_changes_requested"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	ProjectID string `json:"projectId"`
+	PRURL     string `json:"prUrl"`
+	Type      string `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged,review_completed,review_changes_requested,coordinator_message"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	// Purpose is set only for coordinator_message notifications: the ao ask
+	// purposes (scope_question, blocking_decision, completion_decision) or the
+	// ao tell purposes (verified_result, stopped_work).
+	Purpose   string    `json:"purpose,omitempty" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
 	Status    string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
 	CreatedAt time.Time `json:"createdAt"`
 	// ResolvedAt is set by AO when the underlying issue goes away (the session
@@ -2996,6 +3000,8 @@ type CompactConversationResponse struct {
 
 // ConversationTurnResponse is one request and the work that followed it.
 type ConversationTurnResponse struct {
+	// Audience is present only in the internal-activity view (audience=all).
+	Audience       string `json:"audience,omitempty" enum:"human,internal"`
 	ID             string `json:"id"`
 	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
@@ -3085,7 +3091,9 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	Audience          string                               `json:"audience,omitempty"`
+	// Audience is human for what the default view shows and internal for what
+	// only the internal-activity view (audience=all) returns.
+	Audience          string                               `json:"audience,omitempty" enum:"human,internal"`
 	Purpose           string                               `json:"purpose,omitempty"`
 	Kind              string                               `json:"kind" enum:"message"`
 	ID                string                               `json:"id"`
@@ -3113,6 +3121,8 @@ type ConversationMessageResponse struct {
 
 // ConversationActivityResponse is one non-message timeline entry.
 type ConversationActivityResponse struct {
+	// Audience is present only in the internal-activity view (audience=all).
+	Audience string `json:"audience,omitempty" enum:"human,internal"`
 	Kind     string `json:"kind" enum:"activity"`
 	ID       string `json:"id"`
 	TurnID   string `json:"turnId,omitempty"`
@@ -3915,9 +3925,9 @@ type ResumeStoryContinuationRequest struct {
 type HumanDecisionRequest struct {
 	StoryID    string `json:"storyId,omitempty"`
 	ID         string `json:"id"`
-	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision"`
+	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
 	Question   string `json:"question"`
-	WhyBlocked string `json:"whyBlocked"`
+	WhyBlocked string `json:"whyBlocked,omitempty"`
 }
 
 // HumanDecisionResponse identifies the durable human-facing decision.

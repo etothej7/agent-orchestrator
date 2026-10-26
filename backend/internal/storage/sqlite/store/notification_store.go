@@ -40,6 +40,7 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		Status:    rec.Status,
 		CreatedAt: rec.CreatedAt,
 		SourceKey: rec.SourceKey,
+		Purpose:   rec.Purpose,
 	})
 	if err != nil {
 		if isSQLiteUnique(err) {
@@ -396,6 +397,7 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 		CreatedAt:  row.CreatedAt,
 		ResolvedAt: timeFromNull(row.ResolvedAt),
 		SourceKey:  row.SourceKey,
+		Purpose:    row.Purpose,
 	}
 }
 

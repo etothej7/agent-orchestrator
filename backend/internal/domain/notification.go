@@ -21,13 +21,16 @@ const (
 	NotificationReviewCompleted NotificationType = "review_completed"
 	// NotificationReviewChangesRequested means an AO reviewer found changes to make.
 	NotificationReviewChangesRequested NotificationType = "review_changes_requested"
+	// NotificationCoordinatorMessage means the overall coordinator explicitly
+	// addressed the human (a decision, blocker, stopped work or verified result).
+	NotificationCoordinatorMessage NotificationType = "coordinator_message"
 )
 
 // Valid reports whether t is one of the v1 notification kinds.
 func (t NotificationType) Valid() bool {
 	switch t {
 	case NotificationNeedsInput, NotificationReadyToMerge, NotificationPRMerged, NotificationPRClosedUnmerged,
-		NotificationReviewCompleted, NotificationReviewChangesRequested:
+		NotificationReviewCompleted, NotificationReviewChangesRequested, NotificationCoordinatorMessage:
 		return true
 	default:
 		return false
@@ -102,6 +105,10 @@ type NotificationRecord struct {
 	// its input, or the PR stopped waiting on a merge. Zero means still open.
 	// Only AO writes it; there is no user-facing "resolve" action.
 	ResolvedAt time.Time
+	// Purpose says why a coordinator_message was sent: scope_question,
+	// blocking_decision, completion_decision (ao ask) or verified_result,
+	// stopped_work (ao tell). Empty for every other notification type.
+	Purpose string
 	// SourceKey identifies the durable transition that produced a terminal
 	// notification. It is internal dedupe metadata and is not exposed over HTTP.
 	SourceKey string

@@ -64,7 +64,18 @@ func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.S
 	return err
 }
 
+// CoordinatorNoticeLimit caps non-blocking coordinator notices per window so
+// they cannot become a status channel to the human.
+const (
+	CoordinatorNoticeLimit  = 3
+	CoordinatorNoticeWindow = 15 * time.Minute
+)
+
 func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.ConversationMessage, purpose, storyID string, failedSession domain.SessionID, now time.Time) (string, error) {
+	notice := purpose == "verified_result" || purpose == "stopped_work"
+	if notice {
+		storyID = "" // informational only: a notice is never bound to story state
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "record coordinator decision", func(q *gen.Queries) error {
@@ -113,7 +124,18 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if storyID == "" && failedSession == "" {
+		if notice {
+			recent, err := q.CountCoordinatorNoticesSince(ctx, now.Add(-CoordinatorNoticeWindow))
+			if err != nil {
+				return err
+			}
+			if recent >= CoordinatorNoticeLimit {
+				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", "Too many coordinator notices recently; fold this into your next single notice")
+			}
+		}
+		if notice {
+			// A notice never pauses or retargets story work.
+		} else if storyID == "" && failedSession == "" {
 			rows, err := q.ListWorkspaceStories(ctx)
 			if err != nil {
 				return err

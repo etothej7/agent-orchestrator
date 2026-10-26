@@ -26,6 +26,13 @@ type NotificationIntent struct {
 	PRTargetBranch     string
 	Provider           string
 	Repo               string
+
+	// Title and Body carry the human-facing text for coordinator messages,
+	// which have no PR or session state to derive it from.
+	Title string
+	Body  string
+	// Purpose records which ao ask/ao tell purpose produced a coordinator message.
+	Purpose string
 }
 
 // NotificationResolution is the lifecycle-to-notification-producer contract for

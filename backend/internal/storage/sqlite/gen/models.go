@@ -470,6 +470,7 @@ type Notification struct {
 	ResolvedAt  sql.NullTime
 	DismissedAt sql.NullTime
 	SourceKey   string
+	Purpose     string
 }
 
 type PR struct {

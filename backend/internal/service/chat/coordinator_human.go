@@ -9,6 +9,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
 )
 
@@ -19,7 +20,14 @@ type coordinatorHumanStore interface {
 	RecordCoordinatorHumanMessage(context.Context, domain.ConversationMessage, string, string, time.Time) (string, error)
 }
 
-// HumanDecision is a deliberate blocking question, never a status notification.
+// HumanNotifier raises the human-facing notification for an explicit coordinator message.
+type HumanNotifier interface {
+	Notify(context.Context, ports.NotificationIntent) error
+}
+
+// HumanDecision is a deliberate message to the human: a blocking question or
+// decision, or a bounded notice of a verified result or stopped work. It is
+// never a status notification.
 type HumanDecision struct {
 	StoryID    string `json:"storyId,omitempty"`
 	ID         string `json:"id"`
@@ -36,13 +44,14 @@ func (s *Service) RecordHumanDecision(ctx context.Context, id domain.SessionID, 
 	}
 	ctx, release := coordination.ReadLock(ctx, s.store)
 	defer release()
-	if strings.TrimSpace(decision.ID) == "" || len(decision.ID) > 128 || strings.TrimSpace(decision.Question) == "" || len(decision.Question) > 4000 || strings.TrimSpace(decision.WhyBlocked) == "" || len(decision.WhyBlocked) > 4000 {
+	notice := decision.Purpose == "verified_result" || decision.Purpose == "stopped_work"
+	if strings.TrimSpace(decision.ID) == "" || len(decision.ID) > 128 || strings.TrimSpace(decision.Question) == "" || len(decision.Question) > 4000 || len(decision.WhyBlocked) > 4000 || (!notice && strings.TrimSpace(decision.WhyBlocked) == "") {
 		return "", apierr.Invalid("INVALID_HUMAN_DECISION", "A stable id, question and blocking reason are required", nil)
 	}
 	switch decision.Purpose {
-	case "scope_question", "blocking_decision", "completion_decision":
+	case "scope_question", "blocking_decision", "completion_decision", "verified_result", "stopped_work":
 	default:
-		return "", apierr.Invalid("INVALID_HUMAN_DECISION", "Only scope questions and blocking decisions may contact the human", nil)
+		return "", apierr.Invalid("INVALID_HUMAN_DECISION", "Only scope questions, blocking decisions, verified results and stopped work may contact the human", nil)
 	}
 	rec, err := s.requireChatSession(ctx, id)
 	if err != nil {
@@ -70,7 +79,37 @@ func (s *Service) RecordHumanDecision(ctx context.Context, id domain.SessionID, 
 	if err != nil {
 		return "", err
 	}
-	return store.RecordCoordinatorHumanMessage(ctx, domain.ConversationMessage{ID: "decision-" + decision.ID, ConversationID: conversation.ID, SenderSessionID: string(id), SenderProjectID: string(rec.ProjectID), SenderDisplayName: rec.DisplayName, Text: decision.Question + "\n\nWhy your input is needed: " + decision.WhyBlocked}, decision.Purpose, decision.StoryID, s.now())
+	text := decision.Question
+	if !notice {
+		text += "\n\nWhy your input is needed: " + decision.WhyBlocked
+	}
+	messageID, err := store.RecordCoordinatorHumanMessage(ctx, domain.ConversationMessage{ID: "decision-" + decision.ID, ConversationID: conversation.ID, SenderSessionID: string(id), SenderProjectID: string(rec.ProjectID), SenderDisplayName: rec.DisplayName, Text: text}, decision.Purpose, decision.StoryID, s.now())
+	if err != nil {
+		return "", err
+	}
+	// The notification is keyed by the message, so a retry after a lost response
+	// completes a missing one without raising a second.
+	if s.notifier != nil {
+		if err := s.notifier.Notify(ctx, humanNotification(id, rec.ProjectID, rec.DisplayName, messageID, decision, text, s.now())); err != nil {
+			return "", err
+		}
+	}
+	return messageID, nil
+}
+
+func humanNotification(id domain.SessionID, project domain.ProjectID, name, messageID string, decision HumanDecision, text string, at time.Time) ports.NotificationIntent {
+	title := "Your coordinator needs a decision"
+	switch decision.Purpose {
+	case "verified_result":
+		title = "Verified result from your coordinator"
+	case "stopped_work":
+		title = "Work has stopped and needs you"
+	}
+	body := strings.TrimSpace(decision.Question)
+	if runes := []rune(body); len(runes) > 280 {
+		body = string(runes[:280]) + "…"
+	}
+	return ports.NotificationIntent{Type: domain.NotificationCoordinatorMessage, SessionID: id, ProjectID: project, CreatedAt: at, SourceKey: "coordinator-message:" + messageID, SessionDisplayName: name, Title: title, Body: body, Purpose: decision.Purpose}
 }
 
 // HumanSnapshot gates before serialization, including streaming messages. It
@@ -131,6 +170,68 @@ func (s *Service) HumanSnapshot(ctx context.Context, in Snapshot) (Snapshot, err
 	out.Conversation.MCPServers = nil
 	out.Conversation.ThreadState = nil
 	return out, nil
+}
+
+// TagSnapshotAudience annotates the unfiltered snapshot of the overall
+// coordinator conversation: human is exactly what HumanSnapshot would return for
+// the item, internal is everything else. Other conversations come back
+// untouched, so audience=all is silently ignored for them.
+func (s *Service) TagSnapshotAudience(ctx context.Context, in Snapshot) (Snapshot, error) {
+	visible, err := s.HumanSnapshot(ctx, in)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	store, ok := s.store.(coordinatorHumanStore)
+	if !ok {
+		return in, nil
+	}
+	cfg, err := store.GetCoordination(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if cfg.CoordinatorProjectID == "" || in.Conversation.ProjectID != cfg.CoordinatorProjectID || in.Conversation.ReviewID != "" {
+		return in, nil
+	}
+	purposes := make(map[string]string, len(visible.Messages))
+	for _, message := range visible.Messages {
+		purposes[message.ID] = message.Purpose
+	}
+	activities := make(map[string]bool, len(visible.Activities))
+	for _, activity := range visible.Activities {
+		activities[activity.ID] = true
+	}
+	turns := make(map[string]bool, len(visible.Turns))
+	for _, turn := range visible.Turns {
+		turns[turn.ID] = true
+	}
+	out := in
+	out.Messages = make([]domain.ConversationMessage, len(in.Messages))
+	for i, message := range in.Messages {
+		if purpose, human := purposes[message.ID]; human {
+			message.Audience, message.Purpose = "human", purpose
+		} else {
+			message.Audience = "internal"
+		}
+		out.Messages[i] = message
+	}
+	out.Activities = make([]domain.ConversationActivity, len(in.Activities))
+	for i, activity := range in.Activities {
+		activity.Audience = tagAudience(activities[activity.ID])
+		out.Activities[i] = activity
+	}
+	out.Turns = make([]domain.ConversationTurn, len(in.Turns))
+	for i, turn := range in.Turns {
+		turn.Audience = tagAudience(turns[turn.ID])
+		out.Turns[i] = turn
+	}
+	return out, nil
+}
+
+func tagAudience(human bool) string {
+	if human {
+		return "human"
+	}
+	return "internal"
 }
 
 // Decode only the UI's actionable contract; never pass through provider fields.

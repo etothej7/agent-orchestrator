@@ -1305,7 +1305,11 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_messages.* FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
-  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id))
+  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0
+       OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id)
+       OR (conversation_messages.role='assistant' AND conversation_messages.turn_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
+           WHERE u.turn_id=conversation_messages.turn_id AND u.role='user' AND u.sequence < conversation_messages.sequence)))
   AND conversation_messages.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (
