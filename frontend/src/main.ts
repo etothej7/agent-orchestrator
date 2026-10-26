@@ -193,13 +193,7 @@ import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readProcessStartMs } from "./main/process-start";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
-import {
-	dockBounceType,
-	shouldReplaceBounce,
-	shouldSignalAttention,
-	shouldToast,
-	toastSilent,
-} from "./main/notification-signals";
+import { planNotificationSignals, shouldReplaceBounce, toastSilent } from "./main/notification-signals";
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
@@ -3014,28 +3008,27 @@ ipcMain.handle(
 		if (!notification.id || !mainWindow) return;
 		// "Already looking" = the window has focus, or the renderer reports the
 		// prompt itself is on screen (`watched`). Visual signals are skipped then.
+		// Which signals exist at all is the policy's call (shared/notification-signal-policy.ts):
+		// by default none, so this handler only ever returns early.
 		const looking = mainWindow.isFocused() || notification.watched === true;
-		// On Linux the sound ignores that guess: Wayland gives apps no reliable
-		// visibility, so a window parked on another workspace still reports
-		// focused/visible and would otherwise stay silent. macOS and Windows
-		// report focus accurately and keep the quieter behaviour.
-		const playsSound =
-			shouldSignalAttention(notification.type) &&
-			soundNotificationsEnabled &&
-			(process.platform === "linux" || !looking);
-		if (playsSound) playNotificationSound();
-		if (looking) return;
-		// OS toast: a native banner the user can click to jump straight back to the
-		// session. Fires for every backend notification type (see shouldToast), so a
-		// new type in notification.go never silently loses its toast.
-		if (shouldToast(notification, ElectronNotification.isSupported())) {
+		const plan = planNotificationSignals({
+			type: notification.type,
+			purpose: notification.purpose,
+			title: notification.title,
+			platform: process.platform,
+			looking,
+			soundNotificationsEnabled,
+			toastSupported: ElectronNotification.isSupported(),
+		});
+		if (plan.sound) playNotificationSound();
+		if (plan.banner) {
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
 				// Mute the OS chime when our sound replaces it or the user turned
 				// sound notifications off. Honoured on macOS/Windows only; Linux
 				// notification daemons ignore it (see toastSilent).
-				silent: toastSilent(process.platform, soundNotificationsEnabled, playsSound),
+				silent: toastSilent(process.platform, soundNotificationsEnabled, plan.sound),
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -3052,28 +3045,20 @@ ipcMain.handle(
 			toast.show();
 		}
 
-		// Dock (macOS) / taskbar (Windows/Linux) attention signal. On macOS every
-		// notification bounces the dock — urgency is carried by the bounce type,
-		// so a merged PR bounces once while a blocked agent keeps bouncing. On
-		// Windows/Linux only the actionable types flash (see
-		// shouldSignalAttention), preserving the pre-existing behavior there.
-		if (process.platform === "darwin" && app.dock) {
-			// A pending critical bounce (agent blocked on the user) is never
-			// replaced: a later informational notification must not downgrade it
-			// to a one-shot bounce.
+		if (plan.dockBounce && app.dock) {
+			// A pending critical bounce is never replaced by a quieter one.
 			if (shouldReplaceBounce(pendingBounce)) {
 				// A focus listener from an earlier un-cancelled bounce still works for
 				// the new id, so only attach one at a time.
 				const hadPendingBounce = pendingBounce !== null;
 				cancelDockBounce();
-				const bounceType = dockBounceType(notification.type, notification.purpose);
-				const id = app.dock.bounce(bounceType);
+				const id = app.dock.bounce(plan.dockBounce);
 				if (typeof id === "number" && id >= 0) {
-					pendingBounce = { id, critical: bounceType === "critical" };
+					pendingBounce = { id, critical: plan.dockBounce === "critical" };
 					if (!hadPendingBounce) mainWindow.once("focus", cancelDockBounce);
 				}
 			}
-		} else if ((process.platform === "win32" || process.platform === "linux") && shouldSignalAttention(notification.type)) {
+		} else if (plan.flash) {
 			if (!isFlashing) {
 				isFlashing = true;
 				mainWindow.flashFrame(true);

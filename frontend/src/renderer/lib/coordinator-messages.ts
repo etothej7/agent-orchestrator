@@ -1,4 +1,5 @@
-import type { ConversationItem } from "../types/conversation";
+import type { ConversationItem, ConversationMessage } from "../types/conversation";
+import type { NotificationDTO } from "./notifications";
 
 /** What a coordinator message tells Ed: a result to note, work that stopped, or a question that needs him. */
 export type CoordinatorMessageKind = "result" | "stopped" | "ask";
@@ -25,4 +26,24 @@ export function coordinatorMessageKind(item: ConversationItem | undefined): Coor
 
 export function isCoordinatorMessage(item: ConversationItem | undefined): boolean {
 	return coordinatorMessageKind(item) !== undefined;
+}
+
+/**
+ * The notification the daemon raised for a coordinator message: a coordinator_message with the same
+ * purpose whose body opens the message text. The notification carries no message id, so this pairs
+ * them by what they say; the one created closest to the message wins.
+ */
+export function notificationForMessage(
+	message: Pick<ConversationMessage, "text" | "purpose" | "createdAt">,
+	notifications: readonly NotificationDTO[],
+): NotificationDTO | undefined {
+	const text = message.text.trim();
+	const sent = Date.parse(message.createdAt);
+	return notifications
+		.filter((notification) => {
+			if (notification.type !== "coordinator_message" || notification.purpose !== message.purpose) return false;
+			const body = notification.body.replace(/…$/, "").trim();
+			return body.length > 0 && text.startsWith(body);
+		})
+		.sort((a, b) => Math.abs(Date.parse(a.createdAt) - sent) - Math.abs(Date.parse(b.createdAt) - sent))[0];
 }

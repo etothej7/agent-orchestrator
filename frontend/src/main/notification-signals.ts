@@ -1,3 +1,5 @@
+import { NOTIFICATION_SIGNAL_POLICY, type NotificationSignalPolicy } from "../shared/notification-signal-policy";
+
 /**
  * Notification signal policy for the main process.
  *
@@ -101,4 +103,45 @@ export function toastSilent(
 export function dockBounceType(type: string | undefined, purpose?: string): "critical" | "informational" {
 	if (type === "needs_input") return "critical";
 	return type === "coordinator_message" && purpose !== undefined && COORDINATOR_URGENT_PURPOSES.has(purpose) ? "critical" : "informational";
+}
+
+export type NotificationSignalPlan = {
+	sound: boolean;
+	banner: boolean;
+	/** The macOS dock bounce to start, or null for none. */
+	dockBounce: "critical" | "informational" | null;
+	/** Flash the Windows/Linux taskbar. */
+	flash: boolean;
+};
+
+/**
+ * Every OS signal a notification may raise, decided in one place so the policy constants
+ * (shared/notification-signal-policy.ts) are the only switch. With the default policy this is
+ * always "nothing".
+ */
+export function planNotificationSignals(
+	input: {
+		type?: string;
+		purpose?: string;
+		title?: string;
+		platform: NodeJS.Platform;
+		/** The person is already looking at AO (window focused, or the prompt is on screen). */
+		looking: boolean;
+		soundNotificationsEnabled: boolean;
+		toastSupported: boolean;
+	},
+	policy: NotificationSignalPolicy = NOTIFICATION_SIGNAL_POLICY,
+): NotificationSignalPlan {
+	const sound =
+		policy.sound &&
+		shouldSignalAttention(input.type) &&
+		input.soundNotificationsEnabled &&
+		(input.platform === "linux" || !input.looking);
+	if (input.looking) return { sound, banner: false, dockBounce: null, flash: false };
+	return {
+		sound,
+		banner: policy.osBanners && shouldToast({ title: input.title }, input.toastSupported),
+		dockBounce: input.platform === "darwin" && policy.dockBounce ? dockBounceType(input.type, input.purpose) : null,
+		flash: (input.platform === "win32" || input.platform === "linux") && policy.taskbarFlash && shouldSignalAttention(input.type),
+	};
 }

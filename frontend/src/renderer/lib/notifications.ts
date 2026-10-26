@@ -473,6 +473,38 @@ export function getCachedNotifications(cache: NotificationsCache | undefined): N
 	return sortNotifications([...byID.values()]);
 }
 
+/**
+ * What the bell lists. A coordinator message (`ao tell` / `ao ask`) lives in the chat and on the
+ * Dock badge, never in the bell, so nothing in the bell asks for attention on its behalf.
+ */
+export function isBellNotification(notification: Pick<NotificationDTO, "type">): boolean {
+	return notification.type !== "coordinator_message";
+}
+
+/** The unread count the bell shows: the server's total minus the coordinator messages it carries. */
+export function getBellUnreadCount(cache: NotificationsCache | undefined): number {
+	const coordinatorUnread = getCachedNotifications(cache).filter((item) => !isBellNotification(item) && item.status === "unread").length;
+	return Math.max(0, getCachedUnreadCount(cache) - coordinatorUnread);
+}
+
+/** Coordinator results and stops Ed has not seen in the chat yet. */
+export function isUnreadCoordinatorTell(notification: Pick<NotificationDTO, "type" | "purpose" | "status">): boolean {
+	return (
+		notification.type === "coordinator_message" &&
+		(notification.purpose === "verified_result" || notification.purpose === "stopped_work") &&
+		notification.status === "unread"
+	);
+}
+
+/**
+ * The red Dock badge: open coordinator questions plus unread results and stops. Server state, so it is
+ * right on startup; it clears when a tell is seen in the focused chat or a question is answered.
+ */
+export function getCoordinatorBadgeCount(cache: NotificationsCache | undefined): number {
+	const openAsks = cache?.pages[0]?.unresolvedAskCount ?? getCachedNotifications(cache).filter(isOpenCoordinatorAsk).length;
+	return openAsks + getCachedNotifications(cache).filter(isUnreadCoordinatorTell).length;
+}
+
 export function getCachedUnreadCount(cache: NotificationsCache | undefined): number {
 	return (
 		cache?.pages[0]?.unreadCount ?? getCachedNotifications(cache).filter((item) => item.status === "unread").length
@@ -566,7 +598,8 @@ export function createNotificationsTransport(
 				}
 				const inserted = mergeUnreadNotification(queryClient, event.notification);
 				mergeRecentNotification(queryClient, event.notification);
-				if (inserted) {
+				// A coordinator message never reaches the OS: no banner, bounce or sound (see isBellNotification).
+				if (inserted && isBellNotification(event.notification)) {
 					void aoBridge.notifications.show({
 						id: event.notification.id,
 						title: event.notification.title,

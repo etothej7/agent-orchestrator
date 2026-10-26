@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { NOTIFICATION_SIGNAL_POLICY, type NotificationSignalPolicy } from "../shared/notification-signal-policy";
 import {
 	dockBounceType,
+	planNotificationSignals,
 	osToastChimeControllable,
 	shouldReplaceBounce,
 	shouldSignalAttention,
@@ -125,5 +127,41 @@ describe("dockBounceType", () => {
 	it("bounces once for unknown or missing types", () => {
 		expect(dockBounceType("some_future_type")).toBe("informational");
 		expect(dockBounceType(undefined)).toBe("informational");
+	});
+});
+
+describe("planNotificationSignals", () => {
+	const everything: NotificationSignalPolicy = { osBanners: true, dockBounce: true, sound: true, taskbarFlash: true };
+	const base = { title: "t", soundNotificationsEnabled: true, toastSupported: true } as const;
+
+	it("ships with every OS signal off", () => {
+		expect(NOTIFICATION_SIGNAL_POLICY).toEqual({ osBanners: false, dockBounce: false, sound: false, taskbarFlash: false });
+	});
+
+	it.each(ALL_TYPES)("raises no banner, bounce, sound or flash for %s by default, on any platform, focused or not", (type) => {
+		for (const platform of ["darwin", "win32", "linux"] as const) {
+			for (const looking of [true, false]) {
+				for (const purpose of [undefined, "blocking_decision", "stopped_work", "verified_result"]) {
+					expect(planNotificationSignals({ ...base, type, purpose, platform, looking })).toEqual({ sound: false, banner: false, dockBounce: null, flash: false });
+				}
+			}
+		}
+	});
+
+	it("keeps the old behaviour available behind the policy: a banner and a critical bounce when not looking", () => {
+		expect(planNotificationSignals({ ...base, type: "needs_input", platform: "darwin", looking: false }, everything)).toEqual({ sound: true, banner: true, dockBounce: "critical", flash: false });
+		expect(planNotificationSignals({ ...base, type: "needs_input", platform: "win32", looking: false }, everything)).toEqual({ sound: true, banner: true, dockBounce: null, flash: true });
+	});
+
+	it("stays quiet while the person is looking, even with the policy on", () => {
+		expect(planNotificationSignals({ ...base, type: "needs_input", platform: "darwin", looking: true }, everything)).toEqual({ sound: false, banner: false, dockBounce: null, flash: false });
+	});
+
+	it("each signal has its own switch", () => {
+		const only = (key: keyof NotificationSignalPolicy): NotificationSignalPolicy => ({ osBanners: false, dockBounce: false, sound: false, taskbarFlash: false, [key]: true });
+		const plan = (policy: NotificationSignalPolicy) => planNotificationSignals({ ...base, type: "needs_input", platform: "darwin", looking: false }, policy);
+		expect(plan(only("osBanners"))).toEqual({ sound: false, banner: true, dockBounce: null, flash: false });
+		expect(plan(only("dockBounce"))).toEqual({ sound: false, banner: false, dockBounce: "critical", flash: false });
+		expect(plan(only("sound"))).toEqual({ sound: true, banner: false, dockBounce: null, flash: false });
 	});
 });

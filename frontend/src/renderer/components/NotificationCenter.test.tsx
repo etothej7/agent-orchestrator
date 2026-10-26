@@ -690,122 +690,55 @@ describe("NotificationCenter", () => {
 	});
 
 	describe("coordinator messages (ao ask / ao tell)", () => {
-		const message = (purpose: NonNullable<NotificationDTO["purpose"]>, title: string, body: string, status: "read" | "unread" = "unread"): NotificationDTO => ({
+		const message = (purpose: NonNullable<NotificationDTO["purpose"]>, status: "read" | "unread" = "unread"): NotificationDTO => ({
 			id: `ntf_${purpose}`,
 			sessionId: "coord-1",
 			projectId: "overall",
 			prUrl: "",
 			type: "coordinator_message",
 			purpose,
-			title,
-			body,
+			title: `Coordinator ${purpose}`,
+			body: `Body of ${purpose}`,
 			status,
 			createdAt: "2026-07-21T12:00:00Z",
 			target: { kind: "session", sessionId: "coord-1" },
 		});
-		const ask = message("blocking_decision", "Pick the migration order", "Both plans touch billing. Which first?");
-		const result = message("verified_result", "Story 12 verified", "Fixed at abc123; all checks passed.");
-		const stopped = message("stopped_work", "Work stopped on story 14", "The manager exited and cannot be restarted.");
-		const scope = message("scope_question", "Is the export in scope?", "The brief does not say.");
-		const completion = message("completion_decision", "Ready to call story 9 done?", "Evidence attached.");
+		const purposes = ["blocking_decision", "scope_question", "completion_decision", "verified_result", "stopped_work"] as const;
 
-		function showOnly(...items: NotificationDTO[]) {
-			const query = notificationQueryResult("all");
-			query.data.pages[0].notifications = items;
-			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? query : notificationQueryResult(status)));
-			workspaceQueryMock.mockReturnValue({
-				data: [{ id: "overall", name: "Coordinator storage", sessions: [{ id: "coord-1", isTerminated: false, status: "working", title: "Main conversation" }] }],
-				isError: false, isPending: false, isSuccess: true, refetch: vi.fn(),
-			});
+		function withCoordinatorMessages() {
+			const all = notificationQueryResult("all");
+			all.data.pages[0].notifications = [...purposes.map((purpose) => message(purpose)), ...allNotifications];
+			const unread = notificationQueryResult("unread");
+			unread.data.pages[0].notifications = [...purposes.map((purpose) => message(purpose)), ...unreadNotifications];
+			unread.data.pages[0].unreadCount = unreadNotifications.length + purposes.length;
+			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? all : status === "unread" ? unread : notificationQueryResult(status)));
 		}
 
-		it("shows the coordinator's own title and message with a purpose label for each kind", async () => {
-			showOnly(ask, scope, completion, result, stopped);
+		it("never lists a coordinator message: the chat and the Dock badge carry them, the bell does not", async () => {
+			withCoordinatorMessages();
 			renderNotificationCenter();
 			await clickOpen();
 			const rows = within(screen.getByRole("list")).getAllByRole("listitem");
-			expect(rows).toHaveLength(5);
-			const row = (title: string) => rows.find((candidate) => within(candidate).queryByLabelText(title))!;
-			expect(within(row("Pick the migration order")).getByText("Decision needed")).toBeInTheDocument();
-			expect(within(row("Pick the migration order")).getByText("Both plans touch billing. Which first?")).toBeInTheDocument();
-			expect(within(row("Is the export in scope?")).getByText("Scope question")).toBeInTheDocument();
-			expect(within(row("Ready to call story 9 done?")).getByText("Completion decision")).toBeInTheDocument();
-			expect(within(row("Story 12 verified")).getByText("Verified result")).toBeInTheDocument();
-			expect(within(row("Work stopped on story 14")).getByText("Work stopped")).toBeInTheDocument();
+			expect(rows).toHaveLength(allNotifications.length);
+			for (const purpose of purposes) {
+				expect(screen.queryByText(`Coordinator ${purpose}`)).not.toBeInTheDocument();
+			}
 		});
 
-		it("tells a decision, a result and stopped work apart by icon as well as colour", async () => {
-			showOnly(ask, result, stopped);
+		it("does not count them in the bell's unread number", async () => {
+			withCoordinatorMessages();
+			renderNotificationCenter();
+			expect(screen.getByRole("button", { name: `${unreadNotifications.length} unread notifications` })).toBeInTheDocument();
+		});
+
+		it("does not mark them read when the panel opens: only seeing them in the chat does", async () => {
+			withCoordinatorMessages();
 			renderNotificationCenter();
 			await clickOpen();
-			const iconOf = (title: string) => {
-				const row = within(screen.getByRole("list")).getAllByRole("listitem").find((candidate) => within(candidate).queryByLabelText(title))!;
-				return row.querySelector("svg")!;
-			};
-			const classes = [iconOf("Pick the migration order"), iconOf("Story 12 verified"), iconOf("Work stopped on story 14")].map((icon) => icon.getAttribute("class"));
-			expect(new Set(classes.map((value) => value?.match(/lucide-[\w-]+/)?.[0])).size).toBe(3);
-			expect(iconOf("Story 12 verified").parentElement).toHaveClass("text-success");
-			expect(iconOf("Pick the migration order").parentElement).toHaveClass("text-warning");
-		});
-
-		it("opens the coordinator conversation from the row and never offers restore for it", async () => {
-			showOnly(ask);
-			renderNotificationCenter();
-			await clickOpen();
-			expect(screen.queryByRole("button", { name: "Restore session" })).not.toBeInTheDocument();
-			await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
-			expect(navigateMock).toHaveBeenCalledWith({
-				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId: "overall", sessionId: "coord-1" },
-			});
-		});
-
-		describe("opening a coordinator message", () => {
-			const workspacesWith = (sessions: unknown[]) => workspaceQueryMock.mockReturnValue({
-				data: [{ id: "overall", name: "Coordinator storage", sessions }],
-				isError: false, isPending: false, isSuccess: true, refetch: vi.fn(),
-			});
-			const configured = () => {
-				const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-				client.setQueryData(["coordination"], { coordinatorProjectId: "overall" });
-				return client;
-			};
-
-			it("goes to the running coordinator when the sending session has ended", async () => {
-				showOnly(ask);
-				workspacesWith([
-					{ id: "coord-1", kind: "orchestrator", isTerminated: true, status: "terminated", title: "Old", createdAt: "2026-07-20T00:00:00Z" },
-					{ id: "coord-2", kind: "orchestrator", isTerminated: false, status: "working", title: "Main conversation", createdAt: "2026-07-21T00:00:00Z" },
-				]);
-				renderNotificationCenter(configured());
-				await clickOpen();
-				await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
-				await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: "overall", sessionId: "coord-2" },
-				}));
-				expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ params: { projectId: "overall", sessionId: "coord-1" } }));
-			});
-
-			it("falls back to the sending session when no coordinator is running, and never starts one", async () => {
-				showOnly(ask);
-				workspacesWith([{ id: "coord-1", kind: "orchestrator", isTerminated: true, status: "terminated", title: "Old" }]);
-				renderNotificationCenter(configured());
-				await clickOpen();
-				await userEvent.click(screen.getByText("Both plans touch billing. Which first?"));
-				await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
-					to: "/projects/$projectId/sessions/$sessionId",
-					params: { projectId: "overall", sessionId: "coord-1" },
-				}));
-			});
-		});
-
-		it("keeps an unknown purpose readable instead of dropping the notification", async () => {
-			showOnly({ ...ask, purpose: undefined });
-			renderNotificationCenter();
-			await clickOpen();
-			expect(screen.getByLabelText("Pick the migration order")).toBeInTheDocument();
-			expect(screen.getByText("Both plans touch billing. Which first?")).toBeInTheDocument();
+			await waitFor(() => expect(markAllMock).toHaveBeenCalled());
+			const ids = markAllMock.mock.calls.flatMap((call) => call[0] as string[]);
+			expect(ids.length).toBeGreaterThan(0);
+			expect(ids.filter((id) => id.startsWith("ntf_") && purposes.some((purpose) => id === `ntf_${purpose}`))).toEqual([]);
 		});
 	});
 

@@ -17,6 +17,7 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCoordinatorAskStatus } from "../../hooks/useCoordinatorAskStatus";
+import { useReadCoordinatorTells } from "../../hooks/useReadCoordinatorTells";
 import { useChatPermissionModes } from "../../hooks/useChatPermissionModes";
 import { useChatModelChoices } from "../../hooks/useChatModelChoices";
 import {
@@ -237,6 +238,8 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const [chosenSwitch, setChosenSwitch] = useState<PendingAgentSwitch>();
 	// The chat is the tab in front: not a file, terminal or reviewer tab.
 	const chatInFront = !workspaceFileActive && !workspaceActiveTabKey && !reviewerTarget && !reviewerChatSelected && !shellTarget;
+	// Results and stops count on the Dock badge until they are seen here, in the focused window.
+	useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items);
 	// Sending is the switch, so a pick is dropped once another tab comes forward: a message
 	// typed on coming back could otherwise go to an agent no longer meant.
 	useEffect(() => {

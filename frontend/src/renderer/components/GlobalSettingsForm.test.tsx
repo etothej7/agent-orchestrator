@@ -390,16 +390,10 @@ describe("GlobalSettingsForm", () => {
 		expect(useLocaleStore.getState().locale).toBe("zh-CN");
 	});
 
-	it("toggles sound notifications on and persists the change", async () => {
-		const user = userEvent.setup();
+	it("offers no sound notification setting: the sound is off by policy", async () => {
 		renderForm();
-		const toggle = await screen.findByRole("switch", { name: "Sound notifications" });
-		expect(toggle).toBeChecked();
-
-		await user.click(toggle);
-
-		await waitFor(() => expect(setUiSettings).toHaveBeenCalledWith({ soundNotificationsEnabled: false }));
-		expect(toggle).not.toBeChecked();
+		await screen.findByLabelText("Settings");
+		expect(screen.queryByRole("switch", { name: "Sound notifications" })).not.toBeInTheDocument();
 	});
 
 	it("shows pending daemon cleanup without claiming opt-out completed", async () => {
@@ -482,19 +476,6 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.queryByLabelText("Shell executable")).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Edit Shell executable" })).toHaveTextContent("C:\\path\\to\\shell.exe");
 		expect(setUiSettings).not.toHaveBeenCalled();
-	});
-
-	it("keeps the current sound notifications value and reports a persistence failure", async () => {
-		setUiSettings.mockRejectedValue(new Error("disk full"));
-		const user = userEvent.setup();
-		renderForm();
-		const toggle = await screen.findByRole("switch", { name: "Sound notifications" });
-
-		await user.click(toggle);
-
-		expect(await screen.findByRole("alert")).toHaveTextContent("Could not save the sound notifications preference.");
-		expect(useSoundNotificationsStore.getState().enabled).toBe(true);
-		expect(toggle).toBeChecked();
 	});
 
 	it("keeps the current language and reports a persistence failure", async () => {
