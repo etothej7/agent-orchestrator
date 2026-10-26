@@ -78,6 +78,10 @@ class CoordinatorVisibility(a.Harness):
         if not self.args.keep_harness:
             conn.execute("update sessions set harness='codex', model='', effort='', agent_session_id='', provider_conversation_id='' where id=?", (COORD,))
             conn.execute("update conversations set model=NULL, reasoning_effort=NULL, approval_mode='auto', account_json=NULL, thread_state_json=NULL, opencode_mode='' where current_session_id=? or session_id=?", (COORD, COORD))
+        # The copied project-level conversation follows the newest coordinator session. Its branches still
+        # name the old Claude thread; clear those provider thread ids (history is untouched) so the new
+        # Codex session's handle is not rejected as a mismatch on daemon restart.
+        conn.execute("update conversation_branches set provider_conversation_id='' where conversation_id in (select id from conversations where current_session_id=? or session_id=?)", (COORD, COORD))
         # No live host exists in scratch, so the copied coordinator is marked terminated and brought
         # back through the daemon's own `restore` (same session id and conversation, no new session).
         conn.execute("update sessions set is_terminated=1 where id=?", (COORD,))
