@@ -2476,6 +2476,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/conversation/human-decisions/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the human answered one of the coordinator's questions */
+        post: operations["resolveHumanDecision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve": {
         parameters: {
             query?: never;
@@ -6333,6 +6350,9 @@ export interface components {
             projectId: string;
             /** @enum {string} */
             purpose?: "scope_question" | "blocking_decision" | "completion_decision" | "verified_result" | "stopped_work";
+            /** @enum {string} */
+            resolution?: "answered" | "coordinator";
+            resolutionNote?: string;
             /** Format: date-time */
             resolvedAt?: null | string;
             sessionId: string;
@@ -6654,6 +6674,10 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        ResolveHumanDecisionRequest: {
+            id: string;
+            note?: string;
+        };
         RestoreArtifactVersionRequest: {
             /** @description Artifact-directory-relative file path, as listed in the session's artifactFiles. */
             path: string;
@@ -6747,6 +6771,7 @@ export interface components {
             clientMessageId?: string;
             continuation?: boolean;
             excerpts?: components["schemas"]["ConversationExcerptReferenceRequest"][];
+            replyToAskId?: string;
             resources?: components["schemas"]["ConversationResourceContentRequest"][];
             text: string;
         };
@@ -7501,6 +7526,7 @@ export interface components {
             attachments?: components["schemas"]["ConversationImageContentRequest"][];
             clientMessageId?: string;
             recoverOnly?: boolean;
+            replyToAskId?: string;
             senderSessionId?: string;
             text: string;
         };
@@ -16705,6 +16731,69 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["HumanDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HumanDecisionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resolveHumanDecision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveHumanDecisionRequest"];
             };
         };
         responses: {

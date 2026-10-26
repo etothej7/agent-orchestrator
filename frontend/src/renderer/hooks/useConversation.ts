@@ -75,6 +75,8 @@ export interface ConversationSendInput {
 	clientMessageId?: string;
 	/** The user's one-click "continue" after stopping a turn. */
 	continuation?: boolean;
+	/** The coordinator question this message answers: its message id. Only an explicit reply closes a question. */
+	replyToAskId?: string;
 	/** Switches the agent first; the new agent answers this message as its first turn. */
 	providerSwitch?: Omit<components["schemas"]["ProviderSwitchRequest"], "idempotencyKey" | "message">;
 	/** What the transcript's "Switched" line shows while the switch runs. Never sent. */
@@ -902,7 +904,7 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean }) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean; replyToAskId?: string }) => {
 			const { data, error } = await clientForSessionHost(hostId).POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
@@ -1297,10 +1299,10 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
-		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
+		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean, replyToAskId?: string): Promise<ChatSteerOutcome> => {
 			try {
 				if (sessionId) recordDirectWorkerInteraction(sessionId, "chat", "worker", hostId);
-				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
+				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly, replyToAskId });
 				return { status: "accepted" };
 			} catch (error) {
 				const outcome = steerNonAcceptance(error);
@@ -1933,6 +1935,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		senderProjectId: wire.senderProjectId,
 		senderDisplayName: wire.senderDisplayName,
 		clientMessageId: wire.clientMessageId,
+		purpose: wire.purpose || undefined,
 		audience: toAudienceTag(wire.audience),
 		createdAt: wire.createdAt,
 	};

@@ -1,5 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { typeInLexicalEditor } from "../../test/lexical";
 import { chatFixtureEmpty } from "../../lib/chat-fixture";
 import type { ConversationAudienceTag, ConversationItem, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
 import { TooltipProvider } from "../ui/tooltip";
@@ -14,10 +16,11 @@ const at = (minute: number) => `2026-10-26T10:${String(minute % 59).padStart(2, 
 const turn = (id: string, minute: number, state: ConversationTurn["state"], audience?: ConversationAudienceTag): ConversationTurn => ({
 	id, state, requestedAt: at(minute), startedAt: at(minute), completedAt: state === "running" ? undefined : at(minute + 1), hasHumanPrompt: audience !== "internal", audience,
 });
-const message = (id: string, turnId: string | undefined, sequence: number, role: "user" | "assistant", origin: "human" | "automation" | "daemon" | "provider", text: string, audience?: ConversationAudienceTag): ConversationItem => ({
-	kind: "message", id, turnId, sequence, revision: 1, role, origin, text, streaming: false, audience, createdAt: at(sequence),
+const message = (id: string, turnId: string | undefined, sequence: number, role: "user" | "assistant", origin: "human" | "automation" | "daemon" | "provider", text: string, audience?: ConversationAudienceTag, purpose?: string): ConversationItem => ({
+	kind: "message", id, turnId, sequence, revision: 1, role, origin, text, streaming: false, audience, purpose, createdAt: at(sequence),
 });
-const tell = (sequence: number, audience?: ConversationAudienceTag) => message("tell", undefined, sequence, "assistant", "daemon", "Verified: the install succeeded.", audience);
+const tell = (sequence: number, audience?: ConversationAudienceTag) => message("tell", undefined, sequence, "assistant", "daemon", "Verified: the install succeeded.", audience, "verified_result");
+const ask = (sequence: number, audience?: ConversationAudienceTag) => message("decision-q1", undefined, sequence, "assistant", "daemon", "Which migration order should we use?\n\nWhy your input is needed: both touch billing.", audience, "blocking_decision");
 
 function snapshot(items: ConversationItem[], turns: ConversationTurn[], running = false): ConversationSnapshot {
 	return {
@@ -104,5 +107,128 @@ describe("a tell or ask inside an automation turn", () => {
 		for (const region of document.querySelectorAll('[data-audience="internal"]')) {
 			expect(within(region as HTMLElement).queryByText("Verified: the install succeeded.")).not.toBeInTheDocument();
 		}
+	});
+});
+
+describe("the From your coordinator block", () => {
+	it("labels a tell and is never a bare line", () => {
+		render(view(snapshot([message("u", "ed", 10, "user", "human", "Hi", "human"), tell(21, "human")], [turn("ed", 5, "completed", "human")])));
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		expect(within(block).getByText("Verified: the install succeeded.")).toBeInTheDocument();
+		expect(within(block).getByText("From your coordinator")).toBeInTheDocument();
+		expect(within(block).queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+	});
+
+	it("labels stopped work", () => {
+		render(view(snapshot([{ ...tell(21), purpose: "stopped_work" } as ConversationItem], [])));
+		expect(screen.getByRole("region", { name: "From your coordinator: Work stopped" })).toBeInTheDocument();
+	});
+
+	it("sits where it happened inside a completed Ed turn: visible, before the turn's final answer", () => {
+		render(view(snapshot([
+			message("u", "ed", 738, "user", "human", "it appears to have restarted"),
+			message("a1", "ed", 739, "assistant", "provider", "You are on the new version."),
+			tell(742),
+			message("a2", "ed", 743, "assistant", "provider", "The send printed nothing."),
+			message("a3", "ed", 745, "assistant", "provider", "The update worked."),
+			message("u2", "ed2", 746, "user", "human", "Thanks"),
+		], [turn("ed", 50, "completed"), turn("ed2", 55, "completed")])));
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		const final = screen.getByText("The update worked.");
+		const next = screen.getByText("Thanks");
+		expect(block.compareDocumentPosition(final) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(final.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		// It is not the turn's answer: only one message carries the copy action.
+		expect(within(block).queryByRole("button", { name: /Copy message/ })).not.toBeInTheDocument();
+	});
+
+	it("between turns it is its own entry in sequence order", () => {
+		render(view(snapshot([
+			message("u", "ed", 10, "user", "human", "First"),
+			message("a", "ed", 11, "assistant", "provider", "First answer."),
+			tell(15),
+			message("u2", "ed2", 20, "user", "human", "Second"),
+			message("a2", "ed2", 21, "assistant", "provider", "Second answer."),
+		], [turn("ed", 5, "completed"), turn("ed2", 15, "completed")])));
+		const block = screen.getByRole("region", { name: /From your coordinator/ });
+		expect(screen.getByText("First answer.").compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(block.compareDocumentPosition(screen.getByText("Second")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it("scrolls into the transcript live while the turn runs, staying inside that turn", () => {
+		const items = (withTell: boolean) => snapshot([
+			message("u", "ed", 740, "user", "human", "Is it installed?"),
+			message("a1", "ed", 741, "assistant", "provider", "Checking."),
+			...(withTell ? [tell(742)] : []),
+		], [turn("ed", 50, "running")], true);
+		const rendered = render(view(items(false)));
+		expect(screen.queryByRole("region", { name: /From your coordinator/ })).not.toBeInTheDocument();
+		rendered.rerender(view(items(true)));
+		expect(screen.getByRole("region", { name: "From your coordinator: Verified result" })).toBeInTheDocument();
+	});
+});
+
+describe("answering a coordinator question", () => {
+	const renderAsk = (options: { onSend?: ReturnType<typeof vi.fn>; askStatusOf?: () => { open: boolean; resolution?: "answered" | "coordinator" } | undefined } = {}) =>
+		render(
+			<TooltipProvider>
+				<ChatWorkspace
+					snapshot={snapshot([message("u", "ed", 10, "user", "human", "Hi"), ask(21)], [turn("ed", 5, "completed")])}
+					onSend={options.onSend as never}
+					askStatusOf={options.askStatusOf as never}
+				/>
+			</TooltipProvider>,
+		);
+
+	it("offers Answer on an open question, which names the question above the composer and sends replyToAskId", async () => {
+		const onSend = vi.fn(async () => undefined);
+		renderAsk({ onSend, askStatusOf: () => ({ open: true }) });
+		await userEvent.click(screen.getByRole("button", { name: "Answer" }));
+		expect(screen.getByTestId("answering-chip")).toHaveTextContent("Answering: Which migration order should we use?");
+		await typeInLexicalEditor(screen.getByRole("combobox", { name: "Message the agent" }), "Billing first");
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await waitFor(() => expect(onSend).toHaveBeenCalled());
+		const call = onSend.mock.calls[0] as unknown[];
+		expect(call[0]).toBe("Billing first");
+		expect(call[4]).toBe("decision-q1");
+		await waitFor(() => expect(screen.queryByTestId("answering-chip")).not.toBeInTheDocument());
+	});
+
+	it("a message sent without choosing Answer carries no reply, and the chip can be dismissed", async () => {
+		const onSend = vi.fn(async () => undefined);
+		renderAsk({ onSend, askStatusOf: () => ({ open: true }) });
+		await userEvent.click(screen.getByRole("button", { name: "Answer" }));
+		await userEvent.click(screen.getByRole("button", { name: "Stop answering this question" }));
+		expect(screen.queryByTestId("answering-chip")).not.toBeInTheDocument();
+		await typeInLexicalEditor(screen.getByRole("combobox", { name: "Message the agent" }), "Unrelated");
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await waitFor(() => expect(onSend).toHaveBeenCalled());
+		expect((onSend.mock.calls[0] as unknown[])[4]).toBeUndefined();
+	});
+
+	it("shows an answered question as settled, with no Answer button", () => {
+		renderAsk({ askStatusOf: () => ({ open: false, resolution: "answered" }) });
+		const block = screen.getByRole("region", { name: "From your coordinator: Needs your decision" });
+		expect(within(block).getByText("Answered")).toBeInTheDocument();
+		expect(within(block).queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+	});
+
+	it("says when the coordinator resolved it", () => {
+		renderAsk({ askStatusOf: () => ({ open: false, resolution: "coordinator" }) });
+		expect(screen.getByText("Resolved by the coordinator")).toBeInTheDocument();
+	});
+
+	it("drops the answering chip once the question is settled elsewhere", async () => {
+		let open = true;
+		const rendered = renderAsk({ askStatusOf: () => ({ open }) });
+		await userEvent.click(screen.getByRole("button", { name: "Answer" }));
+		expect(screen.getByTestId("answering-chip")).toBeInTheDocument();
+		open = false;
+		rendered.rerender(
+			<TooltipProvider>
+				<ChatWorkspace snapshot={snapshot([message("u", "ed", 10, "user", "human", "Hi"), ask(21)], [turn("ed", 5, "completed")])} askStatusOf={(() => ({ open })) as never} />
+			</TooltipProvider>,
+		);
+		await waitFor(() => expect(screen.queryByTestId("answering-chip")).not.toBeInTheDocument());
 	});
 });
