@@ -1,105 +1,109 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDesktopQuitController } from "./desktop-quit";
+import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./desktop-quit";
 
-type QuitOptions = Parameters<typeof createDesktopQuitController>[0];
-
-function setup(overrides: Partial<QuitOptions> = {}) {
-	const options: QuitOptions = {
-		platform: "darwin",
-		hasTray: () => true,
-		isUpdateRestartRequested: () => false,
-		hasWindow: () => true,
-		closeWindow: vi.fn(),
-		hideDock: vi.fn(),
-		quit: vi.fn(),
-		...overrides,
+/**
+ * A stand-in for Electron's app: `quit()` raises `before-quit`; the app exits unless the
+ * handler prevented it.
+ */
+function harness(options: { drafts?: number; confirm?: boolean[] } = {}) {
+	const answers = [...(options.confirm ?? [])];
+	const log: string[] = [];
+	let exited = 0;
+	const controller = createDesktopQuitController({
+		draftRiskCount: () => options.drafts ?? 0,
+		confirmDraftLeave: () => {
+			log.push("ask");
+			return answers.shift() ?? false;
+		},
+		quit: () => app.quit(),
+		relaunch: () => log.push("relaunch"),
+	});
+	const app = {
+		quit() {
+			log.push("quit");
+			const event = { prevented: false, preventDefault() { this.prevented = true; } };
+			if (!controller.handleBeforeQuit(event)) {
+				if (!event.prevented) exited += 1;
+			}
+		},
 	};
-	return { options, controller: createDesktopQuitController(options), event: { preventDefault: vi.fn() } };
+	return { controller, app, log, exits: () => exited };
 }
 
 describe("desktop quit", () => {
-	it("closes the macOS window without quitting the tray or daemon owner", () => {
-		const { options, controller, event } = setup();
-		expect(controller.handleBeforeQuit(event)).toBe(true);
-		expect(event.preventDefault).toHaveBeenCalledOnce();
-		expect(options.closeWindow).toHaveBeenCalledOnce();
-		expect(options.quit).not.toHaveBeenCalled();
+	it("closing the last window keeps AO running on macOS and quits elsewhere", () => {
+		expect(shouldQuitWhenAllWindowsClosed("darwin")).toBe(false);
+		expect(shouldQuitWhenAllWindowsClosed("win32")).toBe(true);
+		expect(shouldQuitWhenAllWindowsClosed("linux")).toBe(true);
 	});
 
-	it("leaves the Dock once the quit-closed window is gone", () => {
-		const { options, controller, event } = setup();
-		controller.handleBeforeQuit(event);
-		expect(options.hideDock).not.toHaveBeenCalled();
-		controller.windowClosed();
-		expect(options.hideDock).toHaveBeenCalledOnce();
-	});
-
-	it("keeps the Dock icon when the draft guard cancels the close", () => {
-		const { options, controller, event } = setup();
-		controller.handleBeforeQuit(event);
-		controller.windowCloseCanceled();
-		controller.windowClosed();
-		expect(options.hideDock).not.toHaveBeenCalled();
-	});
-
-	it("keeps the Dock icon when the window is closed without quitting", () => {
-		const { options, controller } = setup();
-		controller.windowClosed();
-		expect(options.hideDock).not.toHaveBeenCalled();
-	});
-
-	it("leaves the Dock right away when quitting with no window, without exiting", () => {
-		const { options, controller, event } = setup({ hasWindow: () => false });
-		expect(controller.handleBeforeQuit(event)).toBe(true);
-		expect(event.preventDefault).toHaveBeenCalledOnce();
-		expect(options.hideDock).toHaveBeenCalledOnce();
-		expect(options.closeWindow).not.toHaveBeenCalled();
-		expect(options.quit).not.toHaveBeenCalled();
-	});
-
-	it("allows explicit full quit and its cleanup continuation", () => {
-		const { options, controller, event } = setup();
-		controller.quitCompletely();
-		expect(options.quit).toHaveBeenCalledOnce();
-		expect(controller.handleBeforeQuit(event)).toBe(false);
-		expect(controller.handleBeforeQuit(event)).toBe(false);
-		expect(event.preventDefault).not.toHaveBeenCalled();
-		expect(options.closeWindow).not.toHaveBeenCalled();
-	});
-
-	it("restores ordinary background quit after a full-quit draft warning is canceled", () => {
-		const { options, controller, event } = setup();
-		controller.quitCompletely();
-		controller.cancelQuit();
-		expect(controller.handleBeforeQuit(event)).toBe(true);
-		expect(options.closeWindow).toHaveBeenCalledOnce();
-	});
-
-	it("allows update restart, then backgrounds again if the update is canceled", () => {
-		let restarting = true;
-		const { controller, event } = setup({ isUpdateRestartRequested: () => restarting });
-		expect(controller.handleBeforeQuit(event)).toBe(false);
-		restarting = false;
-		expect(controller.handleBeforeQuit(event)).toBe(true);
-	});
-
-	it.each<NodeJS.Platform>(["win32", "linux"])("keeps %s quit behavior unchanged", (platform) => {
-		const { controller, event } = setup({ platform });
+	it("Cmd-Q, the app-menu Quit and an AppleEvent quit are a full exit: before-quit is not intercepted", () => {
+		const { controller } = harness();
+		const event = { preventDefault: vi.fn() };
 		expect(controller.handleBeforeQuit(event)).toBe(false);
 		expect(event.preventDefault).not.toHaveBeenCalled();
 	});
 
-	it("really exits if the tray could not be created, including early startup", () => {
-		const { controller, event } = setup({ hasTray: () => false });
-		expect(controller.handleBeforeQuit(event)).toBe(false);
-		expect(event.preventDefault).not.toHaveBeenCalled();
+	it("exits for real when quit is requested with nothing unsaved", () => {
+		const { app, exits } = harness();
+		app.quit();
+		expect(exits()).toBe(1);
 	});
 
-	it("does not intercept a full-quit cleanup continuation after background eligibility is revoked", () => {
-		let canBackground = true;
-		const { controller, event } = setup({ hasTray: () => canBackground });
-		canBackground = false;
-		expect(controller.handleBeforeQuit(event)).toBe(false);
-		expect(event.preventDefault).not.toHaveBeenCalled();
+	it("the tray's Quit AO Completely exits", () => {
+		const { controller, exits } = harness();
+		controller.quit();
+		expect(exits()).toBe(1);
+	});
+
+	it("an OS shutdown exits", () => {
+		const { controller, exits } = harness();
+		controller.quit();
+		expect(exits()).toBe(1);
+	});
+
+	it("an update relaunch starts the new AO, then exits", () => {
+		const { controller, log, exits } = harness();
+		controller.relaunchAndQuit();
+		expect(log).toEqual(["relaunch", "quit"]);
+		expect(exits()).toBe(1);
+	});
+
+	describe("unsaved drafts", () => {
+		it("hold a quit until the person agrees, then exit without asking twice", () => {
+			const { app, log, exits } = harness({ drafts: 1, confirm: [true] });
+			app.quit();
+			expect(log).toEqual(["quit", "ask", "quit"]);
+			expect(exits()).toBe(1);
+		});
+
+		it("declining keeps AO running and is asked again on the next quit", () => {
+			const { app, log, exits } = harness({ drafts: 1, confirm: [false, true] });
+			app.quit();
+			expect(exits()).toBe(0);
+			expect(log).toEqual(["quit", "ask"]);
+			app.quit();
+			expect(log).toEqual(["quit", "ask", "quit", "ask", "quit"]);
+			expect(exits()).toBe(1);
+		});
+
+		it("also guard the tray quit, shutdown and update relaunch paths", () => {
+			const declined = harness({ drafts: 2, confirm: [false] });
+			declined.controller.quit();
+			expect(declined.exits()).toBe(0);
+			const relaunch = harness({ drafts: 2, confirm: [false] });
+			relaunch.controller.relaunchAndQuit();
+			expect(relaunch.log).toEqual(["relaunch", "quit", "ask"]);
+			expect(relaunch.exits()).toBe(0);
+		});
+
+		it("tells the window-close handler a confirmed quit need not ask again, until reset", () => {
+			const { app, controller } = harness({ drafts: 1, confirm: [true] });
+			expect(controller.draftLeaveConfirmed()).toBe(false);
+			app.quit();
+			expect(controller.draftLeaveConfirmed()).toBe(true);
+			controller.resetDraftConfirmation();
+			expect(controller.draftLeaveConfirmed()).toBe(false);
+		});
 	});
 });

@@ -95,7 +95,7 @@ import {
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
-import { createDesktopQuitController } from "./main/desktop-quit";
+import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -376,24 +376,10 @@ let browserCleanupComplete = false;
 let browserQuitRequested = false;
 let createWindowPromise: Promise<void> | null = null;
 const desktopQuit = createDesktopQuitController({
-	platform: process.platform,
-	hasTray: () => trayController !== null && !browserQuitRequested,
-	isUpdateRestartRequested,
-	hasWindow: () => mainWindow !== null || createWindowPromise !== null,
-	closeWindow: () => {
-		if (mainWindow) mainWindow.close();
-		else if (createWindowPromise) {
-			void createWindowPromise
-				.catch((error) => console.error("failed to close pending main window:", error))
-				.then(() => {
-					// No window came of it: nothing will emit "closed", so settle now.
-					if (mainWindow) mainWindow.close();
-					else desktopQuit.windowClosed();
-				});
-		}
-	},
-	hideDock: () => app.dock?.hide(),
+	draftRiskCount: () => chatDraftRisks.length,
+	confirmDraftLeave: () => confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog),
 	quit: () => app.quit(),
+	relaunch: () => app.relaunch(),
 });
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
@@ -406,7 +392,6 @@ let terminalFocused = false;
 let terminalFontSizeFocused = false;
 let chatDraftRisks: ChatDraftBoundaryKind[] = [];
 let chatDraftDialog: ChatDraftDialogCopy | undefined;
-let chatDraftQuitConfirmed = false;
 let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
@@ -957,7 +942,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("will-prevent-unload", (event) => {
 		if (
 			chatDraftRisks.length > 0 &&
-			(chatDraftQuitConfirmed ||
+			(desktopQuit.draftLeaveConfirmed() ||
 				chatDraftWindowCloseConfirmed ||
 				confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog))
 		) {
@@ -966,20 +951,17 @@ async function createWindowInternal(): Promise<void> {
 			event.preventDefault();
 			return;
 		}
-		// Doing nothing honors the renderer's request to stay, so a quit's close
-		// did not happen and AO keeps its Dock icon.
-		desktopQuit.windowCloseCanceled();
+		// Doing nothing honors the renderer's request to stay.
 	});
 
 	mainWindow.on("close", (event) => {
 		const preventClose = shouldPreventUnsafeChatDraftClose(
 			chatDraftRisks,
-			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
+			desktopQuit.draftLeaveConfirmed() || chatDraftWindowCloseConfirmed,
 			(options) => dialog.showMessageBoxSync(options),
 			chatDraftDialog,
 		);
 		if (preventClose) {
-			desktopQuit.windowCloseCanceled();
 			event.preventDefault();
 			return;
 		}
@@ -1133,7 +1115,7 @@ async function createWindowInternal(): Promise<void> {
 	mainWindow.on("closed", () => {
 		chatDraftRisks = [];
 		chatDraftDialog = undefined;
-		chatDraftQuitConfirmed = false;
+		desktopQuit.resetDraftConfirmation();
 		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
@@ -1151,14 +1133,11 @@ async function createWindowInternal(): Promise<void> {
 		// the next bounce skip attaching one to the replacement window.
 		cancelDockBounce();
 		trayLifecycle.clearPendingTarget();
-		desktopQuit.windowClosed();
 	});
 }
 
 function createWindow(): Promise<void> {
 	if (createWindowPromise) return createWindowPromise;
-	// A background quit hid the Dock icon; bring it back with the window.
-	void app.dock?.show();
 	const pending = createWindowInternal();
 	createWindowPromise = pending;
 	void pending.then(
@@ -2620,7 +2599,7 @@ ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unkn
 	) return;
 	chatDraftRisks = [...parsed];
 	chatDraftDialog = parsedCopy;
-	chatDraftQuitConfirmed = false;
+	desktopQuit.resetDraftConfirmation();
 	chatDraftWindowCloseConfirmed = false;
 });
 
@@ -3000,8 +2979,7 @@ ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAnd
 // in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
 // already off on the failed path, so quitting can't apply a half-prepared build.
 ipcMain.handle("updates:relaunch", () => {
-	app.relaunch();
-	desktopQuit.quitCompletely();
+	desktopQuit.relaunchAndQuit();
 });
 
 // Whether THIS boot is a post-update relaunch, so the startup loader can show
@@ -3498,12 +3476,12 @@ app.whenReady().then(async () => {
 		trayController = createTrayController({
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
-			quitCompletely: desktopQuit.quitCompletely,
+			quitCompletely: () => desktopQuit.quit(),
 			locale: initialUiSettings.locale,
 		});
 	}
 	if (process.platform === "darwin") {
-		powerMonitor.on("shutdown", () => desktopQuit.quitCompletely());
+		powerMonitor.on("shutdown", () => desktopQuit.quit());
 	}
 	// Boot the daemon alongside the window, not after it: the board cannot show
 	// until the daemon answers. createWindow links the browser runtime itself
@@ -3540,30 +3518,17 @@ app.whenReady().then(async () => {
 
 // Daemon teardown is now handled via the OS-native supervisor socket: the daemon
 // self-stops ~5s after the last client (this process) drops its connection.
-// Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
-// Full exit drops the supervisor socket, stopping the app-owned daemon after
-// its grace period. Sessions survive.
+// Quit and Cmd-Q exit AO; closing the window leaves it running in the Dock and tray.
+// Exiting drops the supervisor socket, stopping the app-owned daemon after its
+// grace period. Sessions survive.
 setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
+	// Quit and Cmd-Q are a full exit; only the unsaved-draft confirmation can hold one back.
 	if (desktopQuit.handleBeforeQuit(event)) return;
-	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
-		event.preventDefault();
-		if (confirmUnsafeChatDraftLeave(
-			chatDraftRisks,
-			(options) => dialog.showMessageBoxSync(options),
-			chatDraftDialog,
-		)) {
-			chatDraftQuitConfirmed = true;
-			app.quit();
-		} else {
-			desktopQuit.cancelQuit();
-		}
-		return;
-	}
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	disposeBrowserStreamLink();
@@ -3628,7 +3593,5 @@ process.on("exit", () => {
 });
 
 app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") {
-		app.quit();
-	}
+	if (shouldQuitWhenAllWindowsClosed(process.platform)) app.quit();
 });

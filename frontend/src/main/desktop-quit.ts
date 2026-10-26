@@ -1,52 +1,55 @@
 type QuitEvent = { preventDefault(): void };
 
+/**
+ * Whether closing the last window quits AO. Never on macOS: the window goes, AO keeps
+ * running in the Dock and menu-bar tray (its daemon, mobile and remote access stay up).
+ * Quit and Cmd-Q are different: they are a full exit on every platform.
+ */
+export function shouldQuitWhenAllWindowsClosed(platform: NodeJS.Platform): boolean {
+	return platform !== "darwin";
+}
+
+/**
+ * Quit is a real exit. Nothing here hides AO to the tray; the only thing that can hold
+ * a quit back is the unsaved-draft confirmation, and declining it leaves AO running.
+ */
 export function createDesktopQuitController(options: {
-	platform: NodeJS.Platform;
-	hasTray(): boolean;
-	isUpdateRestartRequested(): boolean;
-	hasWindow(): boolean;
-	closeWindow(): void;
-	hideDock(): void;
+	/** Boundaries (unsent drafts, edits) that would be lost by leaving. */
+	draftRiskCount(): number;
+	/** Asks the person; true means leave anyway. */
+	confirmDraftLeave(): boolean;
 	quit(): void;
+	relaunch(): void;
 }) {
-	let quitCompletelyRequested = false;
-	let hideDockOnWindowClosed = false;
+	let draftLeaveConfirmed = false;
 
 	return {
+		/** The `before-quit` handler. True when the quit was held for the draft confirmation. */
 		handleBeforeQuit(event: QuitEvent): boolean {
-			if (
-				options.platform !== "darwin" ||
-				!options.hasTray() ||
-				quitCompletelyRequested ||
-				options.isUpdateRestartRequested()
-			) return false;
-
+			if (options.draftRiskCount() === 0 || draftLeaveConfirmed) return false;
 			event.preventDefault();
-			if (options.hasWindow()) {
-				// Leave the Dock once the window is really gone: the draft guard can
-				// still cancel the close.
-				hideDockOnWindowClosed = true;
-				// close(), not destroy(): the existing unsaved-draft guard still runs.
-				options.closeWindow();
-			} else {
-				options.hideDock();
+			if (options.confirmDraftLeave()) {
+				draftLeaveConfirmed = true;
+				options.quit();
 			}
 			return true;
 		},
-		windowClosed(): void {
-			if (!hideDockOnWindowClosed) return;
-			hideDockOnWindowClosed = false;
-			options.hideDock();
+		/** A quit was confirmed through the draft dialog; closing the window must not ask again. */
+		draftLeaveConfirmed(): boolean {
+			return draftLeaveConfirmed;
 		},
-		windowCloseCanceled(): void {
-			hideDockOnWindowClosed = false;
+		/** The drafts changed or the window went away: the next quit asks afresh. */
+		resetDraftConfirmation(): void {
+			draftLeaveConfirmed = false;
 		},
-		quitCompletely(): void {
-			quitCompletelyRequested = true;
+		/** The tray's "Quit AO Completely" and the OS shutdown. */
+		quit(): void {
 			options.quit();
 		},
-		cancelQuit(): void {
-			quitCompletelyRequested = false;
+		/** Update retry: start a fresh AO after this one exits. */
+		relaunchAndQuit(): void {
+			options.relaunch();
+			options.quit();
 		},
 	};
 }
