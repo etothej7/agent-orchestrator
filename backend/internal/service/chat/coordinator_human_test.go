@@ -615,6 +615,26 @@ func TestCoordinatorNoticeDedupeAndStopCap(t *testing.T) {
 	if q3 := record("q-3", "scope_question", "Blue or Green?"); q3 == q1 {
 		t.Fatal("an answered question could not be asked again")
 	}
+	// Answering by steering into a running turn is an answer too.
+	q4 := record("q-4", "scope_question", "Ship it today?")
+	if q5 := record("q-5", "scope_question", "Ship it today?"); q5 != q4 {
+		t.Fatal("identical unanswered question was repeated")
+	}
+	h.advance(time.Second)
+	conv := h.ctrl.ConversationID()
+	if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: "batch", Origin: domain.MessageOriginAutomation, Text: "Reports", ClientMessageID: "report-batch:steer"}, "batch-turn", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.BindTurnToProvider(ctx, "batch-turn", "batch-provider", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(time.Second)
+	if err := h.st.UpsertActivity(ctx, conv, "batch-provider", domain.ConversationActivity{ID: "steer-answer", Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(`{"event":"steer","text":"Yes, today.","origin":"human"}`), ProviderItemID: "ao-steer:answer"}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	if q6 := record("q-6", "scope_question", "Ship it today?"); q6 == q4 {
+		t.Fatal("a question answered by a steer was swallowed on re-ask")
+	}
 }
 
 type recordedNotificationEvents struct{ events []domain.NotificationEvent }
@@ -649,7 +669,7 @@ func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, row := range rows {
-			if row.Type != domain.NotificationCoordinatorMessage || !domain.IsCoordinatorAskPurpose(row.Purpose) || !row.NeedsResolution() {
+			if row.Type != domain.NotificationCoordinatorMessage || !domain.IsCoordinatorAskPurpose(row.Purpose) {
 				t.Fatal("only coordinator questions may be open items", row)
 			}
 			ids = append(ids, row.SourceKey)

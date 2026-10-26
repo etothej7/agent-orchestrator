@@ -18,6 +18,9 @@ SELECT EXISTS (
     SELECT 1 FROM coordinator_human_messages h
     JOIN conversation_messages m ON m.id=h.message_id
     WHERE h.purpose = 'human_request' AND m.conversation_id = ?1 AND m.created_at > ?2
+) OR EXISTS (
+    SELECT 1 FROM conversation_activities s
+    WHERE s.conversation_id = ?1 AND s.created_at > ?2 AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
 )
 `
 
@@ -26,13 +29,14 @@ type CoordinatorHumanRequestedSinceParams struct {
 	Since          time.Time
 }
 
-// An answered question may be asked again: a newer human request means the
-// earlier ask was seen and responded to.
-func (q *Queries) CoordinatorHumanRequestedSince(ctx context.Context, arg CoordinatorHumanRequestedSinceParams) (bool, error) {
+// An answered question may be asked again: a newer human request, or Ed's own
+// steer into a running turn, means the earlier ask was seen and responded to.
+// This is the same notion of "Ed replied" the answer resolver uses.
+func (q *Queries) CoordinatorHumanRequestedSince(ctx context.Context, arg CoordinatorHumanRequestedSinceParams) (sql.NullBool, error) {
 	row := q.db.QueryRowContext(ctx, coordinatorHumanRequestedSince, arg.ConversationID, arg.Since)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+	var column_1 sql.NullBool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const getCoordinatorHumanMessage = `-- name: GetCoordinatorHumanMessage :one

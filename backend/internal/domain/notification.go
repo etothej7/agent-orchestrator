@@ -47,7 +47,9 @@ func (t NotificationType) NeedsResolution() bool {
 
 // IsCoordinatorAskPurpose reports whether a coordinator_message purpose is a
 // question or decision that needs Ed (ao ask), as opposed to a result or stop
-// notice (ao tell).
+// notice (ao tell). Such a notification stays open until Ed replies or dismisses
+// it. The open-item lists and counts in queries/notifications.sql enumerate the
+// same three purposes; keep them in step.
 func IsCoordinatorAskPurpose(purpose string) bool {
 	switch purpose {
 	case "scope_question", "blocking_decision", "completion_decision":
@@ -55,13 +57,6 @@ func IsCoordinatorAskPurpose(purpose string) bool {
 	default:
 		return false
 	}
-}
-
-// NeedsResolution reports whether this notification stays open: a type that
-// needs resolution, or a coordinator question awaiting Ed's reply. Results and
-// stops are one-time facts.
-func (r NotificationRecord) NeedsResolution() bool {
-	return r.Type.NeedsResolution() || (r.Type == NotificationCoordinatorMessage && IsCoordinatorAskPurpose(r.Purpose))
 }
 
 // NotificationStatus is the seen state for a stored notification. The stored

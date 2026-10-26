@@ -151,10 +151,11 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 			if err == nil && !prior.CreatedAt.Before(now.Add(-CoordinatorDedupeWindow)) {
 				answered := false
 				if !notice {
-					answered, err = q.CoordinatorHumanRequestedSince(ctx, gen.CoordinatorHumanRequestedSinceParams{ConversationID: msg.ConversationID, Since: prior.CreatedAt})
+					replied, err := q.CoordinatorHumanRequestedSince(ctx, gen.CoordinatorHumanRequestedSinceParams{ConversationID: msg.ConversationID, Since: prior.CreatedAt})
 					if err != nil {
 						return err
 					}
+					answered = replied.Valid && replied.Bool
 				}
 				if !answered {
 					recordedID = prior.MessageID // already announced; reach the human once

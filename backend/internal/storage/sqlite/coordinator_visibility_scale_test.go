@@ -7,12 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	sqlstore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // seedCoordinatorConversation fills a coordinator conversation with turns that
 // alternate between Ed's requests and automation, each with a reply, reasoning
-// and (for Ed's turns) a steer, in one transaction.
+// and a steer (Ed's own on his turns, an agent's relay on automation turns), in
+// one transaction.
 func seedCoordinatorConversation(t *testing.T, db *sql.DB, conversation string, turns int) {
 	t.Helper()
 	tx, err := db.Begin()
@@ -47,6 +49,16 @@ func seedCoordinatorConversation(t *testing.T, db *sql.DB, conversation string, 
 		}
 		seq++
 		if _, err := tx.Exec(`INSERT INTO conversation_activities(id,conversation_id,turn_id,sequence,kind,status,summary,detail_json,branch_id,created_at,updated_at) VALUES(?,?,?,?,'reasoning','completed','thinking','',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, fmt.Sprintf("act-%d", i), conversation, turn, seq, branch); err != nil {
+			t.Fatal(err)
+		}
+		// A steer on every turn: Ed's own on his turns, an agent's relay on
+		// automation turns. Only the human one may make a turn visible.
+		seq++
+		steer := fmt.Sprintf(`{"event":"steer","text":"guidance %d","origin":"human"}`, i)
+		if !human {
+			steer = fmt.Sprintf(`{"event":"steer","text":"relayed %d","origin":"human","senderSessionId":"worker-1"}`, i)
+		}
+		if _, err := tx.Exec(`INSERT INTO conversation_activities(id,conversation_id,turn_id,sequence,kind,status,summary,detail_json,branch_id,created_at,updated_at) VALUES(?,?,?,?,'system','completed','steered',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, fmt.Sprintf("steer-%d", i), conversation, turn, seq, steer, branch); err != nil {
 			t.Fatal(err)
 		}
 		seq++
@@ -96,7 +108,14 @@ func TestCoordinatorVisibilityQueriesScaleLinearly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			visible = len(rows.Messages)
+			// The page bound counts messages and activities together; Ed's own
+			// steers are visible activities, an agent's relayed steers are not.
+			visible = len(rows.Messages) + len(rows.Activities)
+			for _, a := range rows.Activities {
+				if a.Kind != domain.ActivityKindSystem {
+					t.Fatal("only human steers may be visible activities", a)
+				}
+			}
 		})
 		return
 	}
@@ -106,7 +125,7 @@ func TestCoordinatorVisibilityQueriesScaleLinearly(t *testing.T) {
 	}
 	smallM, smallP, smallLabels, smallVisible := measure(smallTurns)
 	largeM, largeP, largeLabels, largeVisible := measure(largeTurns)
-	t.Logf("%d turns: labels=%d page=%d messages in %v / %v; %d turns: labels=%d page=%d in %v / %v", smallTurns, smallLabels, smallVisible, smallM, smallP, largeTurns, largeLabels, largeVisible, largeM, largeP)
+	t.Logf("%d turns: labels=%d page=%d items in %v / %v; %d turns: labels=%d page=%d in %v / %v", smallTurns, smallLabels, smallVisible, smallM, smallP, largeTurns, largeLabels, largeVisible, largeM, largeP)
 	// Ed's turns: request + reply visible; automation turns: nothing.
 	if smallLabels != smallTurns || largeLabels != largeTurns {
 		t.Fatal("unexpected visibility", smallLabels, largeLabels)

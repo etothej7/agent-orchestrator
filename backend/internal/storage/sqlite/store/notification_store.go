@@ -412,6 +412,11 @@ func notificationsFromGen(rows []gen.Notification) []domain.NotificationRecord {
 // ResolveAnsweredCoordinatorAsks closes coordinator questions Ed has since
 // replied to and returns the rows it changed so they can be published.
 func (s *Store) ResolveAnsweredCoordinatorAsks(ctx context.Context, at time.Time) ([]domain.NotificationRecord, error) {
+	// The resolver wakes on every conversation change; take the single writer
+	// only when a question is actually open.
+	if open, err := s.CountUnresolvedCoordinatorAsks(ctx); err != nil || open == 0 {
+		return nil, err
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ResolveAnsweredCoordinatorAsks(ctx, nullTime(at))
