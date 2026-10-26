@@ -234,6 +234,7 @@ var shippedMigrations = map[int64]string{
 	20261026003000000: "20261026003000000_coordinator_message_notifications.sql",
 	20261026003100000: "20261026003100000_coordinator_human_message_purposes.sql",
 	20261026003200000: "20261026003200000_coordinator_notice_keys.sql",
+	20261026003300000: "20261026003300000_conversation_turns_open_by_session.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

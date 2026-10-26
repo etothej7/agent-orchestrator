@@ -7,11 +7,11 @@ import (
 )
 
 type standingInstructionDeliverer interface {
-	DeliverCoordinatorStandingInstructions(context.Context) (bool, error)
+	DeliverStandingInstructions(context.Context) (bool, error)
 }
 
 // startCoordinatorStandingInstructions teaches an existing overall coordinator
-// the current human-contact rules in place. It stops as soon as the revision is
+// and each repo manager their current rules in place. It stops as soon as the revision is
 // delivered (a durable message, so a restart does not resend it) and only
 // retries while a coordinator is missing or a send was uncertain.
 func startCoordinatorStandingInstructions(ctx context.Context, recovered <-chan struct{}, deliverer standingInstructionDeliverer, retry time.Duration, log *slog.Logger) <-chan struct{} {
@@ -31,7 +31,7 @@ func startCoordinatorStandingInstructions(ctx context.Context, recovered <-chan 
 				return
 			case <-timer.C:
 			}
-			delivered, err := deliverer.DeliverCoordinatorStandingInstructions(ctx)
+			delivered, err := deliverer.DeliverStandingInstructions(ctx)
 			if err != nil && ctx.Err() == nil {
 				log.Warn("coordinator standing instructions deferred", "err", err)
 			}

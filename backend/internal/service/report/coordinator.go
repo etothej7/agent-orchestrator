@@ -305,6 +305,14 @@ func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.Sessio
 	}
 	batch, err := c.claim(ctx, rec.ProjectID)
 	if err == nil && len(batch.Reports) > 0 {
+		if kept := c.dropSettledStoryReports(ctx, batch.Reports); len(kept) != len(batch.Reports) {
+			if len(kept) == 0 {
+				// Nothing left worth adding to the message: settle the claim.
+				_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
+				return PreparedBatch{}, err
+			}
+			batch.Reports = kept
+		}
 		err = c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target)
 		if err != nil {
 			return PreparedBatch{}, c.release(ctx, batch, err)

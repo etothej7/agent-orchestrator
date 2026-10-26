@@ -412,3 +412,48 @@ func TestCoordinatorAcknowledgesBatchOfOnlyRedundantStoryReportsWithoutWaking(t 
 		t.Fatalf("submissions = %#v, acked = %d; want no manager wake and both acknowledged", delivery.submissions, base.acked)
 	}
 }
+
+// Worker notes for a story that is already done are not carried into the
+// message a human sends, just as the outbox path drops them.
+func TestCoordinatorPiggybackSkipsWorkerNotesForAlreadyDoneStory(t *testing.T) {
+	now := time.Date(2026, 10, 25, 14, 0, 0, 0, time.UTC)
+	base := newCoordinatorStore(now)
+	base.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store := storyCoordinatorStore{coordinatorStore: base, stories: map[string]domain.Story{
+		"finished": {ID: "finished", Autonomous: true, Status: "done"},
+		"open":     {ID: "open", Autonomous: true, Status: "in_review"},
+	}}
+	note := func(id, storyID string, state domain.ReportState, text string) domain.ReportRecord {
+		rec := reportAt(id, "worker", now, now, text)
+		rec.State, rec.StoryID = state, storyID
+		return rec
+	}
+	base.add(
+		note("done-note", "finished", domain.ReportDone, "redundant finished note"),
+		note("question", "finished", domain.ReportNeedsInput, "still needs an answer"),
+		note("open-note", "open", domain.ReportCheckpoint, "open story progress"),
+	)
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: &coordinatorDelivery{}, Now: func() time.Time { return now }, NewToken: func() string { return "piggyback" }})
+	batch, err := c.PreparePiggyback(context.Background(), "orch")
+	if err != nil || len(batch.Reports) != 2 {
+		t.Fatalf("prepare = %#v, err = %v", batch, err)
+	}
+	text := batch.Render()
+	if strings.Contains(text, "redundant finished note") || !strings.Contains(text, "still needs an answer") || !strings.Contains(text, "open story progress") {
+		t.Fatalf("piggyback text = %q", text)
+	}
+	if err := c.AcceptPiggyback(context.Background(), batch); err != nil || base.acked != 3 {
+		t.Fatalf("accept: err = %v, acknowledged = %d, want the whole claim settled", err, base.acked)
+	}
+
+	// Only redundant notes: nothing is added and the claim is settled at once.
+	only := newCoordinatorStore(now)
+	only.sessions = base.sessions
+	onlyStore := storyCoordinatorStore{coordinatorStore: only, stories: store.stories}
+	only.add(note("alone", "finished", domain.ReportDone, "redundant"))
+	c = NewCoordinator(CoordinatorDeps{Store: onlyStore, Delivery: &coordinatorDelivery{}, Now: func() time.Time { return now }, NewToken: func() string { return "piggyback-2" }})
+	batch, err = c.PreparePiggyback(context.Background(), "orch")
+	if err != nil || len(batch.Reports) != 0 || only.acked != 1 {
+		t.Fatalf("redundant-only prepare = %#v, err = %v, acknowledged = %d", batch, err, only.acked)
+	}
+}

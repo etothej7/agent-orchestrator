@@ -46,8 +46,11 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if strings.Contains(manager, "end your turn immediately") || !strings.Contains(manager, "Keep working in the same turn for as long as there is authorized work") {
 		t.Fatal("end-turn rule must not cut off in-turn assignment, handoff or finding work")
 	}
-	if !strings.Contains(overall, "end your turn instead of polling managers") {
+	if !strings.Contains(overall, "end your turn instead of polling managers") || !strings.Contains(overall, "when a repo manager reports to you, and when a story has no assigned manager") {
 		t.Fatal("overall coordinator lacks the delegate-then-end-turn rule")
+	}
+	if strings.Contains(overall, "AO wakes you with their reports and story events") {
+		t.Fatal("coordinator prompt promises wakes that story continuations do not send it")
 	}
 	if strings.Contains(manager, "ao report --message") {
 		t.Fatal("prompt uses a nonexistent report CLI flag")

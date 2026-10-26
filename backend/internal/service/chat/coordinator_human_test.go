@@ -754,3 +754,32 @@ func TestCoordinatorAskNotificationsStayUnresolvedUntilEdReplies(t *testing.T) {
 		t.Fatal("a dismissed question stayed open", ids, asks)
 	}
 }
+
+// A repo manager that is already running learns the end-turn rule in place: one
+// durable internal message per rule revision, never resent; a project with no
+// live manager has nothing to teach.
+func TestManagerStandingInstructionsDeliverOncePerRevisionToLiveManagers(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: "coordinator-elsewhere", ManagedProjectIDs: []domain.ProjectID{testProject, "no-manager-yet"}}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	sends := len(h.conv.sentTexts())
+	for range 3 {
+		delivered, err := h.svc.DeliverManagerStandingInstructions(ctx)
+		if err != nil || !delivered {
+			t.Fatal(delivered, err)
+		}
+	}
+	texts := h.conv.sentTexts()[sends:]
+	if len(texts) != 1 || !strings.Contains(texts[0], "Ending your turn:") || !strings.Contains(texts[0], domain.RepoManagerStandingRevision()) {
+		t.Fatal("end-turn rule not delivered exactly once", texts)
+	}
+	if _, found, err := h.st.ConversationMessageByClientID(ctx, h.ctrl.ConversationID(), chatsvc.ManagerStandingMessageID(domain.RepoManagerStandingRevision())); err != nil || !found {
+		t.Fatal("delivery is not durable", found, err)
+	}
+	// The coordinator's rules are a different message with a different handle.
+	if chatsvc.CoordinatorStandingMessageID(domain.CoordinatorStandingRevision()) == chatsvc.ManagerStandingMessageID(domain.RepoManagerStandingRevision()) {
+		t.Fatal("coordinator and manager standing handles collide")
+	}
+}

@@ -17,7 +17,7 @@ type scriptedDeliverer struct {
 	err     error
 }
 
-func (d *scriptedDeliverer) DeliverCoordinatorStandingInstructions(context.Context) (bool, error) {
+func (d *scriptedDeliverer) DeliverStandingInstructions(context.Context) (bool, error) {
 	n := int(d.calls.Add(1))
 	if n == 1 && d.err != nil {
 		return false, d.err
