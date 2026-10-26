@@ -166,6 +166,22 @@ describe("the From your coordinator block", () => {
 		rendered.rerender(view(items(true)));
 		expect(screen.getByRole("region", { name: "From your coordinator: Verified result" })).toBeInTheDocument();
 	});
+
+	it("keeps its place in a long paged page: tell inside the last, completed turn, older history still to load", () => {
+		const { turns, items } = manyEarlierTurns("human");
+		const snap = snapshot([
+			...items.map((item) => ({ ...item, sequence: item.sequence + 290 })),
+			message("u", "ed", 738, "user", "human", "it appears to have restarted", "human"),
+			message("a1", "ed", 739, "assistant", "provider", "You are on the new version.", "human"),
+			tell(742, "human"),
+			message("a2", "ed", 743, "assistant", "provider", "The send printed nothing.", "human"),
+			message("a3", "ed", 745, "assistant", "provider", "The update worked.", "human"),
+		], [...turns, turn("ed", 50, "completed", "human")]);
+		render(view({ ...snap, oldestSequence: 291, hasMoreBefore: true }));
+		const block = screen.getByRole("region", { name: "From your coordinator: Verified result" });
+		expect(block.compareDocumentPosition(screen.getByText("The update worked.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(screen.getByText("it appears to have restarted").compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
 });
 
 describe("answering a coordinator question", () => {
