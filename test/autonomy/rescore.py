@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import acceptance as a
 
+# Time agent-orchestrator-1 authorized the in-turn contract revision (post-run).
+AMENDED_AT = '2026-10-26T00:18:13Z'
+
 
 def rescore(source):
     original = json.loads(source.read_text())
@@ -41,7 +44,18 @@ def rescore(source):
                      'limits': ['Historical concurrency reconstructed from durable turn start/end times.',
                                 'Report delivery and recipient turn start do not prove a subsequent work dispatch.',
                                 'Original result remains unchanged and NOT ACCEPTED. No daemon, provider or golden check executed.',
-                                'Deterministic fixture behavior is not re-executed offline; that gate cannot gain a new pass.']})
+                                'Deterministic fixture behavior is not re-executed offline; that gate cannot gain a new pass.',
+                                'The acceptance contract was revised AFTER this run (in-turn durable manager actions now satisfy a transition); this re-score is not evidence the run met its original contract.',
+                                'In-turn transition rows are the same manager\'s own writes: they prove same-revision follow-through only and are NOT CDC or idle-wake evidence.']})
+    rows = h.result['phaseRecipientLatency']
+    in_turn = [r for r in rows if r.get('correlation') == 'in_turn_durable_action']
+    h.result['postRunContractAmendment'] = {
+        'revisedAfterRun': True, 'authorizer': 'agent-orchestrator-1 (repo manager)', 'amendedAt': AMENDED_AT,
+        'rule': 'in_turn_durable_action', 'inTurnRowCount': len(in_turn),
+        'inTurnRowSourceIds': sorted(r['sourceId'] for r in in_turn),
+        'inTurnTransitionRowCount': sum(1 for r in in_turn if r['sourceKind'] == 'transition'),
+        'transitionRowsAreWakeEvidence': False, 'idleManagerCdcWakeProven': False,
+        'originalResultImmutable': True, 'originalVerdict': 'ACCEPTED' if original.get('passed') else 'NOT ACCEPTED'}
     h.check('parallelism_at_most_four', bool(samples) and h.result['maxActiveWorkers'] <= 4)
     return h.result
 

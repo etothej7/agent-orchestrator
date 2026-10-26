@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 import acceptance as a
 
@@ -576,6 +577,60 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
         state['conversation_messages'][0]['text']='Review '+'a'*40
         state['conversation_turns'][-1]['handled_by_session_id']='other'
         self.assertFalse(a.phase_latencies(state,details,{},30)[0]['passed'])
+
+    SHA = 'a' * 40
+
+    def scenario(self, outcome='review_passed', handoff=None, message_at='2026-01-01T00:01:00Z', duplicate=False):
+        """In Review trigger inside a busy manager turn; the action is a Ready write or a handoff."""
+        state = self.state(True); state['reports'] = []; state['conversation_messages'] = []
+        state['conversation_turns'] += [dict(id='wturn', handled_by_session_id='w'), dict(id='w2turn', handled_by_session_id='w2'),
+                                        dict(id='rturn', handled_by_session_id='reviewer')]
+        events = [dict(id='impl', storyId='s', kind='implementation', reference=self.SHA, senderSessionId='w', createdAt='2025-12-31T23:59:30Z'),
+                  dict(id='trig', storyId='s', kind='in_review', reference=self.SHA, result='recorded', senderSessionId='m', createdAt='2026-01-01T00:00:00Z')]
+        if outcome:
+            events.append(dict(id='outcome', storyId='s', kind=outcome, reference=self.SHA, senderSessionId='reviewer', createdAt='2026-01-01T00:00:30Z'))
+        action = dict(id='action', storyId='s', reference=self.SHA, result='recorded', senderSessionId='m', createdAt='2026-01-01T00:01:00Z', kind='ready_for_approval')
+        if handoff:
+            recipient, turn, delivery = handoff
+            action.update(kind='handoff', reference=turn, deliveryKind=delivery, result='delivered', recipientSessionId=recipient)
+            state['conversation_messages'].append(dict(id='hm', turn_id=turn, role='user', sender_session_id='m',
+                                                       text='Fix ' + self.SHA, created_at=message_at))
+            if duplicate:
+                state['workspace_story_events'] = [dict(record=json.dumps(e)) for e in (action, dict(action, id='twin'))]
+        events.append(action)
+        assignments = [{'role': 'manager', 'sessionId': 'm'}, {'role': 'worker', 'sessionId': 'w'},
+                       {'role': 'worker', 'sessionId': 'w2'}, {'role': 'reviewer', 'sessionId': 'reviewer'}]
+        return state, [{'story': {'id': 's', 'assignments': assignments}, 'events': events}]
+
+    def trigger(self, *scenario):
+        return next(r for r in a.phase_latencies(*scenario[:1], scenario[1], {}, 30) if r['sourceId'] == 'trig')
+
+    def test_in_review_ready_needs_intervening_reviewer_pass(self):
+        row = self.trigger(*self.scenario())
+        self.assertTrue(row['passed'])
+        self.assertEqual((row['correlation'], row['phaseEvidenceEventId'], row['actionKind']),
+                         ('in_turn_durable_action', 'outcome', 'ready_for_approval'))
+        self.assertFalse(self.trigger(*self.scenario(outcome=None))['passed'], 'no review outcome')
+        self.assertFalse(self.trigger(*self.scenario('review_failed'))['passed'], 'failed review cannot become Ready')
+        for change in [dict(senderSessionId='m'), dict(reference='b' * 40), dict(createdAt='2026-01-01T00:02:00Z')]:
+            state, details = self.scenario()
+            next(e for e in details[0]['events'] if e['id'] == 'outcome').update(change)
+            self.assertFalse(self.trigger(state, details)['passed'], change)
+
+    def test_review_failed_handoff_targets_implementation_author_by_turn(self):
+        row = self.trigger(*self.scenario('review_failed', ('w', 'wturn', 'turn')))
+        self.assertTrue(row['passed'])
+        self.assertEqual((row['actionKind'], row['actionMessageId'], row['phaseEvidenceEventId']), ('handoff', 'hm', 'outcome'))
+        for label, handoff in [('assigned worker who is not the author', ('w2', 'w2turn', 'turn')),
+                               ('wrong role', ('reviewer', 'rturn', 'turn')),
+                               ('steering receipt', ('w', 'wturn', 'steer'))]:
+            self.assertFalse(self.trigger(*self.scenario('review_failed', handoff))['passed'], label)
+
+    def test_handoff_duplicate_event_and_message_window_fail_closed(self):
+        handoff = ('w', 'wturn', 'turn')
+        self.assertFalse(self.trigger(*self.scenario('review_failed', handoff, duplicate=True))['passed'], 'two handoff events for one turn')
+        self.assertTrue(self.trigger(*self.scenario('review_failed', handoff, message_at='2026-01-01T00:01:02Z'))['passed'], '2 s boundary')
+        self.assertFalse(self.trigger(*self.scenario('review_failed', handoff, message_at='2026-01-01T00:01:03Z'))['passed'], 'message outside 2 s')
 
     def test_in_turn_ready_requires_later_same_revision_done(self):
         state = self.state(True); state['reports'] = []; state['conversation_messages'] = []

@@ -259,7 +259,10 @@ def in_turn_phase_action(state, detail, signal):
         linked = action.get('kind') == expected_status and action.get('reference') == revision and action.get('result') == 'recorded'
         recipient_role = {'implementation': 'reviewer', 'review_failed': 'worker'}.get(phase)
         message_id = None
-        if recipient_role and action.get('kind') == 'handoff' and action.get('result') == 'delivered' and roles.get(action.get('recipientSessionId')) == recipient_role:
+        # Remediation goes to whoever authored this revision, not any assigned worker.
+        authors = {e.get('senderSessionId') for e in events if e.get('kind') == 'implementation' and e.get('reference') == revision}
+        author_ok = phase != 'review_failed' or authors == {action.get('recipientSessionId')}
+        if recipient_role and author_ok and action.get('kind') == 'handoff' and action.get('result') == 'delivered' and roles.get(action.get('recipientSessionId')) == recipient_role:
             # Only a concrete new-turn handoff with an attributable revision is
             # scored here; ambiguous steering receipts remain fail-closed.
             target = next((t for t in state['conversation_turns'] if t['id'] == action.get('reference')
