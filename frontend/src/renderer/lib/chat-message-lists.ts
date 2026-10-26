@@ -44,8 +44,11 @@ export function splitMessageLists(text: string, depth = 0): MessageBlock[] {
 
 	const flushText = () => {
 		if (pending.length === 0) return;
-		// A blank line before a list is spacing the list's own margin already provides.
+		// A blank line next to a list is spacing the list's own margin already provides.
 		while (pending.length > 0 && pending[pending.length - 1] === "") pending.pop();
+		if (blocks[blocks.length - 1]?.kind === "list") {
+			while (pending.length > 0 && pending[0] === "") pending.shift();
+		}
 		if (pending.length > 0) blocks.push({ kind: "text", text: pending.join("\n") });
 		pending = [];
 	};

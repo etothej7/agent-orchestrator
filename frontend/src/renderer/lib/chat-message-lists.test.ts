@@ -33,6 +33,11 @@ describe("splitMessageLists", () => {
 		expect(splitMessageLists("Please do:\n- a\n- b\nThanks")).toEqual([text("Please do:"), bullets("a", "b"), text("Thanks")]);
 	});
 
+	it("drops the blank line between a list and the prose after it (the list's margin is the gap)", () => {
+		expect(splitMessageLists("- a\n\nThen:\nmore")).toEqual([bullets("a"), text("Then:\nmore")]);
+		expect(splitMessageLists("Intro\n\n- a")).toEqual([text("Intro"), bullets("a")]);
+	});
+
 	it("starts a new list when the kind changes or a blank line intervenes", () => {
 		expect(splitMessageLists("- a\n1. b")).toEqual([bullets("a"), list(true, 1, [text("b")])]);
 		expect(splitMessageLists("1. a\n\n2. b")).toEqual([list(true, 1, [text("a")]), list(true, 2, [text("b")])]);
