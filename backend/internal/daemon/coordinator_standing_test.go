@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 )
 
 type scriptedStanding struct {
