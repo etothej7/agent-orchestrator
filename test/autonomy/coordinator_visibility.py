@@ -60,12 +60,11 @@ class CoordinatorVisibility(a.Harness):
         with a.db_open(LIVE_DB) as src, sqlite3.connect(target) as dest:
             src.backup(dest)
         target.chmod(0o600)
-        coord_ws = self.root / 'coordinator-workspace'
+        coord_ws = self.data / 'worktrees/overall-coordinator/orchestrators/overall-coordinator'  # inside the managed root, as in the live layout
         coord_project = self.root / 'coordination'
-        for p in (coord_ws, coord_project):
-            p.mkdir(parents=True)
-        for p in (coord_ws, coord_project):
-            subprocess.run(['/usr/bin/git', 'init', '-q', '-b', 'main', str(p)], check=True)
+        coord_project.mkdir(parents=True)
+        coord_ws.parent.mkdir(parents=True)
+        subprocess.run(['/usr/bin/git', 'init', '-q', '-b', 'main', str(coord_project)], check=True)
         conn = sqlite3.connect(target)
         before = conn.execute("select model, reasoning_effort from conversations where current_session_id=? or session_id=?", (COORD, COORD)).fetchall()
         # Only the coordinator is made runnable in scratch; paths move into the scratch root.
@@ -76,17 +75,29 @@ class CoordinatorVisibility(a.Harness):
         # coordinator session is switched to the Codex provider authorized for scratch runs. The
         # session id, conversation and history are unchanged; the visibility rules are
         # provider-independent (standing instruction is plain message text).
-        conn.execute("update sessions set harness='codex', model='', effort='', agent_session_id='' where id=?", (COORD,))
-        conn.execute("update conversations set model=NULL, reasoning_effort=NULL, approval_mode='auto', account_json=NULL, thread_state_json=NULL, opencode_mode='' where current_session_id=? or session_id=?", (COORD, COORD))
+        if not self.args.keep_harness:
+            conn.execute("update sessions set harness='codex', model='', effort='', agent_session_id='', provider_conversation_id='' where id=?", (COORD,))
+            conn.execute("update conversations set model=NULL, reasoning_effort=NULL, approval_mode='auto', account_json=NULL, thread_state_json=NULL, opencode_mode='' where current_session_id=? or session_id=?", (COORD, COORD))
+        # No live host exists in scratch, so the copied coordinator is marked terminated and brought
+        # back through the daemon's own `restore` (same session id and conversation, no new session).
+        conn.execute("update sessions set is_terminated=1 where id=?", (COORD,))
         # Stale per-session account bindings point at credential stores that exist only in the live HOME.
         conn.execute('delete from session_agent_accounts')
         project_config = json.loads(conn.execute("select config from projects where id='overall-coordinator'").fetchone()[0] or '{}')
-        project_config['orchestrator'] = {'agent': 'codex', 'agentConfig': {}}
+        if not self.args.keep_harness:
+            project_config['orchestrator'] = {'agent': 'codex', 'agentConfig': {}}
         conn.execute("update projects set config=? where id='overall-coordinator'", (json.dumps(project_config),))
         conn.commit(); conn.close()
         self.result['dbCopy'] = {'source': 'live ao.db via sqlite backup API (mode=ro)', 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
                                  'bytes': target.stat().st_size, 'coordinatorProviderOverride': {'from': 'claude-code', 'to': 'codex', 'reason': 'scratch HOME cannot reach the Claude credentials; they are not extracted'},
                                  'originalCoordinatorConversationSettings': [list(r) for r in before]}
+
+    def use_binary(self, path):
+        self.args.daemon = path
+        link = self.root / 'bin/ao'
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(path)
 
     def host_identity(self):
         rows = self.process_rows()
@@ -146,24 +157,60 @@ class CoordinatorVisibility(a.Harness):
         self.check('binary_hash_and_clean_revision', r['binary']['sha256'] == self.args.expect_sha256 and r['binary']['vcs.revision'] == self.args.expect_revision and r['binary']['vcs.modified'] == 'false',
                    expectedSha256=self.args.expect_sha256, expectedRevision=self.args.expect_revision)
         self.prepare_db()
-        before_sessions = sql(self.data / 'ao.db', 'select id, num, created_at, kind, harness, project_id, is_terminated from sessions order by id')
-        coord_before = [row for row in before_sessions if row[0] == COORD][0]
+        candidate = self.args.daemon
+        # Phase 1: the PREVIOUS build (66b827b9d, old coordinator prompt, no standing instruction) creates
+        # and exercises a Codex coordinator in the scratch copy, as the live install did before upgrade.
+        prev = self.args.previous_daemon.resolve()
+        r['previousBinary'] = {'path': str(prev), 'sha256': hashlib.sha256(prev.read_bytes()).hexdigest()}
+        pmeta = subprocess.check_output(['go', 'version', '-m', str(prev)], text=True, cwd=self.root)
+        for key in ('vcs.revision', 'vcs.modified'):
+            m = re.search(r'\b' + re.escape(key) + r'=(\S+)', pmeta)
+            r['previousBinary'][key] = m.group(1) if m else None
+        self.check('previous_binary_hash_and_clean_revision', r['previousBinary']['sha256'] == self.args.expect_previous_sha256 and r['previousBinary']['vcs.modified'] == 'false')
+        self.use_binary(prev)
         self.start()
         self.check('isolated_daemon_ready', True)
+        applied_prev = sql(self.data / 'ao.db', 'select count(*), max(version_id) from goose_db_version')[0]
+        if self.args.hold:
+            (self.root / 'hold').write_text(json.dumps({'root': str(self.root), 'port': self.port}))
+            while not (self.root / 'release').exists():
+                time.sleep(2)
+            return
+        global COORD
+        status, body = self.api('POST', '/api/v1/sessions', {'projectId': 'overall-coordinator', 'kind': 'orchestrator', 'harness': 'codex', 'mode': 'chat'}, timeout=180)
+        self.check('previous_build_created_coordinator', status < 400 and 'session' in body, status=status, errorCode=body.get('errorCode'))
+        COORD = body['session']['id']
+        r['coordinatorSessionId'] = COORD
+        pre_key = 'cv-pre-' + self.token
+        pre_status, _ = self.send_human('Reply with one short sentence acknowledging this test message. Take no other action.', pre_key)
+        pm = self.wait(lambda: self.turn_of_message(pre_key), 60)
+        pre = {'sendStatus': pre_status, 'accepted': bool(pm)}
+        if pm:
+            end = self.wait_turn(pm[1], self.args.turn_wait)
+            default_prev, _ = self.visible_ids()
+            replies = [row[0] for row in sql(self.data / 'ao.db', "select id from conversation_messages where turn_id=? and role='assistant' and length(trim(text))>0", pm[1])]
+            pre.update(turnId=pm[1], turnState=end[0] if end else 'timeout', assistantMessages=len(replies), assistantVisibleUnderPreviousBuild=sum(1 for i in replies if i in default_prev), humanMessageId=pm[0])
+        r['phase1_previousBuildPreUpgradeTurn'] = pre
+        self.check('phase1_previous_build_coordinator_turn_completed', pre.get('turnState') == 'completed' and pre.get('assistantMessages', 0) >= 1)
+        self.host_before = self.host_identity()
+        before_sessions = sql(self.data / 'ao.db', 'select id, num, created_at, kind, harness, project_id, is_terminated from sessions order by id')
+        coord_before = [row for row in before_sessions if row[0] == COORD][0]
         cid = self.conversation_id()
-        # Fixed snapshot of what Ed sees before any new traffic.
+        r['phase1_hostPidsBeforeUpgrade'] = sorted(self.host_before)
+        # Phase 2: stop ONLY the daemon (persistent hosts survive by design) and start the candidate on the same data.
+        self.stop(daemon_only=True)
+        survivors = self.host_identity()
+        r['phase2_hostSurvivedDaemonStop'] = {'hostPids': sorted(survivors), 'sameAsBefore': survivors == self.host_before}
+        self.use_binary(candidate)
+        self.start()
+        applied_cand = sql(self.data / 'ao.db', 'select count(*), max(version_id) from goose_db_version')[0]
+        r['phase2_upgradeFromPreviousBuild'] = {'migrationRowsBefore': applied_prev[0], 'migrationRowsAfter': applied_cand[0], 'maxVersionBefore': applied_prev[1], 'maxVersionAfter': applied_cand[1],
+                                                 'integrity': sql(self.data / 'ao.db', 'pragma integrity_check')[0][0]}
+        self.check('phase2_forward_migration_applied_on_66b_migrated_db', applied_cand[1] > applied_prev[1] and r['phase2_upgradeFromPreviousBuild']['integrity'] == 'ok')
+        self.check('phase2_host_survived_daemon_swap', bool(survivors) and survivors == self.host_before)
         default0, _ = self.visible_ids()
-        r['before'] = {'visibleMessages': len(default0), 'storedMessages': sql(self.data / 'ao.db', 'select count(*) from conversation_messages where conversation_id=?', cid)[0][0]}
-
-        # The copied coordinator has no live host in scratch (the live one is not reachable):
-        # resume the exited session in place, the scratch equivalent of host re-adoption.
-        restore_status, restore_body = self.api('POST', f'/api/v1/sessions/{COORD}/resume-agent', {}, timeout=120)
-        status_now = self.wait(lambda: (lambda s: s if s.get('activity', {}).get('state') not in (None, 'exited') else None)(self.api('GET', f'/api/v1/sessions/{COORD}')[1].get('session', self.api('GET', f'/api/v1/sessions/{COORD}')[1])), 90)
-        r['restoreExitedCoordinatorInPlace'] = {'status': restore_status, 'errorCode': restore_body.get('errorCode'), 'activityAfter': (status_now or {}).get('activity', {}).get('state'),
-                                                'note': 'scratch has no live persistent host; resume in place stands in for the daemon re-adopting it'}
-        host_up = self.wait(lambda: self.host_identity(), 60)
-        r['restoreExitedCoordinatorInPlace']['hostProcessStarted'] = bool(host_up)
-        self.check('coordinator_resumed_in_place_for_scratch', restore_status < 400 and bool(host_up))
+        r['before'] = {'visibleMessages': len(default0), 'storedMessages': sql(self.data / 'ao.db', 'select count(*) from conversation_messages where conversation_id=?', cid)[0][0],
+                       'preUpgradeReplyVisibleAfterUpgrade': pre.get('turnState') == 'completed' and any(row[0] in default0 for row in sql(self.data / 'ao.db', "select id from conversation_messages where turn_id=? and role='assistant'", pre['turnId']))}
 
         # (d) the existing coordinator receives the standing instruction in place.
         def standing():
@@ -183,7 +230,6 @@ class CoordinatorVisibility(a.Harness):
                      hiddenInDefaultView=hidden_default, taggedInternalInAllView=all_view.get(msg_id, {}).get('audience') == 'internal',
                      assistantRepliesInTurn=len(replies), assistantRepliesHiddenInDefault=all(rid[0] not in default_now for rid in replies),
                      hostPids=sorted(host))
-            self.host_before = host
         r['d_existingCoordinatorStandingInstruction'] = d
         self.check('d_standing_instruction_delivered_hidden', d['delivered'] and d.get('turnState') == 'completed' and d.get('hiddenInDefaultView') and d.get('taggedInternalInAllView') and d.get('assistantRepliesHiddenInDefault'))
 
@@ -269,7 +315,7 @@ class CoordinatorVisibility(a.Harness):
         self.check('e_hidden_content_reachable_via_audience_all', len(hidden) >= 3 and all(all_view[i].get('audience') == 'internal' for i in hidden))
         status, body = self.api('GET', f'/api/v1/sessions/{COORD}/conversation?audience=bogus', timeout=15)
         self.check('audience_invalid_rejected', status == 400)
-        self.check('exactly_the_scripted_mutations', all(m['route'].startswith(f'/api/v1/sessions/{COORD}/') for m in self.mutations))
+        self.check('exactly_the_scripted_mutations', all(m['route'] == '/api/v1/sessions' or m['route'].startswith(f'/api/v1/sessions/{COORD}/') for m in self.mutations))
         self.result['mutationAudit'] = self.mutations
         self.result['providerTurns'] = [{'turnId': t[0], 'state': t[1], 'startedAt': t[2], 'completedAt': t[3]} for t in
                                         sql(self.data / 'ao.db', "select id, state, started_at, completed_at from conversation_turns where conversation_id=? order by started_at desc limit 12", cid)]
@@ -281,11 +327,15 @@ class CoordinatorVisibility(a.Harness):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--daemon', type=Path, required=True)
+    parser.add_argument('--previous-daemon', type=Path, required=True)
+    parser.add_argument('--expect-previous-sha256', required=True)
     parser.add_argument('--expect-sha256', required=True)
     parser.add_argument('--expect-revision', required=True)
     parser.add_argument('--acp-runtime-dir', type=Path, required=True)
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
+    parser.add_argument('--keep-harness', action='store_true', help='leave the copied coordinator on its original harness')
+    parser.add_argument('--hold', action='store_true', help='debug: start the confined scratch daemon and wait for <root>/release')
     parser.add_argument('--standing-wait', type=float, default=150)
     parser.add_argument('--turn-wait', type=float, default=240)
     parser.add_argument('--output', type=Path, required=True)
