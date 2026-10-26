@@ -19,9 +19,9 @@ async function main() {
   };
   try {
     if (action === 'open-main-from-home') {
-      await page.goto('app://renderer/index.html#/');
+      await page.goto('app://renderer/index.html#/workspace');
       await page.waitForLoadState('domcontentloaded');
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(3500);
       const button = page.getByRole('button', { name: /Open main conversation and board/i });
       out.homeButtonPresent = (await button.count()) > 0;
       if (out.homeButtonPresent) {
@@ -46,7 +46,7 @@ async function main() {
       out.coordinatorProjectListedAsProject = (await body()).includes(args.coordinatorProjectName || '\u0000');
     } else if (action === 'default-view') {
       await page.waitForTimeout(3000);
-      out.composerPresent = (await page.locator('[data-testid="chat-agent-input"]').count()) > 0;
+      out.composerPresent = (await page.getByLabel('Message the agent').count()) > 0;
       out.toggleBarPresent = (await page.locator('[data-testid="coordinator-audience-bar"]').count()) > 0;
       out.toggleLabelPresent = (await body()).includes('Show internal activity');
       out.internalBlocks = await internalCount();
@@ -54,7 +54,7 @@ async function main() {
       out.visibleSnippetCandidates = (args.snippets || []).length;
     } else if (action === 'send') {
       await page.evaluate((m) => { window.__cvMarker = m; }, args.marker);
-      const box = page.locator('[data-testid="chat-agent-input"]');
+      const box = page.getByLabel('Message the agent');
       await box.first().click();
       await page.keyboard.type(args.text, { delay: 5 });
       await page.keyboard.press('Enter');
@@ -95,26 +95,14 @@ async function main() {
         if (window.AudioBufferSourceNode) AudioBufferSourceNode.prototype.start = function () { bump(); };
         if (window.OscillatorNode) OscillatorNode.prototype.start = function () { bump(); };
       });
-      const cdp = await browser.contexts()[0].newCDPSession(page);
-      const { windowId } = await cdp.send('Browser.getWindowForTarget');
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
       out.instrumented = true;
-    } else if (action === 'refocus-cycle') {
-      // Focusing the window cancels a pending dock bounce; then minimise again before the next alert.
-      const cdp = await browser.contexts()[0].newCDPSession(page);
-      const { windowId } = await cdp.send('Browser.getWindowForTarget');
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
-      await page.bringToFront();
-      await page.waitForTimeout(2500);
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
-      out.cycled = true;
     } else if (action === 'sound-count') {
       out.soundInvocations = await page.evaluate(() => window.__cvSound || 0);
     } else if (action === 'attention-routes') {
       const count = async () => (await page.locator('[aria-label*="needs you" i], [title*="needs you" i]').count()) + (await page.getByText(/needs you/i).count());
       out.coordinatorRoute = await count();
-      await page.goto('app://renderer/index.html#/');
-      await page.waitForTimeout(3000);
+      await page.goto('app://renderer/index.html#/workspace');
+      await page.waitForTimeout(3500);
       out.homeRoute = await count();
     } else if (action === 'attention') {
       // The needs-you marker (sidebar Main coordinator row, Home entry).

@@ -103,6 +103,7 @@ class CoordinatorVisibility(a.Harness):
         env.update(AO_KEEP_DAEMON='1', AO_DISABLE_GPU='1', MallocNanoZone='0', ELECTRON_ENABLE_LOGGING='1')
         env['AO_GUI_LOG'] = str(self.root / 'gui.log')
         env['CV_HOOK_LOG'] = str(self.root / 'main-hook.log')
+        env['CV_HOOK_CMD'] = str(self.root / 'hook-cmd.json')
         env['NODE_OPTIONS'] = '--require=' + str(Path(__file__).with_name('cv_main_hook.js').resolve())
         # Detached through a shell so launchd (not this harness) reaps the GUI: a killed direct child would linger as a
         # zombie and be miscounted as a surviving process by the teardown check.
@@ -132,9 +133,17 @@ class CoordinatorVisibility(a.Harness):
                     pass
         return out
 
+    def window(self, cmd):
+        ident = f'{cmd}-{time.time()}'
+        (self.root / 'hook-cmd.json').write_text(json.dumps({'id': ident, 'cmd': cmd}))
+        done = self.wait(lambda: next((e for e in self.hook_events() if e['kind'] == 'window-cmd' and e.get('id') == ident), None), 15, step=0.5)
+        return done or {'error': 'no confirmation from main-process hook'}
+
     def refocus(self):
-        self.ui('refocus-cycle')
-        time.sleep(1.5)
+        # Focus cancels a pending dock bounce; minimise again so the next alert finds the app "not looking".
+        f = self.window('focus'); time.sleep(2)
+        m = self.window('minimize'); time.sleep(1.5)
+        self.window_states = {'afterFocus': f, 'afterMinimize': m}
 
     def alerts_since(self):
         events = self.hook_events()
@@ -364,9 +373,10 @@ class CoordinatorVisibility(a.Harness):
             r['ui_defaultView'] = view
             self.check('f_coordinator_findable_via_home_open_main_and_sidebar_row', home.get('reachedCoordinatorSession') and side.get('sidebarRowPresent') and side.get('reachedCoordinatorSession'))
             inst = self.ui('instrument')
+            self.refocus()
             self.hook_mark = len(self.hook_events())
             self.sound_mark = 0
-            r['alertInstrumentation'] = {'rendererSoundRecorder': inst, 'hookEventsAtStart': self.hook_mark, 'note': 'window minimised so the app is not looking; sound recorded as invoked (not played)'}
+            r['alertInstrumentation'] = {'rendererSoundRecorder': inst, 'hookEventsAtStart': self.hook_mark, 'windowStates': getattr(self, 'window_states', None), 'note': 'window minimised via the main-process hook so the app is not looking; sound recorded as invoked (not played)'}
             self.check('ui_default_view_shows_human_content_and_hides_internal', view.get('ok') and view.get('composerPresent') and view.get('internalBlocks') == 0 and view.get('visibleSnippetMatches', 0) >= 1)
 
         # (a) a human message gets a visible reply.
