@@ -264,6 +264,9 @@ class CoordinatorVisibility(a.Harness):
             r['previousBinary'][key] = m.group(1) if m else None
         self.check('previous_binary_hash_and_clean_revision', r['previousBinary']['sha256'] == self.args.expect_previous_sha256 and r['previousBinary']['vcs.modified'] == 'false')
         self.use_binary(prev)
+        candidate_acp = self.env.get('AO_ACP_RUNTIME_DIR')
+        if self.args.previous_acp_runtime_dir:
+            self.env['AO_ACP_RUNTIME_DIR'] = str(self.args.previous_acp_runtime_dir.resolve())  # the previous build's own runtime
         self.start()
         self.check('isolated_daemon_ready', True)
         applied_prev = sql(self.data / 'ao.db', 'select count(*), max(version_id) from goose_db_version')[0]
@@ -306,6 +309,8 @@ class CoordinatorVisibility(a.Harness):
         survivors = self.host_identity()
         r['phase2_hostSurvivedDaemonStop'] = {'hostPids': sorted(survivors), 'sameAsBefore': survivors == self.host_before}
         self.use_binary(candidate)
+        if candidate_acp:
+            self.env['AO_ACP_RUNTIME_DIR'] = candidate_acp
         self.start()
         applied_cand = sql(self.data / 'ao.db', 'select count(*), max(version_id) from goose_db_version')[0]
         r['phase2_upgradeFromPreviousBuild'] = {'migrationRowsBefore': applied_prev[0], 'migrationRowsAfter': applied_cand[0], 'maxVersionBefore': applied_prev[1], 'maxVersionAfter': applied_cand[1],
@@ -512,6 +517,7 @@ def main():
     parser.add_argument('--acp-runtime-dir', type=Path, help='defaults to the packaged app copy when --app is given')
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
+    parser.add_argument('--previous-acp-runtime-dir', type=Path, help='ACP runtime that matches the previous daemon (phase 1)')
     parser.add_argument('--app', type=Path, help='packaged .app: its bundled daemon, acp-runtime and GUI are used (copied into scratch)')
     parser.add_argument('--playwright-dir', default='/private/tmp/ao-personal-66b-4/frontend/node_modules/playwright')
     parser.add_argument('--keep-harness', action='store_true', help='leave the copied coordinator on its original harness')
