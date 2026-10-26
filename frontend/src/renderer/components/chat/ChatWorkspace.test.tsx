@@ -461,24 +461,28 @@ describe("HumanMessage attachments", () => {
 		);
 	});
 
-	it("leaves ordinary user-authored path lists untouched", () => {
+	it("draws ordinary user-authored path lists as a list without turning them into images", () => {
 		const text =
 			"Document this example:\n\nAttached files (read these files in the workspace):\n- docs/screenshot.png";
-		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
 
 		expect(screen.queryByRole("img")).not.toBeInTheDocument();
-		expect(document.body.textContent).toContain(text);
+		expect(document.body.textContent).toContain("Attached files (read these files in the workspace):");
+		expect([...container.querySelectorAll("ul > li")].map((item) => item.textContent)).toEqual(["docs/screenshot.png"]);
 	});
 
-	it("linkifies session URLs without parsing the human message as Markdown", () => {
+	// Lists are the only structure a sent message is drawn with: emphasis, quotes and
+	// the rest of Markdown stay exactly as typed, and session URLs still link.
+	it("linkifies session URLs and draws only lists, never other Markdown, in the human message", () => {
 		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
 		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
 
-		const paragraph = container.querySelector(".cursor-chat-human-message > p");
-		expect(paragraph).toHaveClass("whitespace-pre-wrap");
-		expect(paragraph?.textContent).toBe(text);
+		const body = container.querySelector(".cursor-chat-human-message [data-chat-message-body]");
+		expect([...container.querySelectorAll("ul > li")].map((item) => item.textContent)).toEqual(["fix *bug*"]);
+		expect(body?.textContent).toContain("Notes:");
+		expect(body?.textContent).toContain("ao://sessions/proj/sess\n> write test");
 		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
-		expect(container.querySelector("ul, blockquote, em")).toBeNull();
+		expect(container.querySelector("blockquote, em")).toBeNull();
 	});
 });
 

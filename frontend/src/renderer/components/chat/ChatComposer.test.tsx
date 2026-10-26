@@ -1,6 +1,6 @@
 import { appI18n } from "../../i18n/instance";
 import { purgeFileAttachmentsForSession } from "../../hooks/useFileAttachments";
-import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
@@ -358,6 +358,61 @@ describe("send keys", () => {
 		await typeInComposer(field, "two");
 		expect(onSend).not.toHaveBeenCalled();
 		expect(composerWireText(field)).toBe("one\ntwo");
+	});
+
+	describe("lists on Shift+Enter", () => {
+		it("continues a bullet list and a numbered list at the end of an item", async () => {
+			const bullets = renderComposer();
+			await typeInComposer(bullets.field, "- one");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			await typeInComposer(bullets.field, "two");
+			expect(composerWireText(bullets.field)).toBe("- one\n- two");
+			expect(bullets.onSend).not.toHaveBeenCalled();
+			cleanup();
+
+			const numbered = renderComposer();
+			await typeInComposer(numbered.field, "1. a");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			await typeInComposer(numbered.field, "b");
+			expect(composerWireText(numbered.field)).toBe("1. a\n2. b");
+		});
+
+		it("increments a numbered item and keeps its delimiter and indent", async () => {
+			const { field } = renderComposer();
+			await typeInComposer(field, "  9) nine");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			expect(composerWireText(field)).toBe("  9) nine\n  10) ");
+		});
+
+		it("ends the list when Shift+Enter is pressed on an empty item", async () => {
+			const { field } = renderComposer();
+			await typeInComposer(field, "- one");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			expect(composerWireText(field)).toBe("- one\n- ");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			expect(composerWireText(field)).toBe("- one\n");
+		});
+
+		it("leaves a plain line and a caret in the middle of an item to the ordinary newline", async () => {
+			const { field } = renderComposer();
+			await typeInComposer(field, "not a list");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			expect(composerWireText(field)).toBe("not a list\n");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			await typeInComposer(field, "- ab");
+			await userEvent.keyboard("{ArrowLeft}{Shift>}{Enter}{/Shift}");
+			expect(composerWireText(field)).toBe("not a list\n\n- a\nb");
+		});
+
+		it("still sends the typed list on Enter, text unchanged", async () => {
+			const { onSend, field } = renderComposer();
+			await typeInComposer(field, "- one");
+			await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+			await typeInComposer(field, "two");
+			await userEvent.keyboard("{Enter}");
+			await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+			expect(onSend.mock.calls[0]?.[0]).toBe("- one\n- two");
+		});
 	});
 
 	it("refuses to send an empty message: there is no keystroke concept here", async () => {
