@@ -13,21 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-const countCoordinatorNoticesSince = `-- name: CountCoordinatorNoticesSince :one
-SELECT COUNT(*) FROM coordinator_human_messages h
-JOIN conversation_messages m ON m.id=h.message_id
-WHERE h.purpose IN ('verified_result','stopped_work') AND m.created_at >= ?1
-`
-
-// Non-blocking notices (verified results, stopped work) are the only way a
-// coordinator can address the human without a question, so they are bounded.
-func (q *Queries) CountCoordinatorNoticesSince(ctx context.Context, since time.Time) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countCoordinatorNoticesSince, since)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const getCoordinatorHumanMessage = `-- name: GetCoordinatorHumanMessage :one
 SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation, h.purpose FROM coordinator_human_messages h
 JOIN conversation_messages m ON m.id=h.message_id WHERE h.message_id=?
@@ -107,15 +92,19 @@ UNION ALL
 SELECT m.id AS message_id, 'human_reply' AS purpose FROM conversation_messages m
 WHERE m.conversation_id = ?1 AND m.role='assistant' AND m.turn_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM coordinator_human_messages x WHERE x.message_id=m.id)
-  AND EXISTS (
+  AND (EXISTS (
       SELECT 1 FROM conversation_messages u JOIN coordinator_human_messages hu ON hu.message_id=u.id AND hu.purpose='human_request'
-      WHERE u.turn_id=m.turn_id AND u.role='user' AND u.sequence < m.sequence)
+      WHERE u.conversation_id=m.conversation_id AND u.turn_id=m.turn_id AND u.role='user' AND u.sequence < m.sequence)
+      OR EXISTS (
+      SELECT 1 FROM conversation_activities s
+      WHERE s.conversation_id=m.conversation_id AND s.turn_id=m.turn_id AND s.sequence < m.sequence AND (s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND json_extract(s.detail_json,'$.senderSessionId') IS NULL)))
 `
 
 // Explicitly labeled messages, plus assistant output that replies to the human:
 // an assistant message is a human_reply when its turn holds an earlier
-// human_request user message. Automation-started turns have none, so their
-// output stays internal unless it was explicitly addressed to the human.
+// human_request user message or a human steer activity (Ed typed into a running
+// turn). Automation-started turns have neither, so their output stays internal
+// unless it was explicitly addressed to the human.
 func (q *Queries) ListCoordinatorHumanMessages(ctx context.Context, conversationID string) ([]CoordinatorHumanMessage, error) {
 	rows, err := q.db.QueryContext(ctx, listCoordinatorHumanMessages, conversationID)
 	if err != nil {
@@ -129,6 +118,45 @@ func (q *Queries) ListCoordinatorHumanMessages(ctx context.Context, conversation
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentCoordinatorResultTimes = `-- name: ListRecentCoordinatorResultTimes :many
+SELECT m.created_at FROM coordinator_human_messages h
+JOIN conversation_messages m ON m.id=h.message_id
+WHERE h.purpose = 'verified_result' AND m.created_at >= ?1
+ORDER BY m.created_at DESC
+LIMIT ?2
+`
+
+type ListRecentCoordinatorResultTimesParams struct {
+	Since   time.Time
+	MaxRows int64
+}
+
+// Verified results are the only non-blocking coordinator notice that is
+// bounded, so they cannot become a status channel. stopped_work is never
+// limited: losing a stop would leave Ed unaware that work halted.
+func (q *Queries) ListRecentCoordinatorResultTimes(ctx context.Context, arg ListRecentCoordinatorResultTimesParams) ([]time.Time, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentCoordinatorResultTimes, arg.Since, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []time.Time{}
+	for rows.Next() {
+		var created_at time.Time
+		if err := rows.Scan(&created_at); err != nil {
+			return nil, err
+		}
+		items = append(items, created_at)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

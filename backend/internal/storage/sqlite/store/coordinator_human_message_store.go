@@ -64,8 +64,8 @@ func (s *Store) RecordCoordinatorStartupFailure(ctx context.Context, id domain.S
 	return err
 }
 
-// CoordinatorNoticeLimit caps non-blocking coordinator notices per window so
-// they cannot become a status channel to the human.
+// CoordinatorNoticeLimit caps verified-result notices per window so they cannot
+// become a status channel to the human. Stopped-work notices are not limited.
 const (
 	CoordinatorNoticeLimit  = 3
 	CoordinatorNoticeWindow = 15 * time.Minute
@@ -124,13 +124,14 @@ func (s *Store) recordCoordinatorHumanMessage(ctx context.Context, msg domain.Co
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if notice {
-			recent, err := q.CountCoordinatorNoticesSince(ctx, now.Add(-CoordinatorNoticeWindow))
+		if purpose == "verified_result" {
+			recent, err := q.ListRecentCoordinatorResultTimes(ctx, gen.ListRecentCoordinatorResultTimesParams{Since: now.Add(-CoordinatorNoticeWindow), MaxRows: CoordinatorNoticeLimit})
 			if err != nil {
 				return err
 			}
-			if recent >= CoordinatorNoticeLimit {
-				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", "Too many coordinator notices recently; fold this into your next single notice")
+			if len(recent) >= CoordinatorNoticeLimit {
+				wait := recent[len(recent)-1].Add(CoordinatorNoticeWindow).Sub(now).Round(time.Second)
+				return apierr.TooManyRequests("COORDINATOR_NOTICE_RATE_LIMITED", fmt.Sprintf("Three verified results were already sent in the last 15 minutes. Retry after %d seconds, or fold this into your next single result. A stopped-work notice is never limited.", max(int(wait.Seconds()), 1)))
 			}
 		}
 		// A notice never pauses or retargets story work, so it skips both branches.

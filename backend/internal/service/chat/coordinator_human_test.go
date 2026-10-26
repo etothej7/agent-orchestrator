@@ -413,7 +413,7 @@ func TestCoordinatorAddressesHumanWithNotificationAndBoundedNotices(t *testing.T
 		_, err := svc.RecordHumanDecision(ctx, testSession, chatsvc.HumanDecision{ID: id, StoryID: "story", Purpose: purpose, Question: "Verified at abc123."})
 		return err
 	}
-	for i, purpose := range []string{"verified_result", "stopped_work", "verified_result"} {
+	for i, purpose := range []string{"verified_result", "stopped_work", "verified_result", "verified_result"} {
 		if err := notice(fmt.Sprintf("n%d", i), purpose); err != nil {
 			t.Fatal(err)
 		}
@@ -421,18 +421,24 @@ func TestCoordinatorAddressesHumanWithNotificationAndBoundedNotices(t *testing.T
 	if err := notice("n0", "verified_result"); err != nil {
 		t.Fatal("retry of an accepted notice must be a no-op", err)
 	}
-	err = notice("n3", "verified_result")
+	err = notice("n4", "verified_result")
 	var limited *apierr.Error
-	if !errors.As(err, &limited) || limited.Code != "COORDINATOR_NOTICE_RATE_LIMITED" {
-		t.Fatal("fourth notice inside the window was not bounded", err)
+	if !errors.As(err, &limited) || limited.Code != "COORDINATOR_NOTICE_RATE_LIMITED" || !strings.Contains(limited.Message, "Retry after") {
+		t.Fatal("fourth verified result inside the window was not bounded with a retry hint", err)
+	}
+	// A stop is never dropped, however many results were just sent.
+	for _, id := range []string{"stop-a", "stop-b"} {
+		if err := notice(id, "stopped_work"); err != nil {
+			t.Fatal("stopped work must never be rate limited", err)
+		}
 	}
 	after, err := h.st.GetStory(ctx, "story")
 	if err != nil || after.Question != paused.Question || after.Revision != paused.Revision {
 		t.Fatal("a notice changed the story", after, err)
 	}
-	if len(notifier.intents) != 2+3+1 {
-		// the ask and its retry, three accepted notices, and the retry of n0;
-		// the retries share a source key, so the store raises each notification once.
+	if len(notifier.intents) != 2+4+2+1 {
+		// the ask and its retry, four accepted notices, two more stops, and the retry
+		// of n0; retries share a source key, so the store raises each notification once.
 		t.Fatal("notifications", len(notifier.intents))
 	}
 	keys := map[string]int{}
@@ -442,7 +448,7 @@ func TestCoordinatorAddressesHumanWithNotificationAndBoundedNotices(t *testing.T
 		}
 		keys[intent.SourceKey]++
 	}
-	if len(keys) != 4 || keys["coordinator-message:decision-n0"] != 2 {
+	if len(keys) != 7 || keys["coordinator-message:decision-n0"] != 2 {
 		t.Fatal("notification keys must be per message so retries dedupe", keys)
 	}
 	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
@@ -485,5 +491,59 @@ func TestCoordinatorStandingInstructionsDeliverOncePerRevisionAndStayInternal(t 
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation", nil))
 	if body := w.Body.String(); strings.Contains(body, "PRIVATE_") || strings.Contains(body, "AO standing instruction update") {
 		t.Fatal("standing instruction surfaced to Ed", body)
+	}
+}
+
+// Ed typing into a running automation turn (a steer, or a queued message
+// promoted into it) is recorded as steer guidance, not a message. His words and
+// everything the coordinator then says in that turn are shown; what automation
+// said before stays internal, and an agent relaying a steer never opens a turn.
+func TestCoordinatorHumanSteerIntoAutomationTurnIsVisibleAfterwards(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.st.SetCoordination(ctx, domain.CoordinationConfig{CoordinatorProjectID: testProject}, h.now()); err != nil {
+		t.Fatal(err)
+	}
+	conv := h.ctrl.ConversationID()
+	for _, turn := range []struct{ id, clientID string }{{"steered", "report-batch:steered"}, {"relayed", "report-batch:relayed"}} {
+		if _, err := h.st.AppendUserMessage(ctx, conv, testSession, h.ctrl.Generation(), domain.ConversationMessage{ID: turn.id, Origin: domain.MessageOriginAutomation, Text: "Reports since your previous turn", ClientMessageID: turn.clientID}, turn.id+"-turn", h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.BindTurnToProvider(ctx, turn.id+"-turn", turn.id+"-provider", h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.AppendAssistantDelta(ctx, conv, turn.id+"-before", turn.id+"-provider", "PRIVATE_BEFORE_"+turn.id, turn.id+"-before-msg", h.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	steer := func(turn, id, extra string) {
+		t.Helper()
+		detail := `{"event":"steer","text":"STEER_TEXT_` + id + `","origin":"human","clientMessageId":"` + id + `"` + extra + `}`
+		if err := h.st.UpsertActivity(ctx, conv, turn+"-provider", domain.ConversationActivity{ID: "steer-" + id, Kind: domain.ActivityKindSystem, Status: domain.ActivityStatusCompleted, Summary: "Steered", Detail: []byte(detail), ProviderItemID: "ao-steer:" + id}, h.now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.AppendAssistantDelta(ctx, conv, turn+"-after", turn+"-provider", "AFTER_"+id, turn+"-after-msg", h.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	steer("steered", "ed", "")
+	steer("relayed", "agent", `,"senderSessionId":"worker-1"`)
+
+	handler := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, httpd.APIDeps{Conversations: h.svc}, httpd.ControlDeps{})
+	for _, query := range []string{"", "?limit=4"} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+string(testSession)+"/conversation"+query, nil))
+		body := w.Body.String()
+		if w.Code != 200 || strings.Contains(body, "PRIVATE_BEFORE_") || strings.Contains(body, "AFTER_agent") || strings.Contains(body, "STEER_TEXT_agent") {
+			t.Fatal("automation output or an agent-relayed steer leaked", query, w.Code, body)
+		}
+		for _, want := range []string{"STEER_TEXT_ed", "AFTER_ed"} {
+			if !strings.Contains(body, want) {
+				t.Fatal("Ed's steer or the reply to it is hidden", want, query, body)
+			}
+		}
+		if strings.Contains(body, "ao-steer:") {
+			t.Fatal("provider item key leaked", body)
+		}
 	}
 }

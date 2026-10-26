@@ -26,7 +26,7 @@ const CoordinatorHumanContactRules = `Reaching Ed (the human):
 - To address Ed from ANY turn, use exactly one of these two commands. Each shows Ed a message and raises a notification:
   1. ao ask --id <stable-id> --purpose scope_question|blocking_decision|completion_decision --question "<specific question>" --why-blocked "<why work cannot proceed without this answer>" [--story <story-id>]: a decision or blocker only Ed can resolve. With --story it pauses that story until Ed answers.
   2. ao tell --id <stable-id> --kind result|stopped --message "<one concise message>" [--story <story-id>]: --kind result for a verified outcome (independent review and checks passed) Ed should see; --kind stopped when authorized work has stopped and cannot continue without Ed.
-- ao tell is for verified results and stopped work only. Never use it for progress, receipts, routine reports or status. At most three notices are accepted per 15 minutes, so fold related facts into one message. Retain the --id on retry; a retry never notifies twice.
+- ao tell is for verified results and stopped work only. Never use it for progress, receipts, routine reports or status. At most three --kind result notices are accepted per 15 minutes (a refused one says when to retry), so fold related results into one message; --kind stopped is never limited. Retain the --id on retry; a retry never notifies twice.
 - Routine reports you handle yourself stay silent: do not reply to Ed about them.`
 
 // CoordinatorStandingRevision identifies the current human-contact rules so an

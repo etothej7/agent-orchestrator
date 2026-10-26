@@ -59,3 +59,68 @@ func TestCoordinatorAudienceUpgradePreservesExistingPublicHistory(t *testing.T) 
 		t.Fatal(integrity, err)
 	}
 }
+
+// An install that already ran the first coordinator-audience build (66b827b9d)
+// has the old table. The forward migrations must widen it without losing a
+// row, label the opening prompt, and leave ao tell storable.
+func TestCoordinatorAudienceUpgradeFromFirstBuildWidensPurposesAndBackfills(t *testing.T) {
+	// 20261025220228420 is the last migration the first build shipped.
+	db := openMigratedDatabaseCopy(t, 20261025220228420)
+	mustExec(t, db, `INSERT INTO projects(id,path,registered_at) VALUES('coord','/tmp/coord',CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO conversations(id,scope,project_id,created_at,updated_at) VALUES('coord-conv','project','coord',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO conversation_messages(id,conversation_id,sequence,role,origin,text,client_message_id,provider_item_id,created_at,updated_at) VALUES
+ ('opening','coord-conv',1,'user','human','Opening prompt','','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+ ('import','coord-conv',2,'user','human','Imported','','item-1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+ ('typed','coord-conv',3,'user','human','Typed by Ed','client-1','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+ ('reply','coord-conv',4,'assistant','provider','Old reply','','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+ ('decision','coord-conv',5,'assistant','daemon','Question','','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	for id, purpose := range map[string]string{"typed": "human_request", "reply": "legacy_public", "decision": "scope_question"} {
+		mustExec(t, db, `INSERT INTO coordinator_human_messages(message_id,purpose) VALUES(?,?)`, id, purpose)
+	}
+	// The old table refuses the new purposes: this is the failure being fixed.
+	if _, err := db.Exec(`INSERT INTO coordinator_human_messages(message_id,purpose) VALUES('typed','verified_result')`); err == nil {
+		t.Fatal("precondition: the first build's table should reject verified_result")
+	}
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{}
+	rows, err := db.Query(`SELECT message_id, purpose FROM coordinator_human_messages`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, purpose string
+		if err := rows.Scan(&id, &purpose); err != nil {
+			t.Fatal(err)
+		}
+		labels[id] = purpose
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"typed": "human_request", "reply": "legacy_public", "decision": "scope_question", "opening": "human_request"}
+	if len(labels) != len(want) {
+		t.Fatal("labels", labels)
+	}
+	for id, purpose := range want {
+		if labels[id] != purpose {
+			t.Fatalf("label %s = %q, want %q (labels %v)", id, labels[id], purpose, labels)
+		}
+	}
+	if _, found := labels["import"]; found {
+		t.Fatal("provider import was labeled as human")
+	}
+	// Both ao tell purposes and the new notification type are storable.
+	mustExec(t, db, `INSERT INTO conversation_messages(id,conversation_id,sequence,role,origin,text,created_at,updated_at) VALUES('n1','coord-conv',6,'assistant','daemon','Verified',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),('n2','coord-conv',7,'assistant','daemon','Stopped',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	mustExec(t, db, `INSERT INTO coordinator_human_messages(message_id,purpose) VALUES('n1','verified_result'),('n2','stopped_work')`)
+	var indexed int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_conversation_messages_turn'`).Scan(&indexed); err != nil || indexed != 1 {
+		t.Fatal("turn index missing", indexed, err)
+	}
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatal(integrity, err)
+	}
+}

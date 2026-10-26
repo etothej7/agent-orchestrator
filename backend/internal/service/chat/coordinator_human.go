@@ -145,6 +145,16 @@ func (s *Service) HumanSnapshot(ctx context.Context, in Snapshot) (Snapshot, err
 		}
 	}
 	for _, activity := range in.Activities {
+		if text, ok := humanSteerText(activity); ok {
+			// Ed's own guidance into a running turn: show his words, nothing else.
+			activity.CommandOutput = ""
+			activity.StreamedText = ""
+			activity.ProviderItemID = ""
+			activity.Detail, _ = json.Marshal(map[string]string{"event": "steer", "text": text, "origin": "human"})
+			out.Activities = append(out.Activities, activity)
+			visibleTurns[activity.TurnID] = true
+			continue
+		}
 		if (activity.Kind != domain.ActivityKindApproval && activity.Kind != domain.ActivityKindUserInput) || activity.Status != domain.ActivityStatusPending {
 			continue
 		}
@@ -232,6 +242,28 @@ func tagAudience(human bool) string {
 		return "human"
 	}
 	return "internal"
+}
+
+// humanSteerText recognizes guidance Ed typed into a running turn: a steer the
+// human sent directly (/conversation/steer or a promoted queued message), not
+// one an agent relayed. Its reply is visible like any answer to Ed.
+func humanSteerText(activity domain.ConversationActivity) (string, bool) {
+	if activity.Kind != domain.ActivityKindSystem {
+		return "", false
+	}
+	var detail struct {
+		Event           string `json:"event"`
+		Text            string `json:"text"`
+		Origin          string `json:"origin"`
+		SenderSessionID string `json:"senderSessionId"`
+	}
+	if json.Unmarshal(activity.Detail, &detail) != nil {
+		return "", false
+	}
+	if detail.Event != "steer" || detail.Origin != string(domain.MessageOriginHuman) || detail.SenderSessionID != "" {
+		return "", false
+	}
+	return detail.Text, true
 }
 
 // Decode only the UI's actionable contract; never pass through provider fields.
