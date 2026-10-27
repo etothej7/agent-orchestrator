@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencodev2"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/internal/testparent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/opencodeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -40,12 +41,8 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		// Test helper only: a production chat host deliberately outlives its
-		// controller, but a helper started by a test must not outlive that test
-		// binary, however it dies (SIGKILL, a test timeout panic, a crash).
-		ctx, cancel := context.WithCancel(context.Background())
-		go exitWhenTestParentDies(cancel)
-		err := persistenthost.Run(ctx, persistenthost.Config{
+		// Test helper only: it must not outlive the test binary that spawned it.
+		err := persistenthost.Run(testparent.Context(), persistenthost.Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,
@@ -57,20 +54,6 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
-}
-
-// exitWhenTestParentDies cancels the host once the test process that spawned it
-// is gone. The helper is its direct child (spawnDetached uses Setsid, not a
-// double fork), so the parent pid changes (to init) when the test dies.
-func exitWhenTestParentDies(cancel context.CancelFunc) {
-	parent := os.Getppid()
-	for {
-		time.Sleep(200 * time.Millisecond)
-		if os.Getppid() != parent {
-			cancel()
-			return
-		}
-	}
 }
 
 func TestOpenCodeV2ACPProviderHelper(t *testing.T) {
@@ -191,8 +174,7 @@ func (fixturePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) 
 // from the real user's OpenCode state.
 func isolateOpenCodeState(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	testparent.IsolateHome(t)
 }
 
 // startContained runs driver.Start and guarantees that nothing it launched

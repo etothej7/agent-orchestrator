@@ -1,11 +1,11 @@
 package copilotacp
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/internal/testparent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 )
 
@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		err := persistenthost.Run(context.Background(), persistenthost.Config{
+		err := persistenthost.Run(testparent.Context(), persistenthost.Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,
