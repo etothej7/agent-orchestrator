@@ -291,11 +291,11 @@ func (f *autoResumeFixture) assertRecovered(t *testing.T, d *daemon, wantResumes
 	t.Helper()
 	w := f.w
 	d.awaitLiveController(f.busy, 120*time.Second)
-	after := d.awaitConversation(f.busy, 60*time.Second, "the continue turn", func(s snapshot) bool {
+	d.awaitConversation(f.busy, 60*time.Second, "the continue turn", func(s snapshot) bool {
 		return len(continueTurns(s)) >= 1
 	})
 	time.Sleep(3 * time.Second) // a duplicate would have shown up by now
-	after = d.conversation(f.busy)
+	after := d.conversation(f.busy)
 	turns := continueTurns(after)
 	if len(turns) != wantResumes || turns[0].Origin != "automation" {
 		t.Fatalf("continue turns = %+v, want %d automation turn(s)\n%s", turns, wantResumes, describe(after))
