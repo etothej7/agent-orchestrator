@@ -6,8 +6,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 )
 
@@ -166,12 +168,34 @@ func (c *StoriesController) command(w http.ResponseWriter, r *http.Request) {
 	if !decodeConversationBody(w, r, &req) {
 		return
 	}
+	if reason := storySenderRefusal(identity.FromContext(r.Context()), req.SenderSessionID); reason != "" {
+		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "STORY_SENDER_MISMATCH", reason, nil)
+		return
+	}
 	event, err := c.Svc.Apply(r.Context(), storysvc.Command(req))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, StoryEventResponse{Event: event})
+}
+
+// storySenderRefusal decides whether a caller that is an AGENT may send this story command with
+// this senderSessionId. An empty sender means the person (the board's Done, answers and approvals),
+// which an agent must never get by leaving the field out: a session that proved itself (or whose
+// process tree the daemon matched) must name exactly itself, and a native reviewer, which is not a
+// story participant, may not send story commands at all. Anyone else (the person, an anonymous
+// caller) is left to the route-class guard and the story service, exactly as before.
+func storySenderRefusal(caller identity.Caller, sender domain.SessionID) string {
+	switch {
+	case caller.IsReviewer():
+		return "A native reviewer cannot send story commands."
+	case caller.IsAgent() || caller.IsBridged():
+		if sender == "" || sender != caller.Session {
+			return "Send story commands as yourself: senderSessionId must be this session."
+		}
+	}
+	return ""
 }
 
 func (c *StoriesController) continuations(w http.ResponseWriter, r *http.Request) *storysvc.Continuations {
