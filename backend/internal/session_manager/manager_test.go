@@ -74,6 +74,8 @@ type fakeStore struct {
 	// policyUnreadable makes every policy read fail (and so fail closed).
 	protected        map[domain.SessionID]bool
 	policyUnreadable bool
+	policies         map[domain.SessionID]domain.AutoResumePolicy
+	coordination     domain.CoordinationConfig
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
@@ -85,6 +87,24 @@ type fakeStore struct {
 // fails closed, like the real store.
 func (s *fakeStore) AutoResumeAllowed(_ context.Context, id domain.SessionID) bool {
 	return !s.policyUnreadable && !s.protected[id]
+}
+
+// SetAutoResumePolicy is the optional autoResumePolicyWriter part of the store.
+func (s *fakeStore) SetAutoResumePolicy(_ context.Context, id domain.SessionID, policy domain.AutoResumePolicy, _ time.Time) error {
+	if s.policies == nil {
+		s.policies = map[domain.SessionID]domain.AutoResumePolicy{}
+	}
+	s.policies[id] = policy
+	if s.protected == nil {
+		s.protected = map[domain.SessionID]bool{}
+	}
+	s.protected[id] = !policy.Allows()
+	return nil
+}
+
+// GetCoordination is the optional coordination reader part of the store.
+func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
+	return s.coordination, nil
 }
 
 // SetStopReason is the optional stopReasonStore part of the store.

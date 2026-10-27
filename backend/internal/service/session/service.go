@@ -1150,6 +1150,24 @@ func (s *Service) SetReviewerHarness(ctx context.Context, id domain.SessionID, h
 	return s.Get(ctx, id)
 }
 
+// autoResumeCommander is the manager's policy setter.
+type autoResumeCommander interface {
+	SetAutoResumePolicy(ctx context.Context, id domain.SessionID, policy domain.AutoResumePolicy, sender domain.SessionID) error
+}
+
+// SetAutoResumePolicy sets whether AO may resume, replace or tear down a session on
+// its own. An empty sender is the human; see sessionmanager.ErrAutoResumeNotPermitted.
+func (s *Service) SetAutoResumePolicy(ctx context.Context, id domain.SessionID, policy domain.AutoResumePolicy, sender domain.SessionID) error {
+	manager, ok := s.manager.(autoResumeCommander)
+	if !ok {
+		return apierr.Conflict("AUTO_RESUME_UNSUPPORTED", "This build cannot set an auto-resume policy", nil)
+	}
+	if !policy.Valid() {
+		return apierr.Invalid("INVALID_AUTO_RESUME_POLICY", "policy must be allowed or never", nil)
+	}
+	return toAPIError(manager.SetAutoResumePolicy(ctx, id, policy, sender))
+}
+
 // SetAutoReview enables or disables daemon-side review automation for a session.
 func (s *Service) SetAutoReview(ctx context.Context, id domain.SessionID, enabled bool) (domain.Session, error) {
 	updated, err := s.store.SetSessionAutoReview(ctx, id, enabled, s.now())
@@ -1467,6 +1485,9 @@ func mapSessionError(err error) error {
 			"AO cannot link this account's folder to this computer's history. On Windows, turn on Developer Mode.", nil)
 	case errors.Is(err, sessionmanager.ErrNotRestorable):
 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
+	case errors.Is(err, sessionmanager.ErrAutoResumeNotPermitted):
+		return apierr.Forbidden("AUTO_RESUME_NOT_PERMITTED",
+			"Only the human can lift an auto-resume protection; the coordinator can only set never")
 	case errors.Is(err, sessionmanager.ErrSessionProtected):
 		return apierr.Conflict("SESSION_PROTECTED",
 			"This session is protected from replacement and teardown. Run `ao session set-auto-resume <session> allowed` first if you really mean it.", nil)

@@ -6227,6 +6227,63 @@ paths:
       summary: Set the auto-inject review setting for a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/auto-resume:
+    put:
+      operationId: setSessionAutoResume
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetSessionAutoResumeRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersSessionAutoResumeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Set whether AO may resume, replace or tear down a session on its own
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/auto-review:
     put:
       operationId: setSessionAutoReview
@@ -15577,6 +15634,19 @@ components:
       - port
       - reason
       type: object
+    ControllersSessionAutoResumeResponse:
+      properties:
+        policy:
+          enum:
+          - allowed
+          - never
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - policy
+      type: object
     ControllersSessionView:
       properties:
         activity:
@@ -15835,6 +15905,20 @@ components:
           type: boolean
       required:
       - enabled
+      type: object
+    ControllersSetSessionAutoResumeRequest:
+      properties:
+        policy:
+          description: allowed lets AO resume the session after a reboot; never protects
+            it from automatic resume, replacement and teardown.
+          enum:
+          - allowed
+          - never
+          type: string
+        senderSessionId:
+          type: string
+      required:
+      - policy
       type: object
     ControllersSetSessionAutoReviewRequest:
       properties:
