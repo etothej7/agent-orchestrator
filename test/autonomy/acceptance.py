@@ -1136,6 +1136,7 @@ class Harness:
         evidence = idle_wake_evidence(state, details, self.cursor_links, self.args.max_dispatch_latency, main=self.main, now=float('inf'))
         self.result.update(scenario='idle-wake', kind='targeted_idle_wake_not_acceptance', autonomyAccepted=False,
                            fixtureEndTurnRule=self.fixture_end_turn_rule,
+                           endTurnRuleSources=['product built-in (RepoManagerEndTurnRule/CoordinatorDelegationRule)'] + (['fixture AGENTS.md', 'intake'] if self.fixture_end_turn_rule else []),
                            controlledConditions=(['fixture repo acceptance-idle (shout) with standing AGENTS.md line: managers end their turn after assigning work because AO wakes them on story events',
                                                   'intake repeats that manager end-turn instruction once (no mid-run relay)'] if self.fixture_end_turn_rule else
                                                  ['NO fixture end-turn rule: neither the fixture AGENTS.md nor the intake mentions ending the manager turn; only the product built-in rule applies']) + ['developer runs sleep 45 before editing',
