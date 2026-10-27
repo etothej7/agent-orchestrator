@@ -58,6 +58,10 @@ const (
 	KindHuman Kind = "human"
 	// KindAgent carried the proof of a live session.
 	KindAgent Kind = "agent"
+	// KindReviewer carried the proof of a native reviewer: the pane or chat that reviews one
+	// worker's pull request. A reviewer is a review row, not a session, so it is a different
+	// kind of caller; no predicate written for agent sessions is satisfied by it.
+	KindReviewer Kind = "reviewer"
 )
 
 // Caller is the verified identity of one request.
@@ -66,6 +70,11 @@ type Caller struct {
 	Session     domain.SessionID
 	SessionKind domain.SessionKind
 	Project     domain.ProjectID
+	// Review and Worker are set for a reviewer: the review row it was launched for and the
+	// worker session whose pull request that review covers. A route that acts on a review run
+	// checks the run's review against Review, so a reviewer can act only on its own run.
+	Review string
+	Worker domain.SessionID
 }
 
 // Anonymous is the caller that proved nothing.
@@ -79,6 +88,9 @@ func (c Caller) IsHuman() bool { return c.Kind == KindHuman }
 
 // IsAgent reports whether the caller is a verified session.
 func (c Caller) IsAgent() bool { return c.Kind == KindAgent && c.Session != "" }
+
+// IsReviewer reports whether the caller is a verified native reviewer.
+func (c Caller) IsReviewer() bool { return c.Kind == KindReviewer && c.Review != "" }
 
 type callerKey struct{}
 
@@ -175,10 +187,30 @@ type SessionReader interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 }
 
-// Issuer issues and revokes session proofs.
+// ReviewStore is what the daemon keeps about native reviewers' proofs.
+type ReviewStore interface {
+	SetReviewProofHash(ctx context.Context, reviewID string, hash string, now time.Time) error
+	ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID string, storedHash string, found bool, err error)
+	DeleteReviewProof(ctx context.Context, reviewID string) error
+}
+
+// ReviewReader reads the review row a reviewer proof was issued to.
+type ReviewReader interface {
+	GetReviewByID(ctx context.Context, id string) (domain.Review, bool, error)
+}
+
+// Issuer issues and revokes session proofs (and, once given a review store, reviewer proofs).
+//
+// The rule for WHEN to issue: a proof is issued exactly when a process environment is built for
+// a NEW process, and never when the daemon merely reconnects to a process that is already
+// running. A persistent chat host or a terminal that outlives the daemon keeps its original
+// environment, and with it its original proof; issuing again for it would invalidate every `ao`
+// call that process makes. The plain proof is recoverable only from the process's own
+// environment, never from the database, so "reuse" cannot re-inject one: it must not issue.
 type Issuer struct {
-	store Store
-	now   func() time.Time
+	store   Store
+	reviews ReviewStore
+	now     func() time.Time
 }
 
 // NewIssuer builds an Issuer; now may be nil for the real clock.
@@ -203,6 +235,37 @@ func (i *Issuer) Issue(ctx context.Context, id domain.SessionID) (string, error)
 	return proof, nil
 }
 
+// WithReviews lets the issuer also issue proofs to native reviewers.
+func (i *Issuer) WithReviews(reviews ReviewStore) *Issuer {
+	i.reviews = reviews
+	return i
+}
+
+// IssueReview gives a native reviewer a new proof and returns it, under the same rules as Issue:
+// the plain proof exists only on the way into the reviewer's launch environment, and issuing
+// again replaces the previous proof. Call it only when a new reviewer process is being launched.
+func (i *Issuer) IssueReview(ctx context.Context, reviewID string) (string, error) {
+	if i.reviews == nil {
+		return "", errors.New("reviewer proofs are not available: no review store")
+	}
+	proof, err := NewProof()
+	if err != nil {
+		return "", err
+	}
+	if err := i.reviews.SetReviewProofHash(ctx, reviewID, Hash(proof), i.now()); err != nil {
+		return "", err
+	}
+	return proof, nil
+}
+
+// RevokeReview removes a reviewer's proof.
+func (i *Issuer) RevokeReview(ctx context.Context, reviewID string) error {
+	if i.reviews == nil {
+		return errors.New("reviewer proofs are not available: no review store")
+	}
+	return i.reviews.DeleteReviewProof(ctx, reviewID)
+}
+
 // Revoke removes a session's proof.
 func (i *Issuer) Revoke(ctx context.Context, id domain.SessionID) error {
 	return i.store.DeleteSessionProof(ctx, id)
@@ -212,11 +275,19 @@ func (i *Issuer) Revoke(ctx context.Context, id domain.SessionID) error {
 type Resolver struct {
 	store    Store
 	sessions SessionReader
+	reviews  ReviewStore
+	reviewed ReviewReader
 }
 
 // NewResolver builds a Resolver.
 func NewResolver(store Store, sessions SessionReader) *Resolver {
 	return &Resolver{store: store, sessions: sessions}
+}
+
+// WithReviews teaches the resolver reviewer proofs.
+func (r *Resolver) WithReviews(reviews ReviewStore, reader ReviewReader) *Resolver {
+	r.reviews, r.reviewed = reviews, reader
+	return r
 }
 
 // Resolve verifies a proof: well formed, issued to a session, constant-time equal to the stored
@@ -235,7 +306,10 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if err != nil {
 		return Anonymous(), fmt.Errorf("resolve session proof: %w", err)
 	}
-	if !found || subtle.ConstantTimeCompare([]byte(stored), []byte(want)) != 1 {
+	if !found {
+		return r.resolveReviewer(ctx, want)
+	}
+	if subtle.ConstantTimeCompare([]byte(stored), []byte(want)) != 1 {
 		return Anonymous(), ErrInvalid
 	}
 	rec, ok, err := r.sessions.GetSession(ctx, id)
@@ -246,4 +320,35 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 		return Anonymous(), ErrSessionEnded
 	}
 	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID}, nil
+}
+
+// resolveReviewer verifies a proof that is not a session's: it may belong to a native reviewer.
+// A reviewer's authority lasts as long as its review row exists and the worker it reviews has not
+// ended.
+func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, error) {
+	if r.reviews == nil || r.reviewed == nil {
+		return Anonymous(), ErrInvalid
+	}
+	reviewID, stored, found, err := r.reviews.ReviewIdentityByProofHash(ctx, want)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve reviewer proof: %w", err)
+	}
+	if !found || subtle.ConstantTimeCompare([]byte(stored), []byte(want)) != 1 {
+		return Anonymous(), ErrInvalid
+	}
+	review, ok, err := r.reviewed.GetReviewByID(ctx, reviewID)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve reviewer proof: %w", err)
+	}
+	if !ok {
+		return Anonymous(), ErrSessionEnded
+	}
+	worker, ok, err := r.sessions.GetSession(ctx, review.SessionID)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve reviewer proof: %w", err)
+	}
+	if !ok || worker.IsTerminated {
+		return Anonymous(), ErrSessionEnded
+	}
+	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID}, nil
 }
