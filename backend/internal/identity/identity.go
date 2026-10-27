@@ -30,6 +30,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -352,7 +354,16 @@ type Resolver struct {
 	reviews  ReviewStore
 	reviewed ReviewReader
 	ancestry Ancestry
+
+	// confirmed holds the proof hashes this daemon run already recorded as presented, so a proof
+	// that authenticates every tool call costs one write the first time, not one per call.
+	confirmed     sync.Map
+	confirmedSize atomic.Int64
 }
+
+// maxRememberedConfirmations bounds the in-memory set; past it the set is simply forgotten and
+// each live proof is recorded once more.
+const maxRememberedConfirmations = 8192
 
 // NewResolver builds a Resolver.
 func NewResolver(store Store, sessions SessionReader) *Resolver {
@@ -397,7 +408,15 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if confirmer, ok := r.store.(ProofConfirmer); ok {
 		// Presenting a proof confirms it (and promotes a pending successor). A failure to record it
 		// never refuses a valid proof.
-		_ = confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now())
+		if _, done := r.confirmed.Load(want); !done {
+			if err := confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now()); err == nil {
+				if r.confirmedSize.Add(1) > maxRememberedConfirmations {
+					r.confirmed.Range(func(k, _ any) bool { r.confirmed.Delete(k); return true })
+					r.confirmedSize.Store(0)
+				}
+				r.confirmed.Store(want, struct{}{})
+			}
+		}
 	}
 	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaProof}, nil
 }

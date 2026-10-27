@@ -267,3 +267,59 @@ func TestAValidProofIsConfirmedWhenPresented(t *testing.T) {
 		t.Fatalf("a refused proof was confirmed: %v", store.confirmed)
 	}
 }
+
+// Hooks and the CLI authenticate on every tool call: only the FIRST presentation of a proof writes
+// (confirming it, or promoting a pending successor); later calls with the same proof cost no write.
+// A different proof (a relaunch's successor) is recorded once as well.
+func TestRepeatedPresentationsOfAProofDoNotWriteEveryTime(t *testing.T) {
+	store := &confirmingStore{fakeStore: newFakeStore()}
+	sessions := fakeSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	issuer, resolver := NewIssuer(store, nil), NewResolver(store, sessions)
+	first, _ := issuer.Issue(context.Background(), "worker-1")
+	for i := 0; i < 50; i++ {
+		if _, err := resolver.Resolve(context.Background(), first); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.confirmed) != 1 {
+		t.Fatalf("50 presentations wrote %d times, want 1", len(store.confirmed))
+	}
+	second, _ := issuer.Issue(context.Background(), "worker-1") // the relaunch's successor
+	for i := 0; i < 5; i++ {
+		if _, err := resolver.Resolve(context.Background(), second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.confirmed) != 2 || store.confirmed[1] != "worker-1:"+Hash(second) {
+		t.Fatalf("confirmed = %v, want one more write for the successor only", store.confirmed)
+	}
+}
+
+// A failed write is not remembered: the next presentation tries again.
+func TestAFailedConfirmationIsRetriedOnTheNextPresentation(t *testing.T) {
+	store := &flakyConfirmStore{confirmingStore: &confirmingStore{fakeStore: newFakeStore()}, failFirst: 1}
+	sessions := fakeSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	issuer, resolver := NewIssuer(store, nil), NewResolver(store, sessions)
+	proof, _ := issuer.Issue(context.Background(), "worker-1")
+	for i := 0; i < 3; i++ {
+		if _, err := resolver.Resolve(context.Background(), proof); err != nil {
+			t.Fatalf("a failed confirmation refused a valid proof: %v", err)
+		}
+	}
+	if store.attempts != 2 {
+		t.Fatalf("attempts = %d, want the failed one plus one success and then none", store.attempts)
+	}
+}
+
+type flakyConfirmStore struct {
+	*confirmingStore
+	failFirst, attempts int
+}
+
+func (f *flakyConfirmStore) ConfirmSessionProof(ctx context.Context, id domain.SessionID, hash string, now time.Time) error {
+	f.attempts++
+	if f.attempts <= f.failFirst {
+		return errors.New("database is locked")
+	}
+	return f.confirmingStore.ConfirmSessionProof(ctx, id, hash, now)
+}
