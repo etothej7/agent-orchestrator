@@ -1174,17 +1174,17 @@ func (b *BridgeService) ShutdownServe() {
 type SecurePairingMigrationOutcome string
 
 const (
-	// SecurePairingMigrationDone: nothing to do (already decided or already on).
+	// SecurePairingMigrationDone means nothing to do (already decided or already on).
 	SecurePairingMigrationDone SecurePairingMigrationOutcome = "done"
-	// SecurePairingMigrationEnabled: secure pairing was turned on.
+	// SecurePairingMigrationEnabled means secure pairing was turned on.
 	SecurePairingMigrationEnabled SecurePairingMigrationOutcome = "enabled"
-	// SecurePairingMigrationNotReady: mobile off, tunnel-only, or Tailscale
+	// SecurePairingMigrationNotReady means mobile off, tunnel-only, or Tailscale
 	// lacks a name or certificates. Not marked, so a later boot retries.
 	SecurePairingMigrationNotReady SecurePairingMigrationOutcome = "not_ready"
-	// SecurePairingMigrationForeignServe: :443 is configured by something AO
+	// SecurePairingMigrationForeignServe means :443 is configured by something AO
 	// does not own (or could not be read), so it was left strictly alone.
 	SecurePairingMigrationForeignServe SecurePairingMigrationOutcome = "foreign_serve"
-	// SecurePairingMigrationFailed: persisting the choice failed.
+	// SecurePairingMigrationFailed means persisting the choice failed.
 	SecurePairingMigrationFailed SecurePairingMigrationOutcome = "failed"
 )
 
