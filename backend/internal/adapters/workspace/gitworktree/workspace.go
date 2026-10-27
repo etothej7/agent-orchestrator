@@ -104,6 +104,10 @@ type Options struct {
 	Binary       string
 	ManagedRoot  string
 	RepoResolver RepoResolver
+	// BackupRoot is where ForceDestroy archives git-ignored secret files
+	// (.env*) before removing a worktree. It must be private AO state under the
+	// data dir. Optional; defaults to a "backups" directory next to ManagedRoot.
+	BackupRoot string
 	// Logger receives the failures background removal cannot return to a
 	// caller. Optional; nil silences them.
 	Logger *slog.Logger
@@ -114,6 +118,7 @@ type Options struct {
 type Workspace struct {
 	binary      string
 	managedRoot string
+	backupRoot  string
 	repos       RepoResolver
 	run         commandRunner
 	logger      *slog.Logger
@@ -151,6 +156,7 @@ func New(opts Options) (*Workspace, error) {
 	w := &Workspace{
 		binary:      binary,
 		managedRoot: filepath.Clean(root),
+		backupRoot:  backupRootFor(opts.BackupRoot, filepath.Clean(root)),
 		repos:       opts.RepoResolver,
 		run:         runCommand,
 		logger:      opts.Logger,
@@ -929,7 +935,13 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 	// Move the directory aside rather than waiting out `git worktree remove`'s
 	// walk of an ignored-file mountain; falls through to the git-driven path
 	// below whenever the move is not clearly safe.
-	if handled, err := w.discardWorktree(ctx, repo, path); handled {
+	if handled, err := w.discardWorktree(ctx, repo, path, info); handled {
+		return reclaim, err
+	}
+	// The git-driven path below also deletes git-ignored files with a clean
+	// worktree, so archive local secrets first (refusing if that fails).
+	secretArchive, err := w.archiveSecretsBeforeRemoval(ctx, repo, path, path, info)
+	if err != nil {
 		return reclaim, err
 	}
 	_, removeErr := w.run(ctx, w.binary, worktreeRemoveArgs(repo, path)...)
@@ -941,6 +953,7 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 		return reclaim, err
 	}
 	if _, ok := findWorktree(records, path); ok {
+		dropArchive(secretArchive) // the worktree is still there: its secrets were not removed
 		if removeErr != nil {
 			if isLockedWorktreeRemoveError(removeErr) {
 				return reclaim, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune (worktree remove: %w)", path, removeErr)
@@ -1002,7 +1015,30 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	// rename the directory out of the way, drop the registration, unlink in the
 	// background. This runs on daemon shutdown and orchestrator replacement,
 	// which stalled on the same unlink that used to stall a kill.
-	if discarded, moved := w.discard(path); moved {
+	// A worktree with a checked-out submodule is preserved and removed in place
+	// (see hasInitializedSubmodule): renaming it aside would break git inside it.
+	discarded, moved := "", false
+	if !w.hasInitializedSubmodule(ctx, path) {
+		discarded, moved = w.discard(path)
+	}
+	if moved {
+		// Preserve what is about to be unlinked. This runs on the directory after
+		// the rename (the same race-free ordering Destroy uses), so it covers
+		// anything written since the caller's own capture. A worktree that cannot
+		// be preserved and verified is put back and the removal refused.
+		pctx, cancelPreserve := context.WithTimeout(ctx, preserveBudget)
+		report, err := w.preserveForRemoval(pctx, repo, discarded, path, info)
+		cancelPreserve()
+		if err != nil {
+			// Not provably saved: keep the directory aside whole instead of
+			// deleting it, and release the registration so nothing is blocked.
+			return w.keepInsteadOfRemoving(ctx, repo, discarded, path, ".kept", report.secretArchive, err)
+		}
+		if report.unregistered {
+			// Not a registered worktree: never delete it, keep it aside.
+			return w.keepInsteadOfRemoving(ctx, repo, discarded, path, ".stray", "", errors.New("it is not a registered worktree"))
+		}
+		w.logPreservation(path, info, report)
 		// A failed prune must leave both halves intact. Deleting anyway would
 		// report failure while destroying the directory and stranding its
 		// registration, and that dangling entry blocks the path from being
@@ -1014,6 +1050,20 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 		}
 		w.removeInBackground(discarded)
 		return nil
+	}
+	if _, statErr := os.Lstat(path); statErr == nil {
+		// The rename-aside was not possible, so preserve in place before the
+		// forced removal below.
+		pctx, cancelPreserve := context.WithTimeout(ctx, preserveBudget)
+		report, err := w.preserveForRemoval(pctx, repo, path, path, info)
+		cancelPreserve()
+		if err != nil {
+			return w.keepInsteadOfRemoving(ctx, repo, path, path, ".kept", report.secretArchive, err)
+		}
+		if report.unregistered {
+			return w.keepInsteadOfRemoving(ctx, repo, path, path, ".stray", "", errors.New("it is not a registered worktree"))
+		}
+		w.logPreservation(path, info, report)
 	}
 	// --force bypasses git's dirty check; errors here are advisory (the path may
 	// already be gone). We proceed to prune regardless.

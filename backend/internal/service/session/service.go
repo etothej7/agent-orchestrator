@@ -649,10 +649,21 @@ func (s *Service) SpawnOrchestrator(
 			}
 		}
 		retireCtx := context.WithoutCancel(ctx)
+		// Ask about every orchestrator before notifying or terminating any: a
+		// worktree whose work cannot be backed up leaves all of them running.
+		if preflighter, ok := s.manager.(interface {
+			PreflightRetireForReplacement(context.Context, domain.SessionID) error
+		}); ok {
+			for _, orch := range existing {
+				if err := preflighter.PreflightRetireForReplacement(retireCtx, orch.ID); err != nil {
+					return domain.Session{}, replacementNotPreservable(err)
+				}
+			}
+		}
 		for _, orch := range existing {
 			_ = s.sendRetireNotice(retireCtx, orch.ID)
 			if err := s.manager.RetireForReplacement(retireCtx, orch.ID); err != nil {
-				return domain.Session{}, toAPIError(err)
+				return domain.Session{}, replacementNotPreservable(err)
 			}
 		}
 	} else {
@@ -1457,6 +1468,18 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 
 // toAPIError maps the session engine's sentinel errors to their REST API
 // equivalents; an unrecognized error passes through and surfaces as a 500.
+// replacementNotPreservable turns a worktree that cannot be safely backed up into
+// a clear conflict (the existing orchestrator was left running); any other retire
+// failure keeps its usual mapping.
+func replacementNotPreservable(err error) error {
+	if errors.Is(err, ports.ErrWorkspaceDirty) {
+		return apierr.Conflict("ORCHESTRATOR_WORKTREE_NOT_PRESERVABLE",
+			"The existing orchestrator was left running because its worktree has work that cannot be safely backed up: "+err.Error()+
+				". To proceed, commit or push that work, or move the named nested repository, submodule changes or large files out of the worktree, then retry once; this refusal repeats until the worktree changes.", nil)
+	}
+	return toAPIError(err)
+}
+
 func toAPIError(err error) error {
 	original := ownership.Own(err, ownership.OwnerHTTP)
 	return ownership.Preserve(original, mapSessionError(original))

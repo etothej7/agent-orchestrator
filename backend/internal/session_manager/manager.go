@@ -2736,6 +2736,13 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	if !ok || rec.IsTerminated {
 		return nil
 	}
+	// Ask first, before anything is stopped or terminated: a worktree whose work
+	// cannot be backed up leaves this orchestrator running and the replacement
+	// fails cleanly, instead of a terminated session with a worktree that still
+	// holds the branch.
+	if err := m.preflightRetireWorkspace(ctx, rec); err != nil {
+		return fmt.Errorf("retire replacement %s: %w", id, err)
+	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
 	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
@@ -2856,6 +2863,50 @@ func (m *Manager) destroyBrowserBestEffort(ctx context.Context, id domain.Sessio
 	if err := m.browser.DestroySession(cleanupCtx, id); err != nil {
 		m.logger.Warn("session browser cleanup failed", "sessionID", id, "error", err)
 	}
+}
+
+// PreflightRetireForReplacement reports, changing nothing, whether
+// RetireForReplacement could remove this session's worktree without losing work.
+// The service asks for every orchestrator it is about to replace before it sends a
+// retire notice to, or terminates, any of them.
+func (m *Manager) PreflightRetireForReplacement(ctx context.Context, id domain.SessionID) error {
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("retire replacement %s: %w", id, err)
+	}
+	if !ok || rec.IsTerminated {
+		return nil
+	}
+	if err := m.preflightRetireWorkspace(ctx, rec); err != nil {
+		return fmt.Errorf("retire replacement %s: %w", id, err)
+	}
+	return nil
+}
+
+// preflightRetireWorkspace asks the workspace, when it can say, whether the
+// session's worktree (or each repo worktree of a workspace project) can be force
+// removed without losing work. It changes nothing.
+func (m *Manager) preflightRetireWorkspace(ctx context.Context, rec domain.SessionRecord) error {
+	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
+		return nil
+	}
+	preflighter, ok := m.workspace.(ports.WorkspaceRemovalPreflighter)
+	if !ok {
+		return nil
+	}
+	rows, isProject, err := m.workspaceProjectRows(ctx, rec)
+	if err != nil {
+		return fmt.Errorf("workspace rows: %w", err)
+	}
+	if !isProject {
+		return preflighter.PreflightRemoval(ctx, workspaceInfo(rec))
+	}
+	for _, row := range rows {
+		if err := preflighter.PreflightRemoval(ctx, workspaceInfoFromRepoInfo(row)); err != nil {
+			return fmt.Errorf("repo %s: %w", row.RepoName, err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec domain.SessionRecord, rows []ports.WorkspaceRepoInfo) error {
@@ -5580,6 +5631,10 @@ func cleanupSkipReason(err error) string {
 	}
 	if errors.Is(err, ErrCleanupScript) {
 		return "workspace cleanup script failed"
+	}
+	if errors.Is(err, ports.ErrWorkspaceSecretsNotArchived) {
+		// Checked before ErrWorkspaceDirty, which these errors also wrap.
+		return "its git-ignored secret files (.env*) could not be archived; fix the backup location or move the unreadable file, then retry"
 	}
 	if errors.Is(err, ports.ErrWorkspaceDirty) {
 		return "workspace has uncommitted changes"

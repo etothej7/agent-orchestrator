@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func newCleanupFixture(t *testing.T, command string) (*Manager, *fakeStore, *fakeWorkspace, domain.SessionRecord) {
@@ -208,6 +210,20 @@ func TestCleanupReportsOnlyStepAndExitStatus(t *testing.T) {
 	}
 	if got := cleanupSkipReason(errors.Join(ErrCleanupScript, errors.New("secret output"))); got != "workspace cleanup script failed" {
 		t.Fatalf("untyped cleanup errors must not expose their message: %q", got)
+	}
+}
+
+// An archive failure is still a refusal (ErrWorkspaceDirty) but must not be reported
+// as "uncommitted changes", and the report must not carry the internal path.
+func TestCleanupSkipReasonDistinguishesAnArchiveFailureFromUncommittedChanges(t *testing.T) {
+	archiveFailure := fmt.Errorf("gitworktree: refusing to remove %q: %w", "/private/ws/mer-1",
+		errors.Join(ports.ErrWorkspaceDirty, ports.ErrWorkspaceSecretsNotArchived))
+	got := cleanupSkipReason(archiveFailure)
+	if !strings.Contains(got, "secret files (.env*) could not be archived") || strings.Contains(got, "/private/ws") || strings.Contains(got, "uncommitted") {
+		t.Fatalf("archive failure reported as %q", got)
+	}
+	if got := cleanupSkipReason(fmt.Errorf("refusing: %w", ports.ErrWorkspaceDirty)); got != "workspace has uncommitted changes" {
+		t.Fatalf("a dirty worktree must keep its reason, got %q", got)
 	}
 }
 
