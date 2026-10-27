@@ -197,3 +197,21 @@ func TestProjectLabelPutsTheIdFirstAndCleansTheName(t *testing.T) {
 		t.Errorf("label = %q", got)
 	}
 }
+
+// File dispatches on two maps, so a kind in both would be ambiguous: which target it needs, which handler runs.
+func TestNoKindIsBothASessionKindAndAProjectKind(t *testing.T) {
+	for kind := range kinds {
+		if _, both := projectKinds[kind]; both {
+			t.Errorf("kind %q is registered as a session kind and as a project kind", kind)
+		}
+	}
+}
+
+func TestATargetKeyNamesAProjectApartFromEverySession(t *testing.T) {
+	if domain.HumanRequestTargetKey("repo-1", "") != "repo-1" || domain.HumanRequestTargetKey("", "repo") != "project:repo" {
+		t.Fatal("target keys changed shape")
+	}
+	if !strings.Contains(domain.HumanRequestTargetKey("", "x"), ":") || strings.Contains(domain.HumanRequestTargetKey("repo-1", ""), ":") {
+		t.Fatal("a project key lacks the colon that keeps it apart from a session id")
+	}
+}
