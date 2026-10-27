@@ -697,16 +697,29 @@ func checkPreservable(dir string, entries []dirtyEntry) error {
 	return nil
 }
 
-// checkSubmodules refuses a worktree whose submodules hold work a backup commit
-// cannot carry: the superproject's backup stores only each submodule's recorded
-// commit (a gitlink), never the files inside it. A submodule with modified,
-// staged or untracked files, or one that keeps its git directory inside the
-// worktree (so its commits would go with the directory), is named in the error.
-// An uninitialised submodule has nothing on disk to lose.
+// errSubmoduleWork marks a refusal caused by work held in a submodule. Such a
+// refusal must stay a refusal: keeping the directory aside would prune the
+// worktree's registration, which deletes its admin directory, and a linked
+// worktree keeps each submodule's git data (objects, branches, stash) there.
+var errSubmoduleWork = errors.New("submodule holds work that removal would lose")
+
+func submoduleWork(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errSubmoduleWork, fmt.Sprintf(format, args...))
+}
+
+// checkSubmodules refuses a worktree whose submodules hold work that neither a
+// backup commit nor the remote can recover. The superproject's backup stores only
+// each submodule's recorded commit (a gitlink), never its files, and in a linked
+// worktree the submodule's own git data lives in the worktree's admin directory,
+// which removal deletes. So for every initialised submodule it requires: no
+// modified, staged or untracked files; its git directory not inside the worktree;
+// HEAD reachable from a remote ref; no local branch or tag with commits no remote
+// has; and no stash entry. The first failure is named. An uninitialised submodule
+// has nothing on disk to lose.
 func (w *Workspace) checkSubmodules(ctx context.Context, dir string) error {
 	paths, err := w.gitlinkPaths(ctx, dir)
 	if err != nil {
-		return fmt.Errorf("cannot list the submodules of %q: %w", dir, err)
+		return submoduleWork("cannot list the submodules of %q: %v", dir, err)
 	}
 	for _, path := range paths {
 		sub := filepath.Join(dir, path)
@@ -715,17 +728,39 @@ func (w *Workspace) checkSubmodules(ctx context.Context, dir string) error {
 			if errors.Is(statErr, os.ErrNotExist) {
 				continue // not initialised
 			}
-			return fmt.Errorf("cannot inspect submodule %s: %w", path, statErr)
+			return submoduleWork("cannot inspect submodule %s: %v", path, statErr)
 		}
 		if gitDir.IsDir() {
-			return fmt.Errorf("submodule %s keeps its git directory inside the worktree, so removing it would delete the submodule's commits", path)
+			return submoduleWork("submodule %s keeps its git directory inside the worktree, so removing it would delete the submodule's commits", path)
 		}
 		status, statusErr := w.run(ctx, w.binary, "-C", sub, "status", "--porcelain=v1", "--untracked-files=all")
 		if statusErr != nil {
-			return fmt.Errorf("cannot read the git status of submodule %s: %w", path, statusErr)
+			return submoduleWork("cannot read the git status of submodule %s: %v", path, statusErr)
 		}
 		if strings.TrimSpace(string(status)) != "" {
-			return fmt.Errorf("submodule %s has uncommitted or untracked files that a backup commit cannot hold", path)
+			return submoduleWork("submodule %s has uncommitted or untracked files that a backup commit cannot hold", path)
+		}
+		for _, check := range []struct {
+			args []string
+			what string
+		}{
+			{[]string{"rev-list", "-n1", "HEAD", "--not", "--remotes"}, "has commits on HEAD that no remote has"},
+			{[]string{"rev-list", "-n1", "--branches", "--tags", "--not", "--remotes"}, "has local branches or tags with commits that no remote has"},
+		} {
+			out, listErr := w.run(ctx, w.binary, append([]string{"-C", sub}, check.args...)...)
+			if listErr != nil {
+				return submoduleWork("cannot check submodule %s against its remote: %v", path, listErr)
+			}
+			if strings.TrimSpace(string(out)) != "" {
+				return submoduleWork("submodule %s %s (push them first: removal deletes the submodule's git data)", path, check.what)
+			}
+		}
+		stash, stashErr := w.run(ctx, w.binary, "-C", sub, "stash", "list")
+		if stashErr != nil {
+			return submoduleWork("cannot read the stash of submodule %s: %v", path, stashErr)
+		}
+		if strings.TrimSpace(string(stash)) != "" {
+			return submoduleWork("submodule %s has stash entries, which removal would delete", path)
 		}
 	}
 	return nil
@@ -848,6 +883,12 @@ func (w *Workspace) probeBackupRoot(sessionID domain.SessionID, path string) err
 // Only if even that cannot be done is the removal refused. The redundant secret
 // archive is dropped because the secrets are still in the kept directory.
 func (w *Workspace) keepInsteadOfRemoving(ctx context.Context, repo, from, path, suffix, archive string, reason error) error {
+	if errors.Is(reason, errSubmoduleWork) {
+		// Keeping the directory aside prunes its registration and with it the
+		// admin directory holding the submodule's git data: refuse instead.
+		dropArchive(archive)
+		return fmt.Errorf("gitworktree: refusing to remove %q: %w", path, reason)
+	}
 	kept, err := keepBeside(from, path, suffix)
 	if err != nil {
 		if from != path {

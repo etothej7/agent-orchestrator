@@ -788,6 +788,48 @@ func (f *removalFixture) addSubmodule() string {
 	return filepath.Join(f.info.Path, "vendor", "sub")
 }
 
+// assertSubmoduleRefused checks the contract for work a submodule holds: the
+// preflight refuses naming it, ForceDestroy refuses too (it must NOT keep the
+// directory aside, because that prunes the worktree's admin directory, which holds
+// the submodule's git data), and everything is left exactly as it was.
+func assertSubmoduleRefused(t *testing.T, f *removalFixture, sub, wantInMessage string) {
+	t.Helper()
+	err := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "submodule vendor/sub") || !strings.Contains(err.Error(), wantInMessage) {
+		t.Fatalf("PreflightRemoval = %v, want a refusal naming submodule vendor/sub (%q)", err, wantInMessage)
+	}
+	err = f.ws.ForceDestroy(context.Background(), f.info)
+	f.ws.waitForDiscards()
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "submodule vendor/sub") {
+		t.Fatalf("ForceDestroy = %v, want a refusal naming the submodule", err)
+	}
+	if _, statErr := os.Stat(sub); statErr != nil {
+		t.Fatalf("a refused removal changed the worktree: %v", statErr)
+	}
+	records, listErr := f.ws.listRecords(context.Background(), f.repo)
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if _, ok := findWorktree(records, f.info.Path); !ok {
+		t.Fatal("a refused removal pruned the worktree's registration (and with it the submodule's git data)")
+	}
+	if _, statErr := os.Stat(f.info.Path + ".kept"); statErr == nil {
+		t.Fatal("a submodule refusal must not move the worktree aside")
+	}
+	if got := gitOutput(t, f.git, sub, "rev-parse", "HEAD"); got == "" {
+		t.Fatal("the submodule's git data is gone")
+	}
+}
+
+func (f *removalFixture) subCommit(sub, file, content string) {
+	f.t.Helper()
+	if err := os.WriteFile(filepath.Join(sub, file), []byte(content), 0o644); err != nil {
+		f.t.Fatalf("write: %v", err)
+	}
+	runGit(f.t, f.git, sub, "add", file)
+	runGit(f.t, f.git, sub, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "inside the submodule")
+}
+
 func TestPreflightAndForceDestroyRefuseADirtySubmodule(t *testing.T) {
 	f := newRemovalFixture(t, "sess-submodule")
 	sub := f.addSubmodule()
@@ -797,22 +839,44 @@ func TestPreflightAndForceDestroyRefuseADirtySubmodule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "new.txt"), []byte("untracked inside the submodule\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	err := f.ws.PreflightRemoval(context.Background(), f.info)
-	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "submodule vendor/sub") {
-		t.Fatalf("PreflightRemoval = %v, want a refusal naming submodule vendor/sub", err)
-	}
-	if err := f.force(); err != nil {
-		t.Fatalf("ForceDestroy must keep the directory aside, not fail: %v", err)
-	}
-	kept := f.keptAside(".kept")
+	assertSubmoduleRefused(t, f, sub, "uncommitted or untracked files")
 	for name, want := range map[string]string{"lib.txt": "modified inside the submodule\n", "new.txt": "untracked inside the submodule\n"} {
-		if got, _ := os.ReadFile(filepath.Join(kept, "vendor", "sub", name)); string(got) != want {
+		if got, _ := os.ReadFile(filepath.Join(sub, name)); string(got) != want {
 			t.Fatalf("submodule file %s lost: %q", name, got)
 		}
 	}
 	if refs := f.backupRefs(); len(refs) != 0 {
 		t.Fatalf("a refused submodule worktree must not produce a backup that claims to hold it: %v", refs)
 	}
+}
+
+// F8: a commit made INSIDE a submodule leaves the submodule's own status empty, but
+// its objects live in the worktree's admin directory, which removal deletes.
+func TestPreflightAndForceDestroyRefuseAnUnpushedCommitInsideASubmodule(t *testing.T) {
+	f := newRemovalFixture(t, "sess-submodule-unpushed")
+	sub := f.addSubmodule()
+	f.subCommit(sub, "feature.txt", "committed inside the submodule, never pushed\n")
+	assertSubmoduleRefused(t, f, sub, "commits on HEAD that no remote has")
+}
+
+func TestPreflightAndForceDestroyRefuseAnUnpushedLocalBranchInsideASubmodule(t *testing.T) {
+	f := newRemovalFixture(t, "sess-submodule-branch")
+	sub := f.addSubmodule()
+	tip := gitOutput(t, f.git, sub, "rev-parse", "HEAD")
+	runGit(t, f.git, sub, "checkout", "-b", "topic")
+	f.subCommit(sub, "topic.txt", "only on a local branch\n")
+	runGit(t, f.git, sub, "checkout", "--detach", tip) // HEAD is back on a commit the remote has
+	assertSubmoduleRefused(t, f, sub, "local branches or tags with commits that no remote has")
+}
+
+func TestPreflightAndForceDestroyRefuseAStashInsideASubmodule(t *testing.T) {
+	f := newRemovalFixture(t, "sess-submodule-stash")
+	sub := f.addSubmodule()
+	if err := os.WriteFile(filepath.Join(sub, "lib.txt"), []byte("stashed edit\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit(t, f.git, sub, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "stash", "push", "-m", "keep me")
+	assertSubmoduleRefused(t, f, sub, "stash entries")
 }
 
 func TestACleanSubmoduleDoesNotBlockRemoval(t *testing.T) {
