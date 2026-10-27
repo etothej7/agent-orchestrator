@@ -3232,7 +3232,18 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
 			return nil
 		}
-		_, err = m.ResumeAgentWithMode(ctx, id)
+		parkedByReboot := m.parkedByAutoResume(ctx, id)
+		if parkedByReboot {
+			// A session auto-resume parked at boot wakes on the saved provider
+			// conversation or not at all: never a fresh start in its place, even for a
+			// conversation AO can prove never persisted.
+			_, err = m.resumeAgent(ctx, id, resumeOptions{neverFresh: true})
+			if err == nil {
+				m.clearAutoResumeIntent(ctx, id)
+			}
+		} else {
+			_, err = m.ResumeAgentWithMode(ctx, id)
+		}
 		if errors.Is(err, ErrResumeInProgress) {
 			m.agentOpMu.Lock()
 			operation = m.agentOperations[id]

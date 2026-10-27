@@ -71,6 +71,9 @@ func TestUnattendedChatResumeHistoryModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Controller: %v", err)
 		}
+		if got := ctrl.ProviderConversationID(); got != saved {
+			t.Fatalf("controller is on %q, want the saved provider conversation %q (no second conversation)", got, saved)
+		}
 		snapshot, err := st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
@@ -108,14 +111,36 @@ func TestUnattendedChatResumeHistoryModes(t *testing.T) {
 
 	t.Run("a provider with no saved session fails and never starts fresh", func(t *testing.T) {
 		conv := newFakeConversation()
-		_, _, started, resumed, err := resumeOnly(t, conv, func(ports.ChatResumeConfig) (ports.ChatConversation, error) {
+		_, svc, started, resumed, err := resumeOnly(t, conv, func(ports.ChatResumeConfig) (ports.ChatConversation, error) {
 			return nil, fmt.Errorf("session not found: %w", ports.ErrChatResumeFailed)
 		})
 		if !errors.Is(err, ports.ErrChatResumeFailed) {
 			t.Fatalf("Start error = %v, want ErrChatResumeFailed", err)
 		}
+		if _, controllerErr := svc.Controller(testSession); !errors.Is(controllerErr, chatsvc.ErrNoController) {
+			t.Fatalf("a failed resume left a controller behind: %v", controllerErr)
+		}
 		if resumed.FreshIfMissing || started.SessionID != "" {
 			t.Fatalf("a missing provider session must not start a fresh conversation: resumed=%+v started=%+v", resumed, started)
+		}
+	})
+
+	// A Codex thread killed mid-turn can read as still running. The context resume
+	// (Import mode) does not tolerate that: it surfaces ErrChatHistoryUnsettled and the
+	// controller does not start, so auto-resume classifies it as a bounded retry (the
+	// thread may settle) and then reports it, never a fresh start.
+	t.Run("an unsettled provider thread is surfaced, not tolerated", func(t *testing.T) {
+		conv := &nativeHistoryConversation{fakeConversation: newFakeConversation(), err: ports.ErrChatHistoryUnsettled}
+		conv.providerConversationID = saved
+		_, svc, started, resumed, err := resumeOnly(t, conv, nil)
+		if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+			t.Fatalf("Start error = %v, want ErrChatHistoryUnsettled", err)
+		}
+		if resumed.ProviderConversationID != saved || resumed.FreshIfMissing || started.SessionID != "" {
+			t.Fatalf("must still be the saved conversation, never fresh: resumed=%+v started=%+v", resumed, started)
+		}
+		if _, controllerErr := svc.Controller(testSession); !errors.Is(controllerErr, chatsvc.ErrNoController) {
+			t.Fatalf("an unsettled resume left a controller behind: %v", controllerErr)
 		}
 	})
 }

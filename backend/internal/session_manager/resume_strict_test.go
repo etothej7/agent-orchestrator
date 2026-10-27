@@ -65,8 +65,10 @@ func TestResumeAgentStrictWithMissingNativeHistoryFailsWithoutAFreshLaunch(t *te
 	if err == nil {
 		t.Fatal("a strict resume with no native history succeeded")
 	}
-	if ClassifyResumeFailure(err) != ResumeFailureNeedsPerson || ResumeFailureReason(err) != ResumeReasonHistory {
-		t.Fatalf("a missing conversation must need a person (class=%v reason=%q): %v", ClassifyResumeFailure(err), ResumeFailureReason(err), err)
+	// A missing provider session may be a slow start or a conversation that is gone:
+	// a couple of bounded retries (never fresh), then the history phrase.
+	if ClassifyResumeFailure(err) != ResumeFailureLimited || ResumeFailureReason(err) != ResumeReasonHistory {
+		t.Fatalf("a missing conversation must be a limited retry that ends in the history reason (class=%v reason=%q): %v", ClassifyResumeFailure(err), ResumeFailureReason(err), err)
 	}
 	if len(launcher.started) != 1 || launcher.started[0].FreshIfProviderConversationMissing {
 		t.Fatalf("exactly one start attempt expected, never fresh, no fresh retry: %+v", launcher.started)
@@ -155,7 +157,11 @@ func TestClassifyResumeFailure(t *testing.T) {
 		{"binary missing", wrap(ports.ErrAgentBinaryNotFound), ResumeFailureNeedsPerson},
 		{"not resumable", wrap(ErrNotResumable), ResumeFailureNeedsPerson},
 		{"history unavailable", wrap(ports.ErrChatHistoryUnavailable), ResumeFailureNeedsPerson},
-		{"history unsettled", wrap(ports.ErrChatHistoryUnsettled), ResumeFailureNeedsPerson},
+		{"history unsettled may settle: limited retry", wrap(ports.ErrChatHistoryUnsettled), ResumeFailureLimited},
+		{"provider resume failed may be transient: limited retry", wrap(ports.ErrChatResumeFailed), ResumeFailureLimited},
+		{"sign-in that also wraps a resume failure is never retried", wrap(fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, ports.ErrChatAuthRequired)), ResumeFailureNeedsPerson},
+		{"binary missing that also wraps a resume failure is never retried", wrap(fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, ports.ErrAgentBinaryNotFound)), ResumeFailureNeedsPerson},
+		{"account change that also wraps a resume failure is never retried", wrap(fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, ports.ErrAgentAccountChanged)), ResumeFailureNeedsPerson},
 		{"native history unavailable", wrap(ports.ErrNativeHistoryUnavailable), ResumeFailureNeedsPerson},
 		{"terminated", wrap(ErrTerminated), ResumeFailurePermanent},
 		{"not found", wrap(ErrNotFound), ResumeFailurePermanent},

@@ -16,9 +16,12 @@ history probe).
    - **Rule B**: it was `exited` and the exit was written inside the previous daemon's
      shutdown window (a graceful quit where the hosts and providers went first).
    An exit that is older, or that a person caused (`stop_reason`), is never captured.
-2. **Idle sessions are parked, not launched.** If the harness's history probe proves the
-   saved conversation exists, one write sets the sleep marker and the idle state. The
-   next message wakes the session through the normal worktree-preserving path.
+2. **Idle sessions are parked, not launched.** Unless the harness's history probe reports
+   the saved conversation is gone (one notice, nothing launched), the session is parked: one
+   write sets the sleep marker and the idle state. This includes harnesses with no probe,
+   because the wake of a session parked this way is *never-fresh*: it resumes the saved
+   provider conversation or fails, and never starts a new one. The next message wakes it
+   through the normal worktree-preserving path.
 3. **Working sessions are resumed in stages**: the main coordinator, then repo and story
    managers, then workers (3 at a time, 2 s apart, 3 min stage cap, 20 s settle delay
    that grows to 2 min when the daemon keeps restarting).
@@ -29,7 +32,9 @@ history probe).
 5. **Failures that need you** produce one `stopped_work` notice in the coordinator
    conversation with a fixed reason ("sign-in required", "its saved conversation can't be
    resumed safely", ...). Transient failures retry with backoff (30 s to 10 min, 5
-   attempts). A session that is resumed 3 times in 30 minutes is refused ("keeps stopping
+   attempts). A provider resume failure (`ErrChatResumeFailed`) or an unsettled provider
+   history gets two bounded retries (3 attempts, never fresh) before the notice; sign-in,
+   account, missing-binary and incompatible-driver failures are reported at once. A session that is resumed 3 times in 30 minutes is refused ("keeps stopping
    after restarts").
 
 ## Hard rules
@@ -54,11 +59,12 @@ Chat resume uses the provider's saved session, so what is recovered depends on t
 | ACP agent with `loadSession` (`claude-agent-acp` 0.70) | `session/load` | full replay imported | yes |
 | ACP agent with `session/resume` only | `session/resume` | none (model context only) | yes |
 | Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes; a thread killed mid-turn may read `inProgress` until it settles (up to 45 s), then the session needs a manual resume |
-| Provider has no saved session | refused | n/a | no: one notice, never a fresh start |
+| Provider has no saved session | `ErrChatResumeFailed` | n/a | no: two retries, then one notice, never a fresh start |
 
-Parking (idle sessions) additionally needs the adapter's history probe: claude, codex,
-copilot, qwen, cline, kilocode, mimocode, omp, opencode (v1) and opencode-v2. Without a
-probe an idle session is resumed instead of parked.
+The adapter's history probe (claude, codex, copilot, qwen, cline, kilocode, mimocode, omp,
+opencode (v1) and opencode-v2) only decides whether an idle session whose conversation is
+reported gone is reported to you instead of parked. Working sessions are always resumed
+(never fresh) whatever the probe says.
 
 Terminal (TUI) sessions are not auto-resumed.
 
