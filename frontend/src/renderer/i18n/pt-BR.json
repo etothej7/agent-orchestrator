@@ -3649,5 +3649,6 @@
 	"settings.project.agentMayMergeToggle": "Agents may merge pull requests",
 	"settings.project.agentMayMergeDescription": "When enabled, a worker may merge its own reviewed pull request and the project manager may merge any pull request of this project, once the review and checks pass. When disabled, an agent that tries to merge files a request for you to approve instead.",
 	"humanRequest.confirmMergeTitle": "Merge this pull request?",
-	"humanRequest.confirmMerge": "Merge"
+	"humanRequest.confirmMerge": "Merge",
+	"settings.project.agentMayMergeNotSaved": "The setting for agents merging pull requests was not changed. Only the AO app on this computer can change it."
 }

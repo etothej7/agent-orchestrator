@@ -176,3 +176,13 @@ it("keeps an unsaved remote draft through disconnect and saves after reconnect",
 	expect(screen.getByRole("textbox", { name: "Project name" })).toHaveValue("Draft Beta");
 	await waitFor(() => expect(mocks.put).toHaveBeenCalledWith("box-b", "/api/v1/projects/{id}", expect.objectContaining({ body: expect.objectContaining({ displayName: "Draft Beta" }) })));
 });
+
+it("offers no agent-merge switch for a project on another computer", async () => {
+	connect("box-a");
+	renderForm("box-a");
+	expect(await screen.findByText("Alpha")).toBeVisible();
+	// A remote daemon cannot tie this app's write to the person, so it would ignore the change; the switch belongs to
+	// the AO app on that computer.
+	expect(screen.queryByRole("switch", { name: "Agents may merge pull requests" })).not.toBeInTheDocument();
+	expect(screen.getByRole("switch", { name: "Workers request AO review" })).toBeInTheDocument();
+});

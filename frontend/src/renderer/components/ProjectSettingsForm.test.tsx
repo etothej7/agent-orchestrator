@@ -806,6 +806,51 @@ describe("ProjectSettingsForm", () => {
 		expect(putMock.mock.calls[0]?.[1]?.body.config.agentMayMerge).toBe(true);
 	});
 
+	it("turns agent merging off by dropping the key, not by sending false", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "git@github.com:acme/project-one.git",
+			defaultBranch: "main",
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" }, agentMayMerge: true },
+		});
+
+		renderSettings("proj-1", undefined, "general");
+
+		const toggle = await screen.findByRole("switch", { name: "Agents may merge pull requests" });
+		expect(toggle).toBeChecked();
+		await userEvent.click(toggle);
+		expect(toggle).not.toBeChecked();
+		submitSettings();
+
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		// The explicit undefined overrides the spread of the stored config, so the key is gone from what is sent.
+		expect(JSON.parse(JSON.stringify(putMock.mock.calls[0]?.[1]?.body.config))).not.toHaveProperty("agentMayMerge");
+	});
+
+	it("does not report a save that left agent merging as it was", async () => {
+		mockProject({
+			id: "proj-1",
+			name: "Project One",
+			kind: "single_repo",
+			path: "/repo/project-one",
+			repo: "git@github.com:acme/project-one.git",
+			defaultBranch: "main",
+			config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" }, agentMayMerge: true },
+		});
+		// The daemon accepted the request but kept the stored value: the answer still says true.
+		putMock.mockResolvedValue({ data: { project: { id: "proj-1", config: { agentMayMerge: true } } }, error: undefined });
+
+		renderSettings("proj-1", undefined, "general");
+		await userEvent.click(await screen.findByRole("switch", { name: "Agents may merge pull requests" }));
+		submitSettings();
+
+		expect(await screen.findByText(/was not changed/)).toBeInTheDocument();
+		expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+	});
+
 	it("sends no agentMayMerge for a project that never turned it on", async () => {
 		mockProject({
 			id: "proj-1",
