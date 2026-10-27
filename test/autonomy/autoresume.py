@@ -526,6 +526,9 @@ class Cycle(A.Harness):
                                 and s['activity'] in ('active', 'waiting_input', 'blocked'), t, 'mid-turn')
             elif role in ('mgr_idle', 'never_orch', 'stopped', 'terminated'):
                 self.wait_state(role, lambda s, turns: s['activity'] == 'idle' and any(x['state'] == 'completed' for x in turns), t, 'idle after a turn')
+                if role == 'mgr_idle' and self.read_snapshot()['sessions'][self.sessions[role]]['hibernated']:
+                    # The idle sweeper got there first: boot parking would not be exercised.
+                    raise RuntimeError('precondition invalid: mgr_idle was already hibernated before the restart')
         if 'coord' in self.spec['roles']:
             # The coordinator is idle when nothing was asked of it; require a live host and an idle row.
             self.wait_state('coord', lambda s, turns: s['activity'] in ('idle', 'active') and not s['terminated'], t, 'live')
@@ -797,6 +800,8 @@ def run_cycle(args, name):
     try:
         cycle = Cycle(args, name)
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(RuntimeError('cycle wall-clock timeout')))
+        signal.alarm(int(args.cycle_timeout))
         cycle.result['binary'] = {'path': str(args.daemon), 'sha256': A.hashlib.sha256(args.daemon.read_bytes()).hexdigest()}
         cycle.start()
         cycle.check('isolated_daemon_ready', True)
@@ -806,6 +811,7 @@ def run_cycle(args, name):
             return {'cycle': name, 'errors': [type(error).__name__ + ': harness initialization failed'], 'gates': {}, 'safety': {}}
         cycle.result['errors'].append(type(error).__name__ + (': ' + str(error) if isinstance(error, RuntimeError) else ''))
     finally:
+        signal.alarm(0)
         if cycle:
             cycle.finalize()
     safety = {k: v for k, v in cycle.result['assertions'].items()}
@@ -860,6 +866,7 @@ def parse(argv=None):
     parser.add_argument('--pass-env', action='append', default=[])
     parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
     parser.add_argument('--simulate-resumer', action='store_true', help='mechanics only: positive control that resumes through the public API; never certifies')
+    parser.add_argument('--cycle-timeout', type=float, default=1800, help='hard wall-clock limit per cycle; teardown still runs')
     parser.add_argument('--setup-timeout', type=float, default=240)
     parser.add_argument('--settle-timeout', type=float, default=300)
     parser.add_argument('--quiet', type=float, default=20, help='seconds without change before the verdict')
