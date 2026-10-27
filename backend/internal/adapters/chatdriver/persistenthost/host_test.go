@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 func TestMain(m *testing.M) {
@@ -48,7 +50,7 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		err := Run(context.Background(), Config{
+		err := Run(testparent.Context(), Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,

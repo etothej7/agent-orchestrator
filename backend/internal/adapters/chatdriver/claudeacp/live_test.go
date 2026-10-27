@@ -14,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 func TestMain(m *testing.M) {
@@ -21,7 +22,7 @@ func TestMain(m *testing.M) {
 		if os.Args[5] != string(persistenthost.ProtocolACP) || os.Args[7] != "--" {
 			os.Exit(2)
 		}
-		err := persistenthost.Run(context.Background(), persistenthost.Config{
+		err := persistenthost.Run(testparent.Context(), persistenthost.Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Protocol: persistenthost.ProtocolACP, OwnershipFingerprint: os.Args[6],
 			Env: os.Environ(), Argv: os.Args[8:],
