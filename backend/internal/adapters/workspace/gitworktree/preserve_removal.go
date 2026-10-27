@@ -153,7 +153,7 @@ func (w *Workspace) preserveForRemoval(ctx context.Context, repo, dir, path stri
 
 	archive, names, err := w.archiveIgnoredSecrets(ctx, dir, info.SessionID)
 	if err != nil {
-		return report, fmt.Errorf("could not archive the git-ignored secret files of %q: %w", path, preserveRefusal(err))
+		return report, secretArchiveError{fmt.Errorf("could not archive the git-ignored secret files of %q: %w%s", path, preserveRefusal(err), archiveProceedHint)}
 	}
 	report.secretArchive, report.secretNames = archive, names
 
@@ -192,6 +192,20 @@ func (w *Workspace) preserveForRemoval(ctx context.Context, repo, dir, path stri
 	report.changedPaths = len(entries)
 	return report, nil
 }
+
+// secretArchiveError is an archive failure: still a refusal (ErrWorkspaceDirty, so
+// teardown leaves the worktree), but distinguishable (ErrWorkspaceSecretsNotArchived)
+// so reports do not call it "uncommitted changes".
+type secretArchiveError struct{ cause error }
+
+func (e secretArchiveError) Error() string { return e.cause.Error() }
+func (e secretArchiveError) Unwrap() []error {
+	return []error{ports.ErrWorkspaceDirty, ports.ErrWorkspaceSecretsNotArchived, e.cause}
+}
+
+// archiveProceedHint says how to get past an archive failure that cannot fix
+// itself: an unreadable or oversized secret file.
+const archiveProceedHint = "; to proceed, move or delete the unreadable or oversized file (or copy it somewhere safe yourself) and retry"
 
 // preserveRefusal marks a preservation failure as a refusal so callers that
 // classify ports.ErrWorkspaceDirty treat the worktree as one to leave alone.
@@ -570,8 +584,8 @@ func (w *Workspace) archiveSecretsBeforeRemoval(ctx context.Context, repo, dir, 
 func (w *Workspace) archiveRegisteredSecrets(ctx context.Context, dir, path string, info ports.WorkspaceInfo) (string, error) {
 	archive, names, err := w.archiveIgnoredSecrets(ctx, dir, info.SessionID)
 	if err != nil {
-		return "", fmt.Errorf("gitworktree: refusing to remove %q: could not archive its git-ignored secret files (.env*) to %s: %w",
-			path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err))
+		return "", secretArchiveError{fmt.Errorf("gitworktree: refusing to remove %q: could not archive its git-ignored secret files (.env*) to %s: %w%s",
+			path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err), archiveProceedHint)}
 	}
 	if len(names) > 0 {
 		w.logPreservation(path, info, removalPreservation{secretArchive: archive, secretNames: names})
@@ -731,8 +745,8 @@ func (w *Workspace) PreflightRemoval(ctx context.Context, info ports.WorkspaceIn
 	}
 	if len(names) > 0 {
 		if err := w.probeBackupRoot(info.SessionID, path); err != nil {
-			return fmt.Errorf("cannot archive the git-ignored secret files (.env*) of %q to %s: %w",
-				path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err))
+			return secretArchiveError{fmt.Errorf("cannot archive the git-ignored secret files (.env*) of %q to %s: %w%s",
+				path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err), archiveProceedHint)}
 		}
 	}
 	return nil

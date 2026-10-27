@@ -486,6 +486,11 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
+	// ErrWorkspaceSecretsNotArchived reports that a worktree's git-ignored secret
+	// files (.env*) could not be copied to the private archive, so the worktree was
+	// kept. Errors carrying it also wrap ErrWorkspaceDirty (teardown still treats
+	// the workspace as intentionally preserved) but are not "uncommitted changes".
+	ErrWorkspaceSecretsNotArchived = errors.New("workspace: git-ignored secret files could not be archived")
 	// ErrWorkspaceRepoUnavailable reports that the project's source repository
 	// is no longer reachable on disk, so git cannot be asked to remove the
 	// session's worktree. Teardown treats this like ErrWorkspaceDirty: the

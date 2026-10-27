@@ -5504,6 +5504,10 @@ func cleanupSkipReason(err error) string {
 	if errors.Is(err, ErrCleanupScript) {
 		return "workspace cleanup script failed"
 	}
+	if errors.Is(err, ports.ErrWorkspaceSecretsNotArchived) {
+		// Checked before ErrWorkspaceDirty, which these errors also wrap.
+		return "its git-ignored secret files (.env*) could not be archived; fix the backup location or move the unreadable file, then retry"
+	}
 	if errors.Is(err, ports.ErrWorkspaceDirty) {
 		return "workspace has uncommitted changes"
 	}

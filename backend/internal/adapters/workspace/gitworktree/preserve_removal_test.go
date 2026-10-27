@@ -734,3 +734,33 @@ func TestDestroyOfACleanWorktreeWithoutSecretsCreatesNoArchive(t *testing.T) {
 		t.Fatalf("a worktree without secrets created an archive: %v", err)
 	}
 }
+
+// An unreadable secret file (or one over the cap) makes the archive impossible: a
+// clean worktree is refused, the error says how to proceed, it is distinguishable
+// from "uncommitted changes", and no half-made archive is left behind.
+func TestDestroyRefusesACleanWorktreeWithAnUnreadableSecretAndSaysHowToProceed(t *testing.T) {
+	f := newRemovalFixture(t, "sess-unreadable")
+	f.cleanWithIgnoredFiles()
+	secret := filepath.Join(f.info.Path, ".env")
+	if err := os.Chmod(secret, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o600) })
+	if f, err := os.Open(secret); err == nil { // running as a user that can read it anyway
+		_ = f.Close()
+		t.Skip("file permissions are not enforced for this user")
+	}
+	err := f.ws.Destroy(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !errors.Is(err, ports.ErrWorkspaceSecretsNotArchived) {
+		t.Fatalf("Destroy error = %v, want a refusal that is also a secret-archive failure", err)
+	}
+	if !strings.Contains(err.Error(), "move or delete the unreadable or oversized file") {
+		t.Fatalf("error does not say how to proceed: %v", err)
+	}
+	if _, statErr := os.Stat(f.info.Path); statErr != nil {
+		t.Fatalf("refused Destroy removed the worktree: %v", statErr)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(f.backupRoot, "sess-unreadable")); len(entries) != 0 {
+		t.Fatalf("a failed archive left a partial copy behind: %v", entries)
+	}
+}
