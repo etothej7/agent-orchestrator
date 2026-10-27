@@ -59,7 +59,7 @@ func TestSessionSetAutoResumeRejectsAnUnknownPolicyBeforeCallingTheDaemon(t *tes
 
 	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
 		"session", "set-auto-resume", "demo-1", "maybe")
-	if err == nil || !strings.Contains(err.Error(), "must be never") {
+	if err == nil || !strings.Contains(err.Error(), "must be allowed or never") {
 		t.Fatalf("error = %v, want a policy error", err)
 	}
 	if len(*seen) != 0 {
@@ -67,30 +67,8 @@ func TestSessionSetAutoResumeRejectsAnUnknownPolicyBeforeCallingTheDaemon(t *tes
 	}
 }
 
-// No command can lift a protection: allowed is refused before the daemon is called,
-// whoever runs it and whatever it inherits, and the old --human flag no longer exists.
-func TestSessionSetAutoResumeCannotLiftAProtection(t *testing.T) {
-	for name, env := range map[string]string{
-		"a person's shell":                "",
-		"a shell inside an agent session": "worker-9",
-		"the coordinator":                 "coord-1",
-	} {
-		cfg := setConfigEnv(t)
-		srv, seen := autoResumeServer(t, http.StatusOK, `{"sessionId":"demo-1","policy":"allowed"}`)
-		writeRunFileFor(t, cfg, srv)
-		t.Setenv("AO_SESSION_ID", env)
-
-		_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
-			"session", "set-auto-resume", "demo-1", "allowed")
-		if err == nil || !strings.Contains(err.Error(), "AO app") {
-			t.Fatalf("%s: error = %v, want a refusal that points at the AO app", name, err)
-		}
-		if len(*seen) != 0 {
-			t.Fatalf("%s: a lift reached the daemon: %v", name, *seen)
-		}
-	}
-}
-
+// No command lifts a protection by itself: allowed only files a request for the person (see
+// human_request_test.go), whoever runs it and whatever it inherits, and the old --human flag no longer exists.
 func TestSessionSetAutoResumeHasNoHumanFlag(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, seen := autoResumeServer(t, http.StatusOK, `{"sessionId":"demo-1","policy":"allowed"}`)

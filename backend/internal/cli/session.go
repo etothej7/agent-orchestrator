@@ -209,6 +209,8 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionResumeAgentCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
 	cmd.AddCommand(newSessionSetAutoResumeCommand(ctx))
+	cmd.AddCommand(newSessionSetModelCommand(ctx))
+	cmd.AddCommand(newSessionSwitchAgentCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
 	cmd.AddCommand(newSessionHistoryCommand(ctx))
@@ -357,12 +359,13 @@ type sessionAutoResumeResponse struct {
 
 func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "set-auto-resume <id> never",
-		Short: "Protect a session from automatic resume, replacement and teardown",
+		Use:   "set-auto-resume <id> allowed|never",
+		Short: "Protect a session from automatic resume, or ask the person to lift the protection",
 		Long: "never protects the session: AO will not resume it, replace it or tear its project down, and a kill\n" +
 			"keeps its worktree. The main coordinator and the person may set it.\n\n" +
-			"Lifting a protection (allowed) is the person's decision and is made only in the AO app, in the\n" +
-			"session's ... menu (Allow automatic resume). This command cannot lift it, and nothing may be used to try.",
+			"allowed lifts a protection, which is the person's decision. This files a request that the person\n" +
+			"approves in the AO app; nothing changes until they do, and you are told how it ends. A person can\n" +
+			"also do it directly in the session's ... menu (Allow automatic resume).",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := normalizeSessionID(args[0])
@@ -373,9 +376,9 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 			switch policy {
 			case "never":
 			case "allowed":
-				return usageError{errors.New("only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume; no command can lift a protection")}
+				return ctx.fileHumanRequest(cmd, "auto_resume_lift", id, nil)
 			default:
-				return fmt.Errorf("policy must be never, got %q", args[1])
+				return fmt.Errorf("policy must be allowed or never, got %q", args[1])
 			}
 			var res sessionAutoResumeResponse
 			req := sessionAutoResumeRequest{Policy: policy, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}

@@ -333,3 +333,19 @@ ao session claim-pr mer-3 88
 # Claim PR 88 for the current worker but refuse if another session owns it
 ao session claim-pr 88 --no-takeover
 ```
+
+### Requests the person must approve
+
+Some changes are the person's alone: lifting a session's `never` protection, changing a conversation's model or
+reasoning effort, moving a conversation to another agent. You cannot do them and no flag lets you. Each of these
+commands **files a request**; the person approves it with one click in the AO app, the daemon writes the text they
+read (never yours), and you are told in a message how it ended. Do not file the same request again, and do not file
+one that was denied unless the person asks.
+
+```bash
+ao session set-auto-resume <id> allowed          # ask to lift a never protection (never itself you may set)
+ao session set-model <id> --model <model> --effort <effort> [--fast[=false]] [--plan[=false]]
+ao session switch-agent <id> --agent <agent> [--model <model>] [--effort <effort>] [--fast]
+```
+
+A permission mode cannot be requested this way.
