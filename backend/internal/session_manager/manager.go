@@ -3249,17 +3249,26 @@ type resumeOptions struct {
 	// resuming it. That reconcile relaunches NON-strictly, so an unattended strict
 	// resume must never take it.
 	skipReadinessReconcile bool
+	// neverFresh is the unattended resume of a CHAT session: the same provider
+	// conversation or nothing. It resumes the provider's saved session (full
+	// replay when the driver has it, model context alone when it does not) and
+	// never starts a fresh conversation in its place. It replaces
+	// requireNativeHistory for Chat, whose required-history mode is the
+	// terminal-handoff barrier rather than a restart check.
+	neverFresh bool
 }
 
 // ResumeAgentStrict resumes an exited agent for unattended (automatic) resume. It
-// is ResumeAgentWithMode with two differences: native history is REQUIRED, so a
-// missing or unverifiable conversation ends in ErrNotResumable or a history error
-// instead of a fresh launch that re-runs the original task; and it never takes the
+// is ResumeAgentWithMode with two differences: it never continues in a fresh
+// provider conversation, so a missing or unverifiable conversation ends in
+// ErrNotResumable, a history error or ErrChatResumeFailed instead of a launch that
+// re-runs the original task (a terminal session requires native history; a Chat
+// session resumes the saved provider conversation, with or without typed replay); and it never takes the
 // readiness-reconcile branch, which relaunches non-strictly (readiness reads
 // "unavailable" for any row with no recovery entry once boot reconciliation failed,
 // exited rows included). The worktree is preserved exactly as for ResumeAgentWithMode.
 func (m *Manager) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
-	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, skipReadinessReconcile: true})
+	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, neverFresh: true, skipReadinessReconcile: true})
 }
 
 func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts resumeOptions) (result RestoreResult, err error) {
@@ -3398,8 +3407,14 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation state changed: %w", id, ErrResumeInProgress)
 		}
 	}
+	strictHistory := requireNativeHistory
+	if opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		// Chat: context resume, never a fresh conversation (see resumeOptions).
+		strictHistory = false
+		ctx = withNeverFreshChat(ctx)
+	}
 	result, err = m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec,
-		requireNativeHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
+		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
 	if err == nil && m.chat != nil && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil {
 		// A failed move to a new release kept the user's queued messages for

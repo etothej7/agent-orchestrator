@@ -516,7 +516,8 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
-	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && m.providerNeverPersisted(ctx, rec)
+	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && !neverFreshChat(ctx) &&
+		m.providerNeverPersisted(ctx, rec)
 	var awakeTarget *domain.AwakeAgentTarget
 	if len(awakeTargets) > 0 {
 		if len(awakeTargets) != 1 || !reconnectOnly || awakeTargets[0].SessionID != rec.ID || awakeTargets[0].Owner != rec.ControllerOwner() {
@@ -753,4 +754,18 @@ func (m *Manager) restoredWorkspaceProjectDirectories(
 		directories = append(directories, row.WorktreePath)
 	}
 	return directories, nil
+}
+
+type neverFreshChatKey struct{}
+
+// withNeverFreshChat marks a Chat resume that must continue the saved provider
+// conversation: no fresh-in-place start even for a conversation AO can prove never
+// persisted. Unattended resume uses it so a restart can never re-run the saved task.
+func withNeverFreshChat(ctx context.Context) context.Context {
+	return context.WithValue(ctx, neverFreshChatKey{}, true)
+}
+
+func neverFreshChat(ctx context.Context) bool {
+	set, _ := ctx.Value(neverFreshChatKey{}).(bool)
+	return set
 }

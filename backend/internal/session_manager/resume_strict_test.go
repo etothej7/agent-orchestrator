@@ -20,7 +20,7 @@ func failBootReconciliation(m *Manager) {
 	m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
 }
 
-func TestResumeAgentStrictRequiresNativeHistoryWhereTheOrdinaryResumeDoesNot(t *testing.T) {
+func TestResumeAgentStrictResumesTheSavedChatConversationWithoutTheHandoffBarrier(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
@@ -38,18 +38,26 @@ func TestResumeAgentStrictRequiresNativeHistoryWhereTheOrdinaryResumeDoesNot(t *
 	if _, err := mgr2.ResumeAgentStrict(context.Background(), "mer-1"); err != nil {
 		t.Fatalf("ResumeAgentStrict: %v", err)
 	}
-	if len(launcher2.started) != 1 || launcher2.started[0].HistoryMode != ports.ChatHistoryRequired {
-		t.Fatalf("the unattended resume must require native history: %+v", launcher2.started)
+	// A Chat restart is a CONTEXT resume of the saved provider conversation: typed
+	// replay is imported when the driver has it and tolerated when it does not.
+	// ChatHistoryRequired is the TUI->Chat handoff barrier (checkpoint gates,
+	// settle budget) and is not what restarting a session that already runs in
+	// Chat needs.
+	if len(launcher2.started) != 1 || launcher2.started[0].HistoryMode != ports.ChatHistoryImport {
+		t.Fatalf("the unattended chat resume must import history where available: %+v", launcher2.started)
 	}
 	if got := launcher2.started[0].ProviderConversationID; got != "thread-existing" {
 		t.Fatalf("strict resume must continue the saved provider conversation, got %q", got)
+	}
+	if launcher2.started[0].FreshIfProviderConversationMissing {
+		t.Fatal("the unattended chat resume may never start a fresh conversation in place of the saved one")
 	}
 }
 
 // A saved conversation that cannot be resumed must end the attempt, never turn into a
 // fresh launch that re-runs the original task.
 func TestResumeAgentStrictWithMissingNativeHistoryFailsWithoutAFreshLaunch(t *testing.T) {
-	launcher := &recordingLauncher{startErr: fmt.Errorf("resume: %w", ports.ErrChatHistoryUnavailable)}
+	launcher := &recordingLauncher{startErr: fmt.Errorf("resume: %w", ports.ErrChatResumeFailed)}
 	mgr, store, runtime := newChatManager(launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 
@@ -60,8 +68,8 @@ func TestResumeAgentStrictWithMissingNativeHistoryFailsWithoutAFreshLaunch(t *te
 	if ClassifyResumeFailure(err) != ResumeFailureNeedsPerson || ResumeFailureReason(err) != ResumeReasonHistory {
 		t.Fatalf("a missing conversation must need a person (class=%v reason=%q): %v", ClassifyResumeFailure(err), ResumeFailureReason(err), err)
 	}
-	if len(launcher.started) != 1 || launcher.started[0].HistoryMode != ports.ChatHistoryRequired {
-		t.Fatalf("exactly one strict start attempt expected, no fresh retry: %+v", launcher.started)
+	if len(launcher.started) != 1 || launcher.started[0].FreshIfProviderConversationMissing {
+		t.Fatalf("exactly one start attempt expected, never fresh, no fresh retry: %+v", launcher.started)
 	}
 	if runtime.created != 0 {
 		t.Fatalf("a terminal runtime was created for a chat resume: %d", runtime.created)
@@ -88,8 +96,8 @@ func TestResumeAgentStrictSkipsTheReadinessReconcileBranchButTheVersionRefreshKe
 	if _, err := mgr.ResumeAgentStrict(context.Background(), "mer-1"); err != nil {
 		t.Fatalf("ResumeAgentStrict: %v", err)
 	}
-	if len(launcher.started) != 1 || launcher.started[0].HistoryMode != ports.ChatHistoryRequired {
-		t.Fatalf("the strict resume must have started a strict controller: %+v", launcher.started)
+	if len(launcher.started) != 1 || launcher.started[0].FreshIfProviderConversationMissing {
+		t.Fatalf("the strict resume must have started a never-fresh controller: %+v", launcher.started)
 	}
 	mgr.statusRecoveryMu.RLock()
 	_, reconciled := mgr.statusRecoveries["mer-1"]
@@ -114,18 +122,18 @@ func TestResumeAgentStrictSkipsTheReadinessReconcileBranchButTheVersionRefreshKe
 }
 
 func TestResumeAgentStrictWithMissingHistoryAndUnavailableReadinessStillStartsNothingFresh(t *testing.T) {
-	launcher := &recordingLauncher{startErr: ports.ErrChatHistoryUnavailable}
+	launcher := &recordingLauncher{startErr: ports.ErrChatResumeFailed}
 	mgr, store, _ := newChatManager(launcher)
 	seedChatResumeSession(store, domain.ActivityExited)
 	failBootReconciliation(mgr)
 
 	_, err := mgr.ResumeAgentStrict(context.Background(), "mer-1")
-	if !errors.Is(err, ports.ErrChatHistoryUnavailable) {
-		t.Fatalf("error = %v, want the history error", err)
+	if !errors.Is(err, ports.ErrChatResumeFailed) {
+		t.Fatalf("error = %v, want the resume failure", err)
 	}
 	for _, start := range launcher.started {
-		if start.HistoryMode != ports.ChatHistoryRequired {
-			t.Fatalf("a non-strict start was attempted with readiness unavailable and history missing: %+v", launcher.started)
+		if start.FreshIfProviderConversationMissing {
+			t.Fatalf("a fresh start was attempted with readiness unavailable and the conversation missing: %+v", launcher.started)
 		}
 	}
 }
