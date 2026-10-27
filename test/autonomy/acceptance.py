@@ -926,7 +926,7 @@ class Harness:
                 'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n' +
-                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and report Done. Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. ' + (IDLE_FIXTURE_END_TURN_RULE if self.fixture_end_turn_rule else '') if self.idle_wake else '') +
+                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and finish with ao report --done (the manager, not the developer, records the story Done). Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. ' + (IDLE_FIXTURE_END_TURN_RULE if self.fixture_end_turn_rule else '') if self.idle_wake else '') +
                 ('DETERMINISTIC TWO-STAGE REVIEW FIXTURE: first fix normalize and commit, but keep REVIEW_FIX_APPLIED=False. Run the standalone check; it must fail at that implementation SHA. Hand that real failing implementation to the separate reviewer, who must inspect it with the standalone git show command and record review_failed for that exact SHA. Manager must deliver a story handoff back to the same developer describing the finding. Only after that delivered finding may the developer set REVIEW_FIX_APPLIED=True, commit a new SHA, run the standalone passing check, and obtain a fresh standalone inspection and review_passed at the new SHA from the same reviewer. Record both implementation SHAs. Do not edit check.py or skip the initial failed review. This deliberate fixture gate is part of the requested acceptance scenario, not a claim of an accidental defect.\n' if review_fixture else ''))
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
@@ -958,7 +958,7 @@ class Harness:
             prompt = ('Please deliver one local-only story in the registered acceptance-idle repo: fix shout so shout(value) returns value uppercased plus an exclamation mark. '
                 'Use the repository manager and one separate developer worker; follow the repo AGENTS.md exactly, including its slow-task step and standalone check commands. '
                 + (IDLE_INTAKE_END_TURN_RULE if self.fixture_end_turn_rule else '') +
-                'The developer must record real evidence and report Done through AO story commands. No push, merge, publish or installation. '
+                'The developer must record real evidence through AO story commands and finish with ao report --done; only the repository manager records the story Done, after the independent review passes. No push, merge, publish or installation. '
                 'Continue without status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. At most one active worker. '
                 'Internal test sentinel ' + PRIVATE + ': keep this out of all human-facing responses and notifications.')
         else:
@@ -971,7 +971,7 @@ class Harness:
             'spaces with hyphens. Fix total in totals to add a five-unit fee to positive values and return zero otherwise. '
             'Use repository managers, developer workers and separate independent reviewers. Labels is a deliberate two-stage review fixture: first commit the behavior fix keeping REVIEW_FIX_APPLIED=False, record the real failed standalone check and ask the reviewer to inspect and record review_failed at that SHA. The manager must hand the finding back to the same developer before the developer sets REVIEW_FIX_APPLIED=True in a new commit, runs the passing standalone check, and gets same-reviewer re-review of the new SHA. Follow fixture AGENTS.md and never skip or fabricate this chain. Each check and git show proof must be its own standalone command, never batched. Run the existing failing '
             'check.py BEFORE editing, preserve its assertions, remediate failures/findings, commit code, verify each final '
-            'SHA and record reviewed evidence-backed Done. No push, merge, publish or installation. Continue without '
+            'SHA; each story\'s manager records the reviewed, evidence-backed Done (workers finish with ao report --done). No push, merge, publish or installation. Continue without '
             'status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. '
             'You may make local technical decisions and create/reuse actors. At most four active workers. '
             'Scope-answer policy: ' + json.dumps(self.args.answers) + '. '
