@@ -337,6 +337,7 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 	}
 	return e, nil
 }
+
 // requireDoneAuthority limits who may record a story Done. An agent (a sender) must be the story's
 // assigned, still-active manager, or the coordinator when the story has no manager at all; a worker or
 // reviewer finishes its part with ao report --done and the manager records Done after reviewing. An
