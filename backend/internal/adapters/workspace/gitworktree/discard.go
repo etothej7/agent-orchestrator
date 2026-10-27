@@ -146,7 +146,7 @@ func (w *Workspace) worktreeDirty(ctx context.Context, path string) (dirty, conc
 // inconclusive probe routes there so git stays the authority on refusals and
 // their messages. A refusal discovered after the move restores the directory
 // first, because a refused teardown must leave the worktree exactly as it was.
-func (w *Workspace) discardWorktree(ctx context.Context, repo, path string) (bool, error) {
+func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, info ports.WorkspaceInfo) (bool, error) {
 	registered, locked, conclusive := w.worktreeRegistration(ctx, repo, path)
 	if !conclusive || locked {
 		return false, nil
@@ -173,6 +173,12 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string) (boo
 		if dirty {
 			w.undiscard(discarded, path)
 			return true, fmt.Errorf("gitworktree: refusing to remove %q: %w (worktree has uncommitted changes)", path, ports.ErrWorkspaceDirty)
+		}
+		// Clean, but its git-ignored secret files (.env*) go with it unless they
+		// are archived first; a failed archive refuses the removal.
+		if err := w.archiveRegisteredSecrets(ctx, discarded, path, info); err != nil {
+			w.undiscard(discarded, path)
+			return true, err
 		}
 	}
 	if _, err := w.run(ctx, w.binary, worktreePruneArgs(repo)...); err != nil {

@@ -449,3 +449,112 @@ func TestRestoreRecreatesAMissingWorktreeOnItsBranch(t *testing.T) {
 		t.Fatalf("committed work missing after recreate: %q", got)
 	}
 }
+
+// A clean worktree (Terminate, then Restore) still carries git-ignored files that
+// go with it: local secrets are archived first, caches and build output are not.
+func (f *removalFixture) cleanWithIgnoredFiles() {
+	f.t.Helper()
+	f.write(".gitignore", ".env\n.env.*\nnode_modules/\nbuild/\n")
+	runGit(f.t, f.git, f.info.Path, "add", ".gitignore")
+	runGit(f.t, f.git, f.info.Path, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "ignore secrets and build output")
+	f.write(".env", "TOKEN=dummy-clean-secret\n")
+	f.write(".env.local", "LOCAL=dummy\n")
+	f.write("node_modules/pkg/index.js", "x\n")
+	f.write("build/out.bin", "ignored build output\n")
+}
+
+func (f *removalFixture) archivedFile(name string) string {
+	f.t.Helper()
+	var found string
+	_ = filepath.WalkDir(f.backupRoot, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, string(filepath.Separator)+filepath.Join("files", name)) {
+			found = path
+		}
+		return nil
+	})
+	return found
+}
+
+func TestDestroyOfACleanWorktreeArchivesItsIgnoredSecrets(t *testing.T) {
+	for name, blockDiscard := range map[string]bool{"fast path": false, "git-driven path": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newRemovalFixture(t, "sess-destroy-secret")
+			f.cleanWithIgnoredFiles()
+			if blockDiscard {
+				// Without a usable discard root the rename-aside is impossible and
+				// Destroy falls back to `git worktree remove`.
+				if err := os.WriteFile(f.ws.discardedRoot(), []byte("not a directory"), 0o600); err != nil {
+					t.Fatalf("block discard root: %v", err)
+				}
+			}
+			if err := f.ws.Destroy(context.Background(), f.info); err != nil {
+				t.Fatalf("Destroy of a clean worktree: %v", err)
+			}
+			f.ws.waitForDiscards()
+			if !f.removed() {
+				t.Fatal("clean worktree was not removed")
+			}
+			for file, want := range map[string]string{".env": "TOKEN=dummy-clean-secret\n", ".env.local": "LOCAL=dummy\n"} {
+				path := f.archivedFile(file)
+				if path == "" {
+					t.Fatalf("%s was not archived before the removal", file)
+				}
+				info, err := os.Stat(path)
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("%s archived with mode %v err=%v, want 0600", file, info.Mode().Perm(), err)
+				}
+				if got, _ := os.ReadFile(path); string(got) != want {
+					t.Fatalf("%s archived as %q", file, got)
+				}
+			}
+			if f.archivedFile("node_modules/pkg/index.js") != "" || f.archivedFile("build/out.bin") != "" {
+				t.Fatal("caches or build output were archived")
+			}
+			if log := f.logs.String(); strings.Contains(log, "dummy") || !strings.Contains(log, "secretFileCount=2") {
+				t.Fatalf("log must name the files and never their contents: %s", log)
+			}
+		})
+	}
+}
+
+func TestDestroyRefusesACleanWorktreeWhenTheSecretArchiveFails(t *testing.T) {
+	f := newRemovalFixture(t, "sess-destroy-archive-fail")
+	f.cleanWithIgnoredFiles()
+	if err := os.WriteFile(f.backupRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block backup root: %v", err)
+	}
+	err := f.ws.Destroy(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("Destroy error = %v, want a refusal wrapping ErrWorkspaceDirty", err)
+	}
+	for _, want := range []string{f.info.Path, "git-ignored secret files", filepath.Join(f.backupRoot, "sess-destroy-archive-fail")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not say %q", err, want)
+		}
+	}
+	if got, readErr := os.ReadFile(filepath.Join(f.info.Path, ".env")); readErr != nil || string(got) != "TOKEN=dummy-clean-secret\n" {
+		t.Fatalf("refused Destroy changed the worktree: %v %q", readErr, got)
+	}
+	records, listErr := f.ws.listRecords(context.Background(), f.repo)
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if _, ok := findWorktree(records, f.info.Path); !ok {
+		t.Fatal("refused Destroy left the worktree unregistered")
+	}
+}
+
+func TestDestroyOfACleanWorktreeWithoutSecretsCreatesNoArchive(t *testing.T) {
+	f := newRemovalFixture(t, "sess-destroy-nosecret")
+	f.write(".gitignore", "build/\n")
+	runGit(t, f.git, f.info.Path, "add", ".gitignore")
+	runGit(t, f.git, f.info.Path, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "ignore build")
+	f.write("build/out.bin", "x\n")
+	if err := f.ws.Destroy(context.Background(), f.info); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	f.ws.waitForDiscards()
+	if _, err := os.Stat(f.backupRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a worktree without secrets created an archive: %v", err)
+	}
+}

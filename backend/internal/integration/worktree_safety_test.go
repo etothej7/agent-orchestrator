@@ -274,3 +274,85 @@ func runOut(t *testing.T, git, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// Terminate then Restore of a CLEAN worktree: the removal still archives the
+// git-ignored secrets (privately) before the worktree goes, and a failed archive
+// refuses the removal instead of deleting them.
+func (h *safetyHarness) cleanWithSecret(worktree string) {
+	h.t.Helper()
+	gitIn := func(args ...string) {
+		out, err := exec.Command(h.git, append([]string{"-C", worktree, "-c", "user.email=ao@example.com", "-c", "user.name=Ao"}, args...)...).CombinedOutput()
+		if err != nil {
+			h.t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte(".env\nnode_modules/\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	gitIn("add", ".gitignore")
+	gitIn("commit", "-m", "ignore env")
+	if err := os.WriteFile(filepath.Join(worktree, ".env"), []byte("TOKEN=dummy-clean-secret\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "node_modules", "pkg"), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "node_modules", "pkg", "index.js"), []byte("x\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestKillOfACleanWorktreeArchivesItsIgnoredEnvFile(t *testing.T) {
+	h := newSafetyHarness(t)
+	id, worktree := h.spawn()
+	h.cleanWithSecret(worktree)
+	freed, err := h.manager.Kill(context.Background(), id)
+	if err != nil || !freed {
+		t.Fatalf("Kill freed=%v err=%v", freed, err)
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean worktree still on disk: %v", err)
+	}
+	var archived string
+	_ = filepath.WalkDir(h.backupRoot, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == ".env" {
+			archived = path
+		}
+		return nil
+	})
+	if archived == "" {
+		t.Fatal("the ignored .env was deleted without being archived")
+	}
+	if info, _ := os.Stat(archived); info.Mode().Perm() != 0o600 {
+		t.Fatalf("archived .env mode = %v, want 0600", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(archived); string(got) != "TOKEN=dummy-clean-secret\n" {
+		t.Fatalf("archived .env = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(archived), "node_modules")); err == nil {
+		t.Fatal("node_modules was archived")
+	}
+}
+
+func TestKillRefusesToRemoveACleanWorktreeWhoseSecretsCannotBeArchived(t *testing.T) {
+	h := newSafetyHarness(t)
+	id, worktree := h.spawn()
+	h.cleanWithSecret(worktree)
+	if err := os.WriteFile(h.backupRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freed, err := h.manager.Kill(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if freed {
+		t.Fatal("the worktree was freed although its secrets could not be archived")
+	}
+	rec, _, _ := h.store.GetSession(context.Background(), id)
+	if !rec.IsTerminated {
+		t.Fatal("Kill must still terminate the session")
+	}
+	if got, readErr := os.ReadFile(filepath.Join(worktree, ".env")); readErr != nil || string(got) != "TOKEN=dummy-clean-secret\n" {
+		t.Fatalf(".env after a refused Kill = %q, %v", got, readErr)
+	}
+}

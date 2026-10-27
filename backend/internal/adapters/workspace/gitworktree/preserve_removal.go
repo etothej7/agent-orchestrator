@@ -534,6 +534,45 @@ func (w *Workspace) archiveIgnoredSecrets(ctx context.Context, dir string, sessi
 	return archive, archived, nil
 }
 
+// archiveSecretsBeforeRemoval is Destroy's share of the preservation contract.
+// Destroy refuses a dirty worktree, but a CLEAN worktree still carries
+// git-ignored files that are removed with it; build output and caches are
+// regenerable, local secrets (.env*, *.local) are not. They are archived
+// privately before the removal, and the removal is refused (an error wrapping
+// ports.ErrWorkspaceDirty that names what failed and where the archive would
+// go) when the archive cannot be written. dir is where the files are now (the
+// renamed-aside directory on the fast path); path is the registered location.
+func (w *Workspace) archiveSecretsBeforeRemoval(ctx context.Context, repo, dir, path string, info ports.WorkspaceInfo) error {
+	if _, err := os.Lstat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // nothing on disk to protect
+		}
+		return fmt.Errorf("gitworktree: refusing to remove %q: cannot inspect it: %w", path, preserveRefusal(err))
+	}
+	records, err := w.listRecords(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("gitworktree: refusing to remove %q: cannot list worktrees to check it for secret files: %w", path, preserveRefusal(err))
+	}
+	if _, registered := findWorktree(records, path); !registered {
+		return nil // not a worktree git can list files for
+	}
+	return w.archiveRegisteredSecrets(ctx, dir, path, info)
+}
+
+// archiveRegisteredSecrets archives the secret files of a worktree already known
+// to be registered (Destroy's fast path has just established that).
+func (w *Workspace) archiveRegisteredSecrets(ctx context.Context, dir, path string, info ports.WorkspaceInfo) error {
+	archive, names, err := w.archiveIgnoredSecrets(ctx, dir, info.SessionID)
+	if err != nil {
+		return fmt.Errorf("gitworktree: refusing to remove %q: could not archive its git-ignored secret files (.env*) to %s: %w",
+			path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err))
+	}
+	if len(names) > 0 {
+		w.logPreservation(path, info, removalPreservation{secretArchive: archive, secretNames: names})
+	}
+	return nil
+}
+
 // copyPrivateFile copies src to dst with private permissions (every directory
 // created under root 0700, the file 0600) and verifies the copy by content hash.
 func copyPrivateFile(root, src, dst string) error {

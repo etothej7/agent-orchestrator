@@ -935,7 +935,12 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 	// Move the directory aside rather than waiting out `git worktree remove`'s
 	// walk of an ignored-file mountain; falls through to the git-driven path
 	// below whenever the move is not clearly safe.
-	if handled, err := w.discardWorktree(ctx, repo, path); handled {
+	if handled, err := w.discardWorktree(ctx, repo, path, info); handled {
+		return reclaim, err
+	}
+	// The git-driven path below also deletes git-ignored files with a clean
+	// worktree, so archive local secrets first (refusing if that fails).
+	if err := w.archiveSecretsBeforeRemoval(ctx, repo, path, path, info); err != nil {
 		return reclaim, err
 	}
 	_, removeErr := w.run(ctx, w.binary, worktreeRemoveArgs(repo, path)...)
