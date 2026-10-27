@@ -3527,5 +3527,11 @@
 	"quit.sleep.title": "Your Mac will go to sleep and lock",
 	"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
 	"quit.agents.title": "Your agents will pause",
-	"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+	"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working.",
+	"session.allowAutoResume": "Allow automatic resume…",
+	"session.allowAutoResumeTitle": "Allow automatic resume for {{name}}?",
+	"session.allowAutoResumeBody": "{{name}} is protected: AO will not resume it, replace it or tear it down on its own. If you allow it, AO may resume it after a restart, replace it, and tear it down on its own again.",
+	"session.allowAutoResumeConfirm": "Allow",
+	"session.allowAutoResumeDone": "Automatic resume allowed",
+	"session.allowAutoResumeFailed": "Couldn’t allow automatic resume"
 }
