@@ -43,8 +43,8 @@ history probe).
   conversation or fails; it never starts a new one and never re-runs the saved prompt.
 - **`never` means protected.** `ao session set-auto-resume <id> never` (the human, or the
   main coordinator) stops auto-resume, refuses replacement and project teardown for that
-  session, and makes a kill keep its worktree. Only the human can set it back to
-  `allowed`: from a shell inside AO (which inherits an agent's `AO_SESSION_ID`) run `ao session set-auto-resume <id> allowed --human`, or the request is attributed to that agent and refused (403). The sender is attribution, not authentication; every change is logged with who asked and the old and new value, and setting `never` drops a pending resume intent. The seed protects `optimus_db-1` and `optimus_rails_app-1`. An unreadable
+  session, and makes a kill keep its worktree. By design the human sets it back to
+  `allowed`: from a shell inside AO (which inherits an agent's `AO_SESSION_ID`) run `ao session set-auto-resume <id> allowed --human`, or the request is attributed to that agent and refused (403). The sender is cooperative attribution, not authentication (an agent calling the loopback API with no sender could lift it too), so the seed and the guards are the real safeguard; every change is logged with who asked and the old and new value, and setting `never` drops a pending resume intent. The migration seeds `never` for `optimus_db-1` and `optimus_rails_app-1`: a personal-build seed for Ed's machine, a no-op anywhere those ids do not exist. An unreadable
   policy reads as `never`.
 - The resumer can only call a strict resume, the history probe and the park write on the
   session manager (a reflection test pins this). It cannot kill, clean up, replace or tear
@@ -58,13 +58,15 @@ Chat resume uses the provider's saved session, so what is recovered depends on t
 | --- | --- | --- | --- |
 | ACP agent with `loadSession` (`claude-agent-acp` 0.70) | `session/load` | full replay imported | yes |
 | ACP agent with `session/resume` only | `session/resume` | none (model context only) | yes |
-| Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes; a thread killed mid-turn may read `inProgress` until it settles (up to 45 s), then the session needs a manual resume |
+| Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes in principle; **unverified against a real killed Codex thread**: one killed mid-turn may read `inProgress` until it settles (up to 45 s), which is retried twice before the notice |
 | Provider has no saved session | `ErrChatResumeFailed` (an ACP "resource not found" included) | n/a | no: two bounded retries (about 30 s and 1 min, because it cannot be told from a slow start), then one notice, never a fresh start |
 
-The adapter's history probe (claude, codex, copilot, qwen, cline, kilocode, mimocode, omp,
-opencode (v1) and opencode-v2) only decides whether an idle session whose conversation is
-reported gone is reported to you instead of parked. Working sessions are always resumed
-(never fresh) whatever the probe says.
+The adapter's history probe (agy, claude, cline, codex, copilot, kilocode, kimi, mimocode, omp,
+opencode (v1), opencode-v2, qwen) only decides whether an idle session whose conversation is
+reported gone is reported to you instead of parked. Harnesses without a probe (gemini, cursor,
+pi, ...) are parked like the rest: their wake is never-fresh, so a conversation that turns out to
+be gone fails the wake rather than starting over. Working sessions are always resumed (never
+fresh) whatever the probe says.
 
 Terminal (TUI) sessions are not auto-resumed.
 

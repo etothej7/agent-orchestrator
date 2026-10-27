@@ -399,8 +399,21 @@ func TestAutoResumeAfterGracefulShutdownHostsFirst(t *testing.T) {
 	f.assertRecovered(t, d2, 1)
 }
 
+// The same graceful order, but the daemon is stopped the instant the hosts are gone, so
+// an exit it records (if any) lands after its own shutdown stamp: the case the shutdown
+// window's upper bound exists for. The recovery must be the same.
+func TestAutoResumeAfterGracefulShutdownHostsThenAnImmediateDaemonStop(t *testing.T) {
+	f := newAutoResumeFixture(t)
+	killMachine(t, f.w.dataDir, syscall.SIGTERM, f.sessions()...)
+	f.d.stop()
+	d2 := startDaemon(t, f.w.dataDir)
+	f.assertRecovered(t, d2, 1)
+}
+
 // Flapping: the daemon is killed again before the first resume ran. The captured intent
-// is kept, so the session is resumed once and gets one continue turn, not two.
+// is kept, so the session is resumed once and gets one continue turn, not two. (The idle
+// session may already be parked before the kill; the flap guard's own limit is covered by
+// the resumer's unit tests, not here.)
 func TestAutoResumeFlappingRestartsDoNotDuplicate(t *testing.T) {
 	f := newAutoResumeFixture(t)
 	f.d.kill()
