@@ -18,14 +18,14 @@ func (f fakeAncestry) Identify(context.Context, int, int) (procidentity.Result, 
 	return f.res, f.err
 }
 
-// proofCounts is a store that also reports how many proofs a session has had.
+// proofCounts is a store that also reports which sessions have a CONFIRMED proof (gen > 0).
 type proofCounts struct {
 	*fakeStore
 	gen map[domain.SessionID]int
 }
 
-func (p proofCounts) SessionProofGeneration(_ context.Context, id domain.SessionID) (int, error) {
-	return p.gen[id], nil
+func (p proofCounts) SessionProofConfirmed(_ context.Context, id domain.SessionID) (bool, error) {
+	return p.gen[id] > 0, nil
 }
 
 func ancestryResolver(res procidentity.Result, err error, gen map[domain.SessionID]int) *Resolver {

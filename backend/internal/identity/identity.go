@@ -348,6 +348,11 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if !ok || rec.IsTerminated {
 		return Anonymous(), ErrSessionEnded
 	}
+	if confirmer, ok := r.store.(ProofConfirmer); ok {
+		// Presenting a proof confirms it (and promotes a pending successor). A failure to record it
+		// never refuses a valid proof.
+		_ = confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now())
+	}
 	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaProof}, nil
 }
 
@@ -388,9 +393,17 @@ type Ancestry interface {
 	Identify(ctx context.Context, clientPort, serverPort int) (procidentity.Result, error)
 }
 
-// proofCounter reports how many proofs a session has had (0 when it never had one).
-type proofCounter interface {
-	SessionProofGeneration(ctx context.Context, id domain.SessionID) (int, error)
+// proofConfirmation reports whether a session has a proof that was actually presented (so a
+// running process holds and uses it). A proof that was only issued does not count.
+type proofConfirmation interface {
+	SessionProofConfirmed(ctx context.Context, id domain.SessionID) (bool, error)
+}
+
+// ProofConfirmer records that a proof of a session was presented: the first use confirms it, and
+// the first use of a PENDING proof (a relaunch's successor) promotes it so the old proof stops
+// verifying (two-phase rotation, ED8 P2).
+type ProofConfirmer interface {
+	ConfirmSessionProof(ctx context.Context, id domain.SessionID, hash string, now time.Time) error
 }
 
 // WithAncestry enables the live-identity bridge.
@@ -406,8 +419,7 @@ func (r *Resolver) HasAncestry() bool { return r.ancestry != nil }
 // the bridge for sessions that were already running when proofs arrived: they have no proof in
 // their environment, but the daemon knows which processes it started for them. The caller comes
 // from the daemon's own session record, is marked ViaAncestry, and only exists for a session
-// that has NEVER been given a proof: once a session is relaunched (and so proven) the bridge no
-// longer applies to it. Any failure is anonymous (fail closed).
+// that has NEVER been given a proof: once a session is relaunched and its new process has presented its proof, the bridge no longer applies to it. Any failure is anonymous (fail closed).
 func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort int) (Caller, error) {
 	if r.ancestry == nil {
 		return Anonymous(), ErrInvalid
@@ -416,16 +428,16 @@ func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort
 	if err != nil {
 		return Anonymous(), err
 	}
-	counter, ok := r.store.(proofCounter)
+	confirmation, ok := r.store.(proofConfirmation)
 	if !ok {
 		return Anonymous(), errors.New("proof state is unavailable")
 	}
-	gen, err := counter.SessionProofGeneration(ctx, res.Session)
+	confirmed, err := confirmation.SessionProofConfirmed(ctx, res.Session)
 	if err != nil {
 		return Anonymous(), fmt.Errorf("resolve by ancestry: %w", err)
 	}
-	if gen > 0 {
-		return Anonymous(), ErrInvalid // proven sessions are identified by their proof only
+	if confirmed {
+		return Anonymous(), ErrInvalid // a session whose proof is in use is identified by that proof only
 	}
 	rec, found, err := r.sessions.GetSession(ctx, res.Session)
 	if err != nil {

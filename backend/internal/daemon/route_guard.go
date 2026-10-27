@@ -18,7 +18,7 @@ import (
 type coordinatorStore interface {
 	GetCoordination(ctx context.Context) (domain.CoordinationConfig, error)
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
-	SessionProofGeneration(ctx context.Context, id domain.SessionID) (int, error)
+	SessionProofConfirmed(ctx context.Context, id domain.SessionID) (bool, error)
 }
 
 // coordinatorProofs answers, per request, who the active overall coordinator is (the newest live
@@ -50,11 +50,14 @@ func (c coordinatorProofs) CoordinatorState(ctx context.Context) (identity.Coord
 	if active == nil {
 		return identity.CoordinatorState{}, nil
 	}
-	gen, err := c.store.SessionProofGeneration(ctx, active.ID)
+	// "Holds a proof" means a running process uses one: an issued-but-unused proof (a relaunch that
+	// has not come up) must not end the coordinator's first phase, or an old coordinator that is
+	// still running without a proof would be locked out.
+	confirmed, err := c.store.SessionProofConfirmed(ctx, active.ID)
 	if err != nil {
 		return identity.CoordinatorState{}, err
 	}
-	return identity.CoordinatorState{Session: active.ID, HoldsProof: gen > 0}, nil
+	return identity.CoordinatorState{Session: active.ID, HoldsProof: confirmed}, nil
 }
 
 // routeGuardConfig is the daemon's route-class guard setting (ED8): class-H routes require the

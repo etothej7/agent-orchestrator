@@ -23,8 +23,8 @@ func (f fakeCoordStore) GetCoordination(context.Context) (domain.CoordinationCon
 func (f fakeCoordStore) ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error) {
 	return f.sessions, f.err
 }
-func (f fakeCoordStore) SessionProofGeneration(_ context.Context, id domain.SessionID) (int, error) {
-	return f.proofs[id], f.err
+func (f fakeCoordStore) SessionProofConfirmed(_ context.Context, id domain.SessionID) (bool, error) {
+	return f.proofs[id] > 0, f.err
 }
 
 func TestTheActiveCoordinatorIsTheNewestLiveOrchestratorOfTheCoordinatorProject(t *testing.T) {

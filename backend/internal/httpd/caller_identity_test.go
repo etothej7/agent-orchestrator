@@ -238,11 +238,9 @@ func (r reviewRows) GetReviewByID(_ context.Context, id string) (domain.Review, 
 
 // --- the live-identity bridge (process ancestry) ---
 
-func (p *proofStore) SessionProofGeneration(_ context.Context, id domain.SessionID) (int, error) {
-	if _, ok := p.hashes[id]; ok {
-		return 1, nil
-	}
-	return 0, nil
+func (p *proofStore) SessionProofConfirmed(_ context.Context, id domain.SessionID) (bool, error) {
+	_, ok := p.hashes[id]
+	return ok, nil
 }
 
 type countingAncestry struct {

@@ -833,10 +833,12 @@ type SessionHarnessRelease struct {
 }
 
 type SessionIdentity struct {
-	SessionID   string
-	ProofSha256 string
-	IssuedAt    time.Time
-	Generation  int64
+	SessionID     string
+	ProofSha256   string
+	IssuedAt      time.Time
+	Generation    int64
+	PendingSha256 sql.NullString
+	ConfirmedAt   sql.NullTime
 }
 
 type SessionInterfaceTransition struct {
