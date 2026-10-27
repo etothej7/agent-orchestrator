@@ -75,20 +75,25 @@ AO must never stay closed, whatever dies. Before the app honours a quit it arms 
   not trusted: arming starts a real one): if a cancel file exists it stops (`outcome` = `cancelled`); if an AO app process is
   running (`^<app>/Contents/MacOS/`) it stops (`app_running`); otherwise it relaunches hidden with `open -g -j <app>`
   (`relaunched`).
-* It first waits while the installer is mid-swap or rolling back: `~/.ao/install-swap-marker` exists, or
-  `~/.ao/install.lock/` exists with a live owner pid (or no pid yet). A stale lock (dead owner) is ignored. If that
-  goes on for 45 minutes it gives up waiting. The lock's pid must be digits only; a sign, a space or text is a stale
-  lock. The `pgrep` pattern is the app path with regex characters escaped.
-* **A swap marker still there when the wait runs out means the bundle may be half-swapped, and the net NEVER
-  relaunches** (launching it would block the installer's own startup recovery, which refuses while the app or daemon
-  runs with a marker). It runs the installer's recovery entry if one is recorded (the request's `recoveryEntry`, or a
-  line `M_RECOVERY="<absolute path>"` in the marker), which restores a consistent bundle and relaunches:
-  `outcome` = `recovery_ok` (exit 0) or `recovery_failed`. With no usable recovery entry `outcome` = `blocked_marker`.
-  In both failure cases AO stays closed, and the net writes a stopped result
-  (`update/runs/<stamp>/result.json`, write-once, a runner's result is never overwritten) with one failed check,
-  `relaunch_net_blocked_marker` or `relaunch_net_recovery_failed`, and a plain text ("AO was left closed on purpose: an
-  update was interrupted part-way and the installer has to recover it before AO can start. Nothing was relaunched."),
-  so the update manager's single message tells the person. The file passes `validateUpdateResult`.
+* It waits only for a **live installer**: `~/.ao/install.lock/` exists with a live owner pid (or no pid yet; the installer holds
+  its lock for its whole run and removes it last). A stale lock (dead owner) is ignored. If a live installer goes on for 45
+  minutes it gives up waiting. The lock's pid must be digits only; a sign, a space or text is a stale lock. The `pgrep`
+  pattern is the app path with regex characters escaped, and `pgrep` is run with `-a` (macOS `pgrep` otherwise skips the
+  caller's ancestors, which includes the app that spawned the net).
+* **A swap marker (`~/.ao/install-swap-marker`) with no live installer, or still there when the wait for a live installer runs
+  out, means the bundle may be half-swapped, and the net NEVER relaunches** (launching it would block the installer's own
+  startup recovery, which refuses while the app or daemon runs with a marker). A marker with no live lock owner means the
+  installer died mid-swap, so recovery starts as soon as the 600 s delay ends rather than after a long wait. The net runs the
+  installer's recovery entry if one is recorded (the request's `recoveryEntry`, or a line `M_RECOVERY="<absolute path>"` in the
+  marker), only if it is a regular, executable file owned by the user and not group- or world-writable (checked in main for
+  the request's entry and again in the net for either). After a recovery that exits 0 the net **checks** that AO is running (up
+  to 120 s): running -> `outcome` = `recovery_ok`; not running and the marker gone -> the net relaunches hidden itself
+  (`recovery_relaunched`); not running and the marker still there -> `recovery_incomplete`, AO stays closed. A recovery that
+  fails -> `recovery_failed`; no usable recovery entry -> `blocked_marker`. In every closed case the net writes a stopped
+  result (`update/runs/<stamp>/result.json`, write-once, a runner's result is never overwritten) with one failed check,
+  `relaunch_net_blocked_marker`, `relaunch_net_recovery_failed` or `relaunch_net_recovery_incomplete`, and a plain text ("AO
+  was left closed on purpose: an update was interrupted part-way and the installer has to recover it before AO can start.
+  Nothing was relaunched."), so the update manager's single message tells the person. The file passes `validateUpdateResult`.
 * **The runner cancels the net on success** by creating `relaunch-net/<stamp>/cancel` (any content). The app also
   cancels it when the quit is called off (a draft appeared, the person came back, the request expired or was
   removed), and arms it again when the quit goes ahead. Arming is idempotent per stamp.

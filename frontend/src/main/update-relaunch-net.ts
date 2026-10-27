@@ -12,10 +12,11 @@ import path from "node:path";
 // Files, under `<stateDir>/update-restart/relaunch-net/<stamp>/` (folder 0700):
 //   net.pid   written by the net process as soon as it runs (proof that it is armed)
 //   cancel    created by the runner (or by main when the quit is called off) to stop the net
-//   outcome   what the net did, written once, then it exits: `cancelled`, `app_running`, `relaunched`,
-//             `recovery_ok`, `recovery_failed` or `blocked_marker`
+//   outcome   what the net did, written once, then it exits: `cancelled`, `app_running`, `relaunched`, `recovery_ok`,
+//             `recovery_relaunched`, `recovery_incomplete`, `recovery_failed` or `blocked_marker`
 //
-// A swap marker that is still there when the wait runs out means the app bundle may be half-swapped. The net then
+// A swap marker with no live installer (no live lock owner) means the app bundle may be half-swapped; so does one that is still there when
+// the wait for a live installer runs out. The net then
 // NEVER relaunches (launching it would block the installer's own startup recovery, which refuses while the app or
 // daemon runs with a marker). It runs the installer's recovery entry if one is recorded (the request's
 // `recoveryEntry`, or `M_RECOVERY="<path>"` in the marker), which restores a consistent bundle and relaunches; if
@@ -26,6 +27,8 @@ import path from "node:path";
 export const RELAUNCH_NET_DELAY_SECONDS = 600;
 /** How long it keeps waiting for an install that is mid-swap or rolling back before it gives up waiting. */
 export const RELAUNCH_NET_LOCK_WAIT_SECONDS = 45 * 60;
+/** After a recovery entry succeeds, how long the net waits for AO to come back before relaunching it itself. */
+export const RELAUNCH_NET_RECOVERY_WAIT_SECONDS = 120;
 const STEP_SECONDS = 2;
 /** The marker the net process carries in its command line (argv[0] of the shell), so a pid can be told to be a net. */
 export const RELAUNCH_NET_PROCESS_NAME = "ao-relaunch-net";
@@ -41,7 +44,7 @@ export const appProcessPattern = (appPath: string): string => `^${appPath.replac
 const NET_SCRIPT = `
 umask 077
 app=$1; dir=$2; delaysteps=$3; step=$4; locksteps=$5; lock=$6; marker=$7; opencmd=$8; pgrepcmd=$9
-pattern=\${10}; recovery=\${11}; stamp=\${12}; from=\${13}; to=\${14}; resultfile=\${15}
+pattern=\${10}; recovery=\${11}; stamp=\${12}; from=\${13}; to=\${14}; resultfile=\${15}; recoverysteps=\${16}
 printf '%s\\n' "$$" > "$dir/net.pid.tmp" && mv -f "$dir/net.pid.tmp" "$dir/net.pid" || exit 1
 finish() { printf '%s\\n' "$1" > "$dir/outcome"; exit 0; }
 cancelled() { [ -e "$dir/cancel" ]; }
@@ -60,9 +63,10 @@ done
 j=0
 while :; do
   cancelled && finish cancelled
-  "$pgrepcmd" -f "$pattern" >/dev/null 2>&1 && finish app_running
+  "$pgrepcmd" -a -f "$pattern" >/dev/null 2>&1 && finish app_running   # -a: pgrep skips the caller's ANCESTORS (the app that spawned this net) unless asked
+  # Only a LIVE installer is waited for. The installer holds its lock for its whole run and removes it last, so a swap marker with no live
+  # lock owner means the installer died mid-swap: nothing will clear it by waiting, recovery can start at once.
   busy=0
-  [ -e "$marker" ] && busy=1
   if [ -d "$lock" ]; then
     lockpid=$(cat "$lock/pid" 2>/dev/null)
     case "$lockpid" in
@@ -80,10 +84,32 @@ if [ -e "$marker" ]; then
   # Possibly half-swapped: never launch it. Hand over to the installer's recovery, or stay closed.
   rec=$recovery
   [ -n "$rec" ] || rec=$(sed -n 's/^M_RECOVERY="\\(.*\\)"$/\\1/p' "$marker" 2>/dev/null | head -n 1)
-  case "$rec" in /*) { [ -f "$rec" ] && [ -x "$rec" ]; } || rec="" ;; *) rec="" ;; esac
+  # a recovery entry is run only if it is an absolute path to a regular, executable file owned by this user and not group/world-writable
+  # (the request's entry was already checked in main; a marker-supplied one is only checked here)
+  case "$rec" in
+    /*)
+      ok=0
+      if [ -f "$rec" ] && [ -x "$rec" ]; then
+        st=$(stat -f '%u %Lp' "$rec" 2>/dev/null); ru=\${st%% *}; rmode=\${st#* }
+        if [ "$ru" = "$(id -u)" ] && [ $(( 0$rmode & 18 )) -eq 0 ]; then ok=1; fi
+      fi
+      [ "$ok" -eq 1 ] || rec="" ;;
+    *) rec="" ;;
+  esac
   if [ -n "$rec" ]; then
     printf '%s\\n' recovery_invoked > "$dir/outcome"
-    if "$rec" >/dev/null 2>&1; then finish recovery_ok; fi
+    if "$rec" >/dev/null 2>&1; then
+      # A recovery that restores a consistent bundle should bring AO back itself. Check, rather than assume.
+      k=0
+      while [ "$k" -lt "$recoverysteps" ]; do
+        cancelled && finish cancelled
+        "$pgrepcmd" -a -f "$pattern" >/dev/null 2>&1 && finish recovery_ok
+        sleep "$step"; k=$((k+1))
+      done
+      if [ ! -e "$marker" ]; then printf '%s\\n' recovery_relaunched > "$dir/outcome"; exec "$opencmd" -g -j "$app"; fi
+      write_result relaunch_net_recovery_incomplete "AO was left closed: the installer recovery finished but an interrupted-update marker is still there. Run the recovery again before starting AO."
+      finish recovery_incomplete
+    fi
     write_result relaunch_net_recovery_failed "AO was left closed: the installer recovery after an interrupted update did not finish. Run the recovery again before starting AO."
     finish recovery_failed
   fi
@@ -109,6 +135,8 @@ export type RelaunchNetOptions = {
 	uid?: number;
 	delaySeconds?: number;
 	lockWaitSeconds?: number;
+	/** How long to wait, after a recovery entry succeeds, for AO to be running again before the net relaunches it itself. */
+	recoveryWaitSeconds?: number;
 	stepSeconds?: number;
 	openCommand?: string;
 	pgrepCommand?: string;
@@ -141,6 +169,7 @@ export function createRelaunchNet(options: RelaunchNetOptions) {
 	const step = options.stepSeconds ?? STEP_SECONDS;
 	const delaySteps = Math.max(1, Math.ceil((options.delaySeconds ?? RELAUNCH_NET_DELAY_SECONDS) / step));
 	const lockSteps = Math.max(0, Math.ceil((options.lockWaitSeconds ?? RELAUNCH_NET_LOCK_WAIT_SECONDS) / step));
+	const recoverySteps = Math.max(1, Math.ceil((options.recoveryWaitSeconds ?? RELAUNCH_NET_RECOVERY_WAIT_SECONDS) / step));
 	const spawnNet: SpawnNet = options.spawnNet ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
 	const isNetProcess = options.isNetProcess ?? psIsNet;
 	const uid = options.uid ?? process.getuid?.() ?? -1;
@@ -177,7 +206,7 @@ export function createRelaunchNet(options: RelaunchNetOptions) {
 						options.appPath, dir, String(delaySteps), String(step), String(lockSteps),
 						options.lockPath, options.markerPath, options.openCommand ?? "/usr/bin/open", options.pgrepCommand ?? "/usr/bin/pgrep",
 						appProcessPattern(options.appPath), await usableRecovery(request.recoveryEntry),
-						request.stamp, from, to, path.join(options.stateDir, "update", "runs", request.stamp, "result.json"),
+						request.stamp, from, to, path.join(options.stateDir, "update", "runs", request.stamp, "result.json"), String(recoverySteps),
 					],
 					{
 						detached: true, // its own session: it outlives this app

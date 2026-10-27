@@ -42,6 +42,7 @@ describe("the relaunch safety net", () => {
 			delaySeconds: 0.2,
 			stepSeconds: 0.05,
 			lockWaitSeconds: 1,
+			recoveryWaitSeconds: 0.4,
 			openCommand: path.join(root, "fake-open"),
 			pgrepCommand: path.join(root, "fake-pgrep"),
 			...over,
@@ -121,13 +122,16 @@ describe("the relaunch safety net", () => {
 		await waitFor(async () => (await outcome()) === "relaunched");
 	});
 
-	it("waits while a swap or rollback marker exists, then relaunches once it is gone", async () => {
+	it("waits while a LIVE installer is mid-swap (live lock + marker), then relaunches once both are gone", async () => {
+		await mkdir(lock);
+		await writeFile(path.join(lock, "pid"), String(process.pid)); // a live owner
 		await writeFile(marker, 'M_PHASE="swapped"\n');
 		const net = make({ lockWaitSeconds: 30 });
 		expect(await net.arm(REQUEST)).toBe(true);
 		await sleep(600);
 		expect(await outcome()).toBe("");
 		await rm(marker);
+		await rm(lock, { recursive: true });
 		await waitFor(async () => (await outcome()) === "relaunched");
 	});
 
@@ -232,7 +236,7 @@ describe("the relaunch safety net", () => {
 		await waitFor(async () => (await outcome()) === "relaunched");
 		const pattern = appProcessPattern(app);
 		expect(pattern).toBe("^/Applications/Agent \\(Orchestrator\\) \\+1\\.app/Contents/MacOS/");
-		expect((await readFile(log, "utf8")).trim()).toBe(`-f ${pattern}`);
+		expect((await readFile(log, "utf8")).trim()).toBe(`-a -f ${pattern}`); // -a: pgrep skips the caller's ancestors (the app that spawned the net) unless told not to
 		// as a POSIX extended regex it matches exactly that path and nothing else
 		expect(new RegExp(pattern).test(`${app}/Contents/MacOS/agent-orchestrator`)).toBe(true);
 		expect(new RegExp(pattern).test("/Applications/AgentXOrchestratorX 1.app/Contents/MacOS/agent-orchestrator")).toBe(false);
@@ -240,9 +244,10 @@ describe("the relaunch safety net", () => {
 
 	describe("a swap marker still present when the wait runs out (a possibly half-swapped bundle)", () => {
 		const resultFile = () => path.join(state, "update", "runs", STAMP, "result.json");
-		const makeRecovery = async (name: string, exitCode: number, mode = 0o755) => {
+		// A recovery that SUCCEEDS restores a consistent bundle and brings AO back: it removes the marker and AO is running again.
+		const makeRecovery = async (name: string, exitCode: number, mode = 0o755, effect: { clearMarker?: boolean; appUp?: boolean } = { clearMarker: true, appUp: true }) => {
 			const file = path.join(root, name);
-			await writeFile(file, `#!/bin/sh\necho recovered >> '${path.join(root, "recovery.log")}'\nexit ${exitCode}\n`);
+			await writeFile(file, `#!/bin/sh\necho recovered >> '${path.join(root, "recovery.log")}'\n${effect.clearMarker ? `rm -f '${marker}'\n` : ""}${effect.appUp ? `: > '${running}'\n` : ""}exit ${exitCode}\n`);
 			await chmod(file, mode);
 			return file;
 		};
@@ -317,13 +322,65 @@ describe("the relaunch safety net", () => {
 			expect(await readFile(resultFile(), "utf8")).toBe("{\"runner\":true}");
 		});
 
-		it("relaunches normally when the marker goes away before the wait runs out", async () => {
+		it("relaunches normally when a live installer finishes (lock and marker gone) before the wait runs out", async () => {
+			await mkdir(lock);
+			await writeFile(path.join(lock, "pid"), String(process.pid));
 			const net = make({ lockWaitSeconds: 30 });
 			await net.arm(REQUEST);
 			await sleep(500);
 			await rm(marker);
+			await rm(lock, { recursive: true });
 			await waitFor(async () => (await outcome()) === "relaunched");
 			expect(await recoveryCalls()).toEqual([]);
+		});
+
+		it("ao-3 #2: a marker with NO live lock owner (the installer died) starts recovery as soon as the delay ends, not after the long lock wait", async () => {
+			const recovery = await makeRecovery("recover-now.sh", 0);
+			const net = make({ lockWaitSeconds: 600 }); // a long wait that must NOT be served
+			await net.arm({ ...REQUEST, recoveryEntry: recovery });
+			await waitFor(async () => (await outcome()) === "recovery_ok", 6_000);
+			expect(await recoveryCalls()).toEqual(["recovered"]);
+		});
+
+		it("ao-3 #2: a live installer is still waited for, up to the cap, and then the marker rule applies (blocked, never a relaunch)", async () => {
+			await mkdir(lock);
+			await writeFile(path.join(lock, "pid"), String(process.pid));
+			const net = make({ lockWaitSeconds: 0.4 });
+			await net.arm(REQUEST);
+			await waitFor(async () => (await outcome()) === "blocked_marker");
+			expect(await openedCalls()).toEqual([]);
+		});
+
+		it("ao-3 #1: after a recovery that succeeds the net CHECKS that AO is running: a recovery that restored but did not relaunch gets the normal hidden relaunch", async () => {
+			const recovery = await makeRecovery("restores-only.sh", 0, 0o755, { clearMarker: true, appUp: false });
+			const net = make();
+			await net.arm({ ...REQUEST, recoveryEntry: recovery });
+			await waitFor(async () => (await outcome()) === "recovery_relaunched");
+			await waitFor(async () => (await openedCalls()).length === 1);
+			expect(await openedCalls()).toEqual(["-g -j /Applications/Agent Orchestrator.app"]);
+		});
+
+		it("ao-3 #1: a recovery that exits 0 but leaves the marker and no app is reported (recovery_incomplete), AO is NOT relaunched, and the result says so", async () => {
+			const recovery = await makeRecovery("leaves-marker.sh", 0, 0o755, { clearMarker: false, appUp: false });
+			const net = make();
+			await net.arm({ ...REQUEST, recoveryEntry: recovery });
+			await waitFor(async () => (await outcome()) === "recovery_incomplete");
+			expect(await openedCalls()).toEqual([]);
+			expect(validateUpdateResult(JSON.parse(await readFile(resultFile(), "utf8"))).checks).toEqual([{ name: "relaunch_net_recovery_incomplete", result: "fail" }]);
+		});
+
+		it("ao-3 #3: a recovery path named in the MARKER gets the same owner / not-group-or-world-writable test (a group-writable or non-executable one is never run)", async () => {
+			for (const [name, mode] of [["marker-gw.sh", 0o775], ["marker-ww.sh", 0o757], ["marker-noexec.sh", 0o644]] as const) {
+				await rm(dir(), { recursive: true, force: true });
+				await rm(path.dirname(resultFile()), { recursive: true, force: true });
+				const entry = await makeRecovery(name, 0, mode);
+				await writeFile(marker, `M_PHASE="swapped"\nM_RECOVERY="${entry}"\n`);
+				const net = make();
+				await net.arm(REQUEST);
+				await waitFor(async () => (await outcome()) === "blocked_marker");
+			}
+			expect(await recoveryCalls()).toEqual([]);
+			expect(await openedCalls()).toEqual([]);
 		});
 	});
 
