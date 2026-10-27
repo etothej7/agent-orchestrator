@@ -26,6 +26,7 @@ var prIDPattern = regexp.MustCompile(`^[1-9]\d*$`)
 // session that owns it, and that session's project (whose agentMayMerge setting applies).
 type PRMergeStore interface {
 	GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error)
+	GetPRByNumber(ctx context.Context, number int) (domain.PullRequest, bool, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 }
@@ -54,8 +55,47 @@ type PRsController struct {
 
 // Register mounts the PR action routes on the supplied router.
 func (c *PRsController) Register(r chi.Router) {
+	r.Get("/prs/{id}", c.get)
 	r.Post("/prs/{id}/merge", c.merge)
 	r.Post("/prs/{id}/resolve-comments", c.resolveComments)
+}
+
+// get reads the tracked pull request with this number: what a caller needs to name in a merge. It is a read, so it
+// needs no class; it changes nothing and exposes only facts the app already shows.
+func (c *PRsController) get(w http.ResponseWriter, r *http.Request) {
+	if c.Store == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/prs/{id}")
+		return
+	}
+	prID := chi.URLParam(r, "id")
+	number, err := strconv.Atoi(prID)
+	if !prIDPattern.MatchString(prID) || err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR", "Invalid PR number", nil)
+		return
+	}
+	pr, found, err := c.Store.GetPRByNumber(r.Context(), number)
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
+		return
+	}
+	if !found {
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
+		return
+	}
+	state := string(domain.PRStateOpen)
+	switch {
+	case pr.Merged:
+		state = string(domain.PRStateMerged)
+	case pr.Closed:
+		state = string(domain.PRStateClosed)
+	case pr.Draft:
+		state = string(domain.PRStateDraft)
+	}
+	out := PRSummaryResponse{PRNumber: pr.Number, PRURL: pr.URL, HeadSHA: pr.HeadSHA, State: state, Title: pr.Title, SessionID: string(pr.SessionID)}
+	if owner, ok, err := c.Store.GetSession(r.Context(), pr.SessionID); err == nil && ok {
+		out.ProjectID = string(owner.ProjectID)
+	}
+	envelope.WriteJSON(w, http.StatusOK, out)
 }
 
 func (c *PRsController) merge(w http.ResponseWriter, r *http.Request) {

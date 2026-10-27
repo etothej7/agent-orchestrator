@@ -3812,6 +3812,17 @@ func sessionOperations() []operation {
 func prOperations() []operation {
 	return []operation{
 		{
+			method: http.MethodGet, path: "/api/v1/prs/{id}", id: "getPR", tag: "prs",
+			summary:    "Read a tracked pull request's URL and head commit by number",
+			pathParams: []any{controllers.PRIDParam{}},
+			resps: []respUnit{
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusOK, controllers.PRSummaryResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPost, path: "/api/v1/prs/{id}/merge", id: "mergePR", tag: "prs",
 			summary:    "Squash-merge a pull request (an agent on a project that has not allowed agent merges files a request for the person instead)",
 			pathParams: []any{controllers.PRIDParam{}},

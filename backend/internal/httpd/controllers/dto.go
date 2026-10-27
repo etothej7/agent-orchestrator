@@ -2486,6 +2486,18 @@ type PRIDParam struct {
 	ID string `path:"id" description:"PR number."`
 }
 
+// PRSummaryResponse is the tracked pull request GET /api/v1/prs/{id} reads: the facts a merge names (its URL and
+// the head commit the daemon last saw), so a caller that only knows the number can ask to merge exactly that.
+type PRSummaryResponse struct {
+	PRNumber  int    `json:"prNumber"`
+	PRURL     string `json:"prUrl"`
+	HeadSHA   string `json:"headSha"`
+	State     string `json:"state" enum:"draft,open,merged,closed"`
+	Title     string `json:"title,omitempty"`
+	SessionID string `json:"sessionId"`
+	ProjectID string `json:"projectId,omitempty"`
+}
+
 // MergePRRequest is the body of POST /api/v1/prs/{id}/merge.
 type MergePRRequest struct {
 	PRURL           string `json:"prUrl" minLength:"1"`

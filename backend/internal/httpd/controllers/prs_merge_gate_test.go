@@ -46,6 +46,13 @@ func (g gateStore) GetPR(_ context.Context, url string) (domain.PullRequest, boo
 	return domain.PullRequest{URL: url, SessionID: gateWorker, Number: 7, HeadSHA: gateHead}, true, nil
 }
 
+func (g gateStore) GetPRByNumber(_ context.Context, number int) (domain.PullRequest, bool, error) {
+	if number != 7 {
+		return domain.PullRequest{}, false, nil
+	}
+	return domain.PullRequest{URL: gatePRURL, SessionID: gateWorker, Number: 7, HeadSHA: gateHead, Title: "Fix"}, true, nil
+}
+
 func (g gateStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
 	switch id {
 	case gateWorker, gateMgr, "repo-2", "other-1":

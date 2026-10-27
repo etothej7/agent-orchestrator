@@ -4884,6 +4884,45 @@ paths:
       summary: Initialize a selected folder as a Git repository with an initial commit
       tags:
       - projects
+  /api/v1/prs/{id}:
+    get:
+      operationId: getPR
+      parameters:
+      - description: PR number.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: PR number.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersPRSummaryResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a tracked pull request's URL and head commit by number
+      tags:
+      - prs
   /api/v1/prs/{id}/merge:
     post:
       operationId: mergePR
@@ -16066,6 +16105,34 @@ components:
           type: array
       required:
       - requests
+      type: object
+    ControllersPRSummaryResponse:
+      properties:
+        headSha:
+          type: string
+        prNumber:
+          type: integer
+        prUrl:
+          type: string
+        projectId:
+          type: string
+        sessionId:
+          type: string
+        state:
+          enum:
+          - draft
+          - open
+          - merged
+          - closed
+          type: string
+        title:
+          type: string
+      required:
+      - prNumber
+      - prUrl
+      - headSha
+      - state
+      - sessionId
       type: object
     ControllersRemoteHostAccountTokenResponse:
       properties:
