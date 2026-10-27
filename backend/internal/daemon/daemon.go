@@ -1023,7 +1023,7 @@ func Run(buildVersion string) error {
 		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store).WithAncestry(
 			ancestryBridge(log, procLookup, peerLookup, store, func(ctx context.Context, handle string) ([]int, error) {
 				return runtimeAdapter.ProcessRootPIDs(ctx, ports.RuntimeHandle{ID: handle})
-			}, cfg.DataDir)),
+			}, runtimeAdapter.ServerPID, cfg.DataDir)),
 		// Class-H routes need the human capability; identity is observed (ED8 rollout).
 		RouteGuard:           guardConfig,
 		IdentityObservations: identityObs,

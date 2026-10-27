@@ -17,7 +17,7 @@ func (noSessions) ListAllSessions(context.Context) ([]domain.SessionRecord, erro
 func TestTheAncestryBridgeCanBeSwitchedOff(t *testing.T) {
 	t.Setenv("AO_PROCESS_ANCESTRY", "off")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if got := newAncestryBridge(log, noSessions{}, nil, t.TempDir()); got != nil {
+	if got := newAncestryBridge(log, noSessions{}, nil, nil, t.TempDir()); got != nil {
 		t.Fatal("the bridge was built although AO_PROCESS_ANCESTRY=off")
 	}
 }
@@ -27,7 +27,7 @@ func TestTheAncestryBridgeCanBeSwitchedOff(t *testing.T) {
 func TestTheAncestryBridgeIsAvailableOnMacOSAndAbsentElsewhere(t *testing.T) {
 	t.Setenv("AO_PROCESS_ANCESTRY", "")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	got := newAncestryBridge(log, noSessions{}, nil, t.TempDir())
+	got := newAncestryBridge(log, noSessions{}, nil, nil, t.TempDir())
 	if runtime.GOOS == "darwin" && got == nil {
 		t.Fatal("no bridge on macOS")
 	}

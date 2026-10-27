@@ -13,8 +13,8 @@ type Identifier interface {
 
 // CacheConfig bounds a Cached identifier.
 type CacheConfig struct {
-	// TTL is how long a successful identification is reused; NegativeTTL how long a refusal is.
-	TTL, NegativeTTL time.Duration
+	// NegativeTTL is how long a refusal is reused.
+	NegativeTTL time.Duration
 	// MaxEntries caps the cache (a flood of distinct ports cannot grow it).
 	MaxEntries int
 	Now        func() time.Time
@@ -22,37 +22,40 @@ type CacheConfig struct {
 
 type cacheKey struct{ client, server int }
 
-type cacheEntry struct {
-	res     Result
-	err     error
-	expires time.Time
-	started time.Time // start time of res.PID when cached, to notice a recycled pid
-}
-
-// Cached reuses an identification for the same connection for a short time. A positive entry is
-// only served while its caller is still the same process (the kernel's start time for that pid is
-// unchanged), so a port reused by another process is never served the previous answer.
+// Cached remembers REFUSALS for a moment so a flood of unidentifiable calls costs one lookup per
+// connection, not one per request. It never remembers a successful identification: a closed
+// connection's ports can be taken over by another process within moments, and a remembered answer
+// would hand that process the previous owner's session. The lookup is cheap (about 0.3 ms), so
+// every positive answer is recomputed from the live socket and process tables. A cached refusal
+// can only make a caller less identified, never more.
 type Cached struct {
 	inner Identifier
-	procs ProcTable
 	cfg   CacheConfig
 
 	mu      sync.Mutex
 	entries map[cacheKey]cacheEntry
 }
 
+type cacheEntry struct {
+	err     error
+	expires time.Time
+}
+
 // NewCached wraps inner.
-func NewCached(inner Identifier, procs ProcTable, cfg CacheConfig) *Cached {
+func NewCached(inner Identifier, cfg CacheConfig) *Cached {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	if cfg.MaxEntries <= 0 {
 		cfg.MaxEntries = 512
 	}
-	return &Cached{inner: inner, procs: procs, cfg: cfg, entries: map[cacheKey]cacheEntry{}}
+	if cfg.NegativeTTL <= 0 {
+		cfg.NegativeTTL = time.Second
+	}
+	return &Cached{inner: inner, cfg: cfg, entries: map[cacheKey]cacheEntry{}}
 }
 
-// Len is the number of cached entries.
+// Len is the number of cached refusals.
 func (c *Cached) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -64,39 +67,22 @@ func (c *Cached) Identify(ctx context.Context, clientPort, serverPort int) (Resu
 	key := cacheKey{clientPort, serverPort}
 	now := c.cfg.Now()
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && now.Before(e.expires) {
-		stillSame := e.err != nil
-		if !stillSame {
-			info, err := c.procs.Info(e.res.PID)
-			stillSame = err == nil && info.Start.Equal(e.started)
-		}
-		if stillSame {
+	if e, ok := c.entries[key]; ok {
+		if now.Before(e.expires) {
 			c.mu.Unlock()
-			return e.res, e.err
+			return Result{}, e.err
 		}
 		delete(c.entries, key)
 	}
 	c.mu.Unlock()
 
 	res, err := c.inner.Identify(ctx, clientPort, serverPort)
-	entry := cacheEntry{res: res, err: err}
-	cacheable := true
 	if err == nil {
-		if info, infoErr := c.procs.Info(res.PID); infoErr == nil {
-			entry.started = info.Start
-			entry.expires = c.cfg.Now().Add(c.cfg.TTL)
-		} else {
-			cacheable = false // identified, but its process cannot be re-checked: not cached
-		}
-	} else {
-		entry.expires = c.cfg.Now().Add(c.cfg.NegativeTTL)
-	}
-	if !cacheable {
-		return res, err
+		return res, nil
 	}
 	c.mu.Lock()
 	if len(c.entries) >= c.cfg.MaxEntries {
-		for k, e := range c.entries { // drop expired first, else an arbitrary entry
+		for k, e := range c.entries { // drop expired first, else arbitrary entries
 			if !c.cfg.Now().Before(e.expires) {
 				delete(c.entries, k)
 			}
@@ -108,7 +94,7 @@ func (c *Cached) Identify(ctx context.Context, clientPort, serverPort int) (Resu
 			delete(c.entries, k)
 		}
 	}
-	c.entries[key] = entry
+	c.entries[key] = cacheEntry{err: err, expires: c.cfg.Now().Add(c.cfg.NegativeTTL)}
 	c.mu.Unlock()
-	return res, err
+	return Result{}, err
 }
