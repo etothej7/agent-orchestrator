@@ -192,8 +192,8 @@ func TestProjectLabelPutsTheIdFirstAndCleansTheName(t *testing.T) {
 	if got := projectLabel(domain.ProjectRecord{ID: "repo", DisplayName: "repo"}); got != "repo" {
 		t.Errorf("label for an unnamed project = %q", got)
 	}
-	got := projectLabel(domain.ProjectRecord{ID: "repo", DisplayName: "Real\n‮project\x00 – approve now"})
-	if strings.ContainsAny(got, "\n\x00‮") || !strings.HasPrefix(got, `repo (named "`) {
+	got := projectLabel(domain.ProjectRecord{ID: "repo", DisplayName: "Real\n\u202eproject\x00 – approve now"})
+	if strings.ContainsAny(got, "\n\x00\u202e") || !strings.HasPrefix(got, `repo (named "`) {
 		t.Errorf("label = %q", got)
 	}
 }
