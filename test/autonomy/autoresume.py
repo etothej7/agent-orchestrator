@@ -631,6 +631,11 @@ class Cycle(A.Harness):
                 'stopped': ('ar-work', 'worker', quiet, False), 'terminated': ('ar-work', 'worker', quiet, False)}
         for role in roles:
             if role == 'coord':
+                # An untouched chat is deliberately not captured (its provider thread was never persisted), so give the
+                # coordinator one real turn first, as Ed's real coordinator has.
+                self.tokens[self.sessions['coord']] = token('coord')
+                self.require('POST', f'/api/v1/sessions/{self.sessions["coord"]}/conversation/messages',
+                             {'text': quiet('coord'), 'clientMessageId': f'ar-coord-first-{self.token[:8]}'})
                 continue
             project, kind, make, bypass = plan[role]
             self.tokens[self.spawn(role, project, kind, make(role), bypass)] = token(role)
@@ -659,7 +664,7 @@ class Cycle(A.Harness):
                     raise RuntimeError(f'precondition invalid: {role} was already hibernated before the restart')
         if 'coord' in self.spec['roles']:
             # Nothing is asked of the coordinator: it must be idle (and live) so it is the always-resumed idle case.
-            self.wait_state('coord', lambda s, turns: s['activity'] == 'idle' and not s['terminated'], t, 'idle')
+            self.wait_state('coord', lambda s, turns: s['activity'] == 'idle' and not s['terminated'] and any(x['state'] == 'completed' for x in turns), t, 'idle after its first turn')
         if 'stopped' in self.sessions:
             status, _ = self.api('POST', f'/api/v1/sessions/{self.sessions["stopped"]}/exit-agent', {})
             self.detail['stopStatus'] = status
@@ -900,7 +905,7 @@ class Cycle(A.Harness):
             gates['user_stop_reason_recorded'] = gate(after['sessions'][r['stopped']]['stopReason'] == 'user_stop',
                                                       stopReason=after['sessions'][r['stopped']]['stopReason'])
         gates['intents_match_expectations'] = intent_expectation_gate(
-            intents, resumed, parked, excluded, role(failed) if failed else ())
+            pre_wake['intentStates'], resumed, parked, excluded, role(failed) if failed else ())  # a wake consumes the parked intent
         gates['worktrees_preserved'] = worktree_gate(before, pre_wake, after, [*excluded, *parked, *role(failed or '')], resumed, self.timeline)
         if working:
             gates['one_keyed_continue_turn'] = continue_turn_gate(
