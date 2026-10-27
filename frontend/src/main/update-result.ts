@@ -37,6 +37,12 @@ const MAX_CHECKS = 40;
 const MAX_CHECK_NAME = 60;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+// Invisible format characters (zero-width space and joiners, word joiner, soft hyphen, BOM, bidi marks): they can split
+// "https://" or an address past a pattern, so they are removed before scanning and never stored.
+const FORMAT = /\p{Cf}/gu;
+
+/** The text as it is scanned and stored: look-alike forms folded (NFKC), invisible and control characters removed. */
+const sanitize = (text: string): string => text.normalize("NFKC").replace(FORMAT, "").replace(CONTROL, "").trim();
 
 // A result is read by people and by other agents, and may be forwarded. It must never carry a place to reach
 // Ed's Mac or a secret: URLs, IPv4 addresses, tailnet and tunnel host names, and token-shaped strings.
@@ -49,6 +55,16 @@ const SENSITIVE: readonly RegExp[] = [
 	/\bgh[pousr]_[A-Za-z0-9]{20,}/,
 	/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
 	/\b[a-f0-9]{32,}\b/i,
+	// IPv6: the full form, and any compressed form (a `::` that is not glued to a word, so `std::string` is fine).
+	/(?<![\w:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![\w:])/i,
+	/(?<![\w:])(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{0,4}/i,
+	/\b[a-z0-9][a-z0-9-]*\.local\b/i,
+	/\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
+	/\b(?:password|passwd|pwd|secret|token|api[_-]?key|authorization)\s*[=:]\s*\S{4,}/i,
+	/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+	/\bxox[abeoprs]-[A-Za-z0-9-]{10,}/,
+	// a long base64 / base64url run that mixes letters and digits (a plain dash line or a long word is not one)
+	/(?=[A-Za-z0-9+/_-]*[A-Za-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{40,}={0,2}/,
 ];
 
 function assertNotSensitive(text: string): void {
@@ -71,18 +87,20 @@ export function validateUpdateResult(value: unknown): UpdateResult {
 	if (typeof v.fromVersion !== "string" || !VERSION.test(v.fromVersion)) invalid("fromVersion");
 	if (typeof v.toVersion !== "string" || !VERSION.test(v.toVersion)) invalid("toVersion");
 	if (typeof v.text !== "string") invalid("text");
-	const text = (v.text as string).replace(CONTROL, "").trim();
+	const text = sanitize(v.text as string);
 	if (text === "" || text.length > MAX_TEXT) invalid("text length");
 	assertNotSensitive(text);
 	if (!Array.isArray(v.checks) || v.checks.length > MAX_CHECKS) return invalid("checks");
 	const checks = (v.checks as unknown[]).map((entry) => {
 		if (typeof entry !== "object" || entry === null) return invalid("check");
 		const c = entry as Record<string, unknown>;
-		if (typeof c.name !== "string" || c.name.trim() === "") return invalid("check name");
-		assertNotSensitive(c.name);
-		if (c.name.length > MAX_CHECK_NAME) return invalid("check name length");
+		if (typeof c.name !== "string") return invalid("check name");
+		const name = sanitize(c.name);
+		if (name === "") return invalid("check name");
+		assertNotSensitive(name);
+		if (name.length > MAX_CHECK_NAME) return invalid("check name length");
 		if (typeof c.result !== "string" || !CHECK_RESULTS.includes(c.result as UpdateCheckResult)) return invalid("check result");
-		return { name: c.name, result: c.result as UpdateCheckResult };
+		return { name, result: c.result as UpdateCheckResult };
 	});
 	if (typeof v.at !== "number" || !Number.isFinite(v.at)) invalid("at");
 	return {

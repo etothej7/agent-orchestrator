@@ -56,6 +56,58 @@ describe("validateUpdateResult", () => {
 		}
 	});
 
+	it("refuses what the first list missed: IPv6, .local names, Bearer and key=value secrets, cloud and chat tokens, long base64", () => {
+		for (const text of [
+			"reachable at fe80::1ff:fe23:4567:890a",
+			"loopback [::1] is open",
+			"full 2001:0db8:85a3:0000:0000:8a2e:0370:7334 form",
+			"the Mac is eds-macbook.local now",
+			"sent Authorization: Bearer abcdefgh12345678",
+			"config had password=hunter2hunter2",
+			"api_key: abcd1234efgh",
+			"aws key AKIAIOSFODNN7EXAMPLE leaked",
+			"slack xoxb-1234567890-abcdefghijkl leaked",
+			"blob aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IGJsb2IgMTIzNDU2 end",
+		]) {
+			expect(() => validateUpdateResult(good({ text })), text).toThrow(/sensitive/);
+		}
+	});
+
+	it("sees through look-alike and invisible characters: NFKC folding and zero-width / format characters", () => {
+		for (const text of [
+			"reachable at ht\u200btps://example.com",
+			"reachable at h\u2060ttp://example.com",
+			"reachable at \uff48\uff54\uff54\uff50\uff53\uff1a\uff0f\uff0fexample.com",
+			"phone uses 100\u200b.101.102.103 now",
+			"mac.tail1234.ts\u00ad.net is up",
+			"key gh\ufeffp_abcdefghijklmnopqrstuvwxyz0123456789 leaked",
+		]) {
+			expect(() => validateUpdateResult(good({ text })), JSON.stringify(text)).toThrow(/sensitive/);
+		}
+		for (const name of ["mobile ht\u200btps://example.com", "bad.ts\u200b.net"]) {
+			expect(() => validateUpdateResult(good({ checks: [{ name, result: "ok" }] })), name).toThrow(/sensitive/);
+		}
+	});
+
+	it("stores the sanitized form of the text and of check names (invisible characters and control characters removed)", () => {
+		const result = validateUpdateResult(good({ text: "AO\u200b updated\u0007 fine", checks: [{ name: "dae\u200bmon\u0000", result: "ok" }] }));
+		expect(result.text).toBe("AO updated fine");
+		expect(result.checks[0]?.name).toBe("daemon");
+	});
+
+	it("does not flag ordinary plain-words results (times, versions, paths, long dashes, std:: names)", () => {
+		for (const text of [
+			"AO updated to 0.14.5-ed.7.2 at 12:30:45. Your agents kept running.",
+			"Rolled back to 0.14.5-ed.7.1 because the daemon did not answer within 60 s.",
+			"Stopped: the Mac was in use. Nothing changed.",
+			"----------------------------------------------------------------",
+			"Updated 3 of 3 checks: daemon, sessions, std::string untouched",
+			"The password prompt did not appear and no token was shown.",
+		]) {
+			expect(() => validateUpdateResult(good({ text })), text).not.toThrow();
+		}
+	});
+
 	it("refuses sensitive text in a check name too", () => {
 		expect(() => validateUpdateResult(good({ checks: [{ name: "mobile https://example.com", result: "ok" }] }))).toThrow(/sensitive/);
 	});
