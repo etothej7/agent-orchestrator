@@ -442,6 +442,23 @@ type DaemonRun struct {
 	EndedCleanAt      sql.NullTime
 }
 
+type HumanRequest struct {
+	ID                 string
+	Kind               string
+	SessionID          string
+	RequesterKind      string
+	RequesterSessionID string
+	Payload            string
+	PayloadHash        string
+	Summary            string
+	Changes            string
+	State              string
+	Result             string
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	DecidedAt          sql.NullTime
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string
