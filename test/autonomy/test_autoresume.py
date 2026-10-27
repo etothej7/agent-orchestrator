@@ -229,7 +229,8 @@ class DuplicatesNoticesCodex(unittest.TestCase):
         self.assertFalse(R.failure_notice_gate([], failed, others, after, timeline)['passed'])
         self.assertFalse(R.failure_notice_gate([product('wkr_fail'), product('wkr_fail')], failed, others, after, timeline)['passed'])
         self.assertFalse(R.failure_notice_gate([product('wkr_fail'), product('wkr')], failed, others, after, timeline)['passed'])
-        self.assertFalse(R.failure_notice_gate([product('wkr_fail')], failed, others, after, [sample(1, ['f-id'])])['passed'])
+        self.assertTrue(R.failure_notice_gate([product('wkr_fail')], failed, others, after, [sample(1, ['f-id']), sample(2, [])])['passed'])  # a transient host during the failing attempt
+        self.assertFalse(R.failure_notice_gate([product('wkr_fail')], failed, others, after, [sample(1, []), sample(2, ['f-id'])])['passed'])  # but not live at the end
         self.assertTrue(R.NOTICE_TEXT.search("Session x couldn\u2019t resume after the restart"))
 
     def test_intent_barrier(self):

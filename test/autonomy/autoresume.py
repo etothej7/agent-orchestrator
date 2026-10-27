@@ -390,7 +390,8 @@ def failure_notice_gate(notices, failed, others, after, timeline):
     failed/others are NAME LISTS ([display name, session id]): the product writes the display name."""
     mine = [n for n in notices if mentions(n['text'], failed['names'])]
     stray = [n for n in notices if any(mentions(n['text'], o) for o in others)]
-    down = (after['sessions'].get(failed['sid'], {}).get('activity') == 'exited') and not ever_live(timeline, failed['sid'])
+    # A host may exist briefly while the failing resume attempt runs; what matters is that it ends exited with no host.
+    down = (after['sessions'].get(failed['sid'], {}).get('activity') == 'exited') and not (timeline and timeline[-1]['hosts'].get(failed['sid']))
     return gate(len(mine) == 1 and not stray and down, noticesForFailed=len(mine), strayNotices=len(stray), failedStaysExited=down)
 
 
@@ -861,6 +862,10 @@ class Cycle(A.Harness):
             gates['stage_barrier_by_intent_state'] = intent_barrier_gate(self.timeline, stages)
         if parked:
             gates['idle_sessions_hibernated'] = hibernate_gate(self.timeline, pre_wake, parked)
+            gates['idle_sessions_hibernated']['intentStates'] = {sid: intents.get(sid) for sid in parked}
+            if self.args.mode == 'mechanics':
+                gates['idle_sessions_hibernated']['fixtureNote'] = ('parking needs the adapter history probe to prove the saved conversation exists; '
+                                                                    'the fixture provider leaves no saved state, so a daemon that resumes instead is behaving per design')
             gates['hibernated_sessions_wake_on_message'] = wake_gate(self.wake)
         if excluded:
             gates['excluded_sessions_stay_down'] = stays_down_gate(self.timeline, before, after, role('stopped', 'terminated'), intents=intents)
