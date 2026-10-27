@@ -4,6 +4,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,5 +62,30 @@ func TestCLICallsOutsideASessionCarryNoProof(t *testing.T) {
 	}
 	if len(*proofs) != 1 || (*proofs)[0] != "" {
 		t.Fatalf("daemon saw proof headers %q, want none", *proofs)
+	}
+}
+
+// A session whose harness hides its environment from commands (a Codex reviewer) hands the CLI
+// the path of a private proof file instead; the CLI reads the proof from it.
+func TestCLICallsFallBackToThePrivateProofFile(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, proofs := proofServer(t)
+	writeRunFileFor(t, cfg, srv)
+	proof, err := identity.NewProof()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "proof")
+	if err := os.WriteFile(path, []byte(proof+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(identity.EnvProof, "")
+	t.Setenv(identity.EnvProofFile, path)
+
+	if _, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "set-auto-resume", "demo-1", "never"); err != nil {
+		t.Fatalf("set-auto-resume: %v\nstderr=%s", err, errOut)
+	}
+	if len(*proofs) != 1 || (*proofs)[0] != proof {
+		t.Fatalf("daemon saw proof headers %q, want the filed proof", *proofs)
 	}
 }

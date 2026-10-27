@@ -23,6 +23,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,6 +38,10 @@ const (
 	// TOKEN, KEY, SECRET, AUTH or CRED: several harnesses drop environment variables whose names
 	// look like secrets, and the proof must reach the ao subprocesses an agent runs.
 	EnvProof = "AO_SESSION_PROOF"
+	// EnvProofFile names a private file holding the proof, for sessions whose harness filters
+	// the environment its commands see (a Codex reviewer's shell) or whose launch must not carry
+	// the proof inline anywhere. The variable holds only a path, so it is safe in an argv.
+	EnvProofFile = "AO_SESSION_PROOF_FILE"
 
 	proofPrefix = "aop1."
 	// proofBytes is the entropy of a proof: 256 bits, far above the 128-bit floor.
@@ -115,6 +121,37 @@ func WellFormed(s string) bool {
 func Hash(proof string) string {
 	sum := sha256.Sum256([]byte(proof))
 	return hex.EncodeToString(sum[:])
+}
+
+// maxProofFileBytes bounds what a proof file may hold: a proof is 48 characters.
+const maxProofFileBytes = 256
+
+// ProofFromEnv returns the identity proof of the current process: AO_SESSION_PROOF when set,
+// otherwise the contents of the private file AO_SESSION_PROOF_FILE names. It returns "" when
+// there is none or the file is not a plain, absolute-path, owner-only regular file holding a
+// well-formed proof: a proof is never taken from anywhere that others could have written or
+// swapped.
+func ProofFromEnv(getenv func(string) string) string {
+	if proof := strings.TrimSpace(getenv(EnvProof)); proof != "" {
+		return proof
+	}
+	path := strings.TrimSpace(getenv(EnvProofFile))
+	if path == "" || !filepath.IsAbs(path) {
+		return ""
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > maxProofFileBytes {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	proof := strings.TrimSpace(string(raw))
+	if !WellFormed(proof) {
+		return ""
+	}
+	return proof
 }
 
 // Errors a verification can end in; each one is a refusal.

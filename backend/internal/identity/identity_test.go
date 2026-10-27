@@ -3,6 +3,8 @@ package identity
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -186,5 +188,51 @@ func TestAContextNothingVerifiedIsAnonymous(t *testing.T) {
 	// An agent kind with no session is not an agent: nothing identifies it.
 	if (Caller{Kind: KindAgent}).IsAgent() {
 		t.Fatal("an agent caller with no session id counted as an agent")
+	}
+}
+
+func TestProofFromEnvPrefersTheEnvironmentThenAPrivateFile(t *testing.T) {
+	proof, _ := NewProof()
+	filed, _ := NewProof()
+	dir := t.TempDir()
+	write := func(name, body string, mode os.FileMode) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	env := func(pairs ...string) func(string) string {
+		m := map[string]string{}
+		for i := 0; i < len(pairs); i += 2 {
+			m[pairs[i]] = pairs[i+1]
+		}
+		return func(k string) string { return m[k] }
+	}
+	good := write("good", filed+"\n", 0o600)
+
+	if got := ProofFromEnv(env(EnvProof, proof, EnvProofFile, good)); got != proof {
+		t.Fatalf("env proof = %q, want the environment's", got)
+	}
+	if got := ProofFromEnv(env(EnvProofFile, good)); got != filed {
+		t.Fatalf("file proof = %q, want the file's", got)
+	}
+	for name, getenv := range map[string]func(string) string{
+		"nothing":                 env(),
+		"a relative path":         env(EnvProofFile, "good"),
+		"a missing file":          env(EnvProofFile, filepath.Join(dir, "missing")),
+		"a world-readable file":   env(EnvProofFile, write("loose", filed, 0o644)),
+		"a group-readable file":   env(EnvProofFile, write("group", filed, 0o640)),
+		"a file that is not one":  env(EnvProofFile, write("junk", "not-a-proof", 0o600)),
+		"a directory":             env(EnvProofFile, dir),
+		"an oversized file":       env(EnvProofFile, write("big", strings.Repeat("a", 1000), 0o600)),
+		"a symlink to a good one": env(EnvProofFile, func() string { l := filepath.Join(dir, "link"); _ = os.Symlink(good, l); return l }()),
+	} {
+		if got := ProofFromEnv(getenv); got != "" {
+			t.Errorf("%s: returned %q, want no proof", name, got)
+		}
 	}
 }

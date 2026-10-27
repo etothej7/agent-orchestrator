@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -206,7 +205,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	// A session's identity: the proof the daemon put in its environment at launch. It is set
 	// after the caller's headers so nothing a command passes can replace it, and it only ever
 	// goes to the fixed loopback daemon URL above. Outside a session there is none.
-	if proof := strings.TrimSpace(os.Getenv(identity.EnvProof)); proof != "" {
+	if proof := identity.ProofFromEnv(os.Getenv); proof != "" {
 		req.Header.Set(identity.HeaderProof, proof)
 	}
 
