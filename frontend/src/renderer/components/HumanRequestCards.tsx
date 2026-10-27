@@ -27,9 +27,21 @@ function isKnown<T extends object>(map: T, key: string): key is Extract<keyof T,
 	return Object.hasOwn(map, key);
 }
 
-/** A request that lowers a safety (lifts a protection) asks once more before it is approved. */
+/**
+ * A request that lowers a safety (lifts a protection) or does something that cannot be taken back (merges a pull
+ * request, under the person's own GitHub identity) asks once more before it is approved, Cancel first.
+ */
+const CONFIRM_AGAIN = {
+	auto_resume_lift: { title: "humanRequest.confirmLiftTitle", confirm: "humanRequest.confirmLift" },
+	pr_merge: { title: "humanRequest.confirmMergeTitle", confirm: "humanRequest.confirmMerge" },
+} as const;
+
+function confirmAgainFor(request: HumanRequestDTO) {
+	return Object.hasOwn(CONFIRM_AGAIN, request.kind) ? CONFIRM_AGAIN[request.kind as keyof typeof CONFIRM_AGAIN] : undefined;
+}
+
 function asksAgain(request: HumanRequestDTO): boolean {
-	return request.kind === "auto_resume_lift";
+	return confirmAgainFor(request) !== undefined;
 }
 
 /**
@@ -57,6 +69,7 @@ function HumanRequestCard({ request }: { request: HumanRequestDTO }) {
 	const decide = useDecideHumanRequest();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const [confirming, setConfirming] = useState(false);
+	const confirmAgain = confirmAgainFor(request);
 	const busy = decide.isPending;
 	const kindLabel = isKnown(KIND_KEYS, request.kind) ? t(KIND_KEYS[request.kind]) : request.kind;
 	const requester =
@@ -121,10 +134,10 @@ function HumanRequestCard({ request }: { request: HumanRequestDTO }) {
 					{t("humanRequest.deny")}
 				</Button>
 			</div>
-			{asksAgain(request) ? (
+			{confirmAgain ? (
 				<ConfirmDialog
 					busy={busy}
-					confirmLabel={t("humanRequest.confirmLift")}
+					confirmLabel={t(confirmAgain.confirm)}
 					description={request.summary}
 					error={decide.isError ? decide.error.message || t("humanRequest.failed") : null}
 					initialFocus="cancel"
@@ -134,7 +147,7 @@ function HumanRequestCard({ request }: { request: HumanRequestDTO }) {
 						setConfirming(open);
 					}}
 					open={confirming}
-					title={t("humanRequest.confirmLiftTitle")}
+					title={t(confirmAgain.title)}
 				/>
 			) : null}
 		</li>

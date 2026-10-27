@@ -83,7 +83,7 @@ func (prMerge) prepareProject(ctx context.Context, s *Service, target domain.Pro
 	}
 	return prepared{
 		payload: payload,
-		summary: fmt.Sprintf("Merge %s of project %s at commit %s. AO squash-merges it only if the review and checks still pass and the commit has not changed.", what, projectLabel(target), in.ExpectedHeadSHA[:12]),
+		summary: fmt.Sprintf("Merge %s of project %s at commit %s. AO merges it only if the review and checks still pass and the commit has not changed.", what, projectLabel(target), in.ExpectedHeadSHA[:12]),
 		changes: []domain.HumanRequestChange{
 			{Field: "pullRequest", From: "open", To: "merged"},
 			{Field: "headCommit", From: "", To: in.ExpectedHeadSHA[:12]},

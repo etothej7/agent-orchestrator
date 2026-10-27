@@ -168,6 +168,25 @@ describe("HumanRequestCards", () => {
 		await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 	});
 
+	it("asks once more before merging a pull request, opens on Cancel, shows the PR and commit, and merges only from the dialog's confirm", async () => {
+		const spy = post();
+		mount([merge()]);
+		await userEvent.click(screen.getByRole("button", { name: "Approve: Merge a pull request" }));
+		const dialog = await screen.findByRole("dialog", { name: "Merge this pull request?" });
+		expect(dialog).toHaveTextContent("Merge pull request #7");
+		expect(dialog).toHaveTextContent("0123456789ab");
+		expect(spy).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+		await userEvent.keyboard("{Enter}");
+		expect(spy).not.toHaveBeenCalled();
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByRole("button", { name: "Approve: Merge a pull request" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Merge" }));
+		await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+		expect(spy).toHaveBeenCalledWith("/api/v1/human-requests/{id}/approve", { params: { path: { id: "hr-3" } }, body: { payloadHash: "hash-3" } });
+	});
+
 	it("keeps the card and shows the daemon's refusal when approving fails", async () => {
 		post({ data: undefined, error: { message: "this request is not the one that was shown" }, response: { status: 409 } });
 		mount([request()]);

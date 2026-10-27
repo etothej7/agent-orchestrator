@@ -265,3 +265,20 @@ func TestAPRTheDaemonDoesNotTrackIsNotFoundToEveryoneButThePerson(t *testing.T) 
 		t.Fatalf("an untracked PR: %d, requests %d merges %d", rec.Code, len(g.requests.filed), len(g.merger.merged))
 	}
 }
+
+// The URL that is authorised is the URL that is merged: whitespace around either value must not make the gate look up
+// one string and the merge service act on another.
+func TestTheGateAuthorisesTheSameTrimmedURLAndHeadItMerges(t *testing.T) {
+	g := newGateRig(gateStore{agentMayMerge: true})
+	g.caller = agentCaller(gateWorker, domain.KindWorker)
+	body := `{"prUrl":"  ` + gatePRURL + `\n","expectedHeadSha":" ` + gateHead + ` "}`
+	req := httptest.NewRequest(http.MethodPost, "/prs/7/merge", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	g.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || len(g.merger.merged) != 1 {
+		t.Fatalf("= %d %s, merges %d", rec.Code, rec.Body.String(), len(g.merger.merged))
+	}
+	if got := g.merger.merged[0]; got.PRURL != gatePRURL || got.ExpectedHeadSHA != gateHead {
+		t.Fatalf("merged %+v; it must be the trimmed values the gate authorised", got)
+	}
+}

@@ -113,7 +113,10 @@ func (c *PRsController) merge(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	if strings.TrimSpace(in.PRURL) == "" || strings.TrimSpace(in.ExpectedHeadSHA) == "" {
+	// What is authorised below is exactly what is merged: trim once, here, and use these values for both.
+	in.PRURL = strings.TrimSpace(in.PRURL)
+	in.ExpectedHeadSHA = strings.TrimSpace(in.ExpectedHeadSHA)
+	if in.PRURL == "" || in.ExpectedHeadSHA == "" {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR", "PR URL and expected head SHA are required", nil)
 		return
 	}
@@ -142,7 +145,7 @@ func (c *PRsController) mayMergeNow(w http.ResponseWriter, r *http.Request, prID
 	if caller.IsHuman() {
 		return true
 	}
-	pr, found, err := c.Store.GetPR(ctx, strings.TrimSpace(in.PRURL))
+	pr, found, err := c.Store.GetPR(ctx, in.PRURL)
 	if err != nil {
 		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
 		return false
@@ -189,7 +192,7 @@ func (c *PRsController) mayMergeNow(w http.ResponseWriter, r *http.Request, prID
 		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "MERGE_NOT_PERMITTED", "Only the person may merge this pull request.", nil)
 		return false
 	}
-	payload, err := json.Marshal(map[string]string{"prId": prID, "prUrl": strings.TrimSpace(in.PRURL), "expectedHeadSha": strings.TrimSpace(in.ExpectedHeadSHA)})
+	payload, err := json.Marshal(map[string]string{"prId": prID, "prUrl": in.PRURL, "expectedHeadSha": in.ExpectedHeadSHA})
 	if err != nil {
 		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
 		return false
