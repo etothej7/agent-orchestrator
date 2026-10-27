@@ -1136,6 +1136,7 @@ func Run(buildVersion string) error {
 	var usageLimitResumeDone <-chan struct{}
 	var storyContinuationsDone <-chan struct{}
 	var standingInstructionsDone <-chan struct{}
+	var autoResumeDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1149,6 +1150,8 @@ func Run(buildVersion string) error {
 		}
 		done := make(chan struct{})
 		startupReconcileDone = done
+		autoResumeFinished := make(chan struct{})
+		autoResumeDone = autoResumeFinished
 		go func() {
 			defer close(done)
 			if reconcileErr := reconcilePersistentChatHosts(ctx, cfg.DataDir, store, cfg.AppRunID); reconcileErr != nil {
@@ -1172,6 +1175,12 @@ func Run(buildVersion string) error {
 			// The health pass is done: record this run (never before, so a boot that dies
 			// mid-pass cannot mask the previous run's shutdown window) and keep it fresh.
 			liveness.start(ctx)
+			// Bring back the agents this restart cut off, strictly and only after the
+			// health pass that captured them. It never runs before this point.
+			go func() {
+				defer close(autoResumeFinished)
+				runAutoResume(ctx, bootID, sessMgr, chatSvc, store, notificationWriter, log)
+			}()
 			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
 			}
@@ -1245,6 +1254,9 @@ func Run(buildVersion string) error {
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
 	liveness.wait()
+	if autoResumeDone != nil {
+		<-autoResumeDone
+	}
 	if standingInstructionsDone != nil {
 		<-standingInstructionsDone
 	}

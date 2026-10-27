@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -547,5 +548,19 @@ func TestACancelledPassStopsAndLeavesIntentsPending(t *testing.T) {
 	}
 	if w.state("w") != domain.ResumePending || len(w.resumeCalls) != 0 {
 		t.Fatalf("a cancelled pass touched the intent: state=%s calls=%v", w.state("w"), w.resumeCalls)
+	}
+}
+
+// G2: the resumer's whole reach into the session manager is these three methods.
+// Adding Kill, Cleanup, RetireForReplacement, TeardownProject, Restore or any
+// workspace call here is a visible, reviewable change that fails this test.
+func TestTheResumerSessionCapabilityIsExactlyThreeMethods(t *testing.T) {
+	typ := reflect.TypeOf((*Manager)(nil)).Elem()
+	var names []string
+	for i := range typ.NumMethod() {
+		names = append(names, typ.Method(i).Name)
+	}
+	if want := []string{"ParkResumeSession", "ProbeNativeHistory", "ResumeAgentStrict"}; !slices.Equal(names, want) {
+		t.Fatalf("Manager interface methods = %v, want exactly %v", names, want)
 	}
 }
