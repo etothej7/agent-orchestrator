@@ -3581,5 +3581,7 @@
 	"humanRequest.confirmLift": "Allow",
 	"humanRequest.kind.pr_merge": "Merge a pull request",
 	"humanRequest.field.pullRequest": "Pull request",
-	"humanRequest.field.headCommit": "Commit"
+	"humanRequest.field.headCommit": "Commit",
+	"inspector.identityRelaunch": "Needs relaunch for identity",
+	"inspector.identityRelaunchDescription": "This session started before identity proofs, so it cannot prove who it is yet. AO relaunches it automatically when it is idle."
 }

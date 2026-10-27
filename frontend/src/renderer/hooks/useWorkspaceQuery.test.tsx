@@ -39,7 +39,7 @@ vi.mock("./useCloudOrg", () => ({
 }));
 
 import { CloudCpError } from "../lib/cloud-cp";
-import { UNKNOWN_CLOUD_PROJECT_REFETCH_DEBOUNCE_MS, cloudProjectsQueryKey, cloudSessionsQueryKey, refetchCloudProjectsForUnknownSessions, useCloudSessionQuery, useWorkspacePolling, useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey, workspaceQueryKeyForHost } from "./useWorkspaceQuery";
+import { UNKNOWN_CLOUD_PROJECT_REFETCH_DEBOUNCE_MS, cloudProjectsQueryKey, cloudSessionsQueryKey, refetchCloudProjectsForUnknownSessions, toWorkspaceSession, useCloudSessionQuery, useWorkspacePolling, useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey, workspaceQueryKeyForHost } from "./useWorkspaceQuery";
 
 it("preserves the existing local and remote workspace cache keys", () => {
 	expect(workspaceQueryKeyForHost()).toBe(workspaceQueryKey);
@@ -971,5 +971,19 @@ describe("cloud projects made elsewhere", () => {
 		});
 		await waitFor(() => expect(listProjectsMock).toHaveBeenCalledTimes(2));
 		focusManager.setFocused(undefined);
+	});
+});
+
+describe("toWorkspaceSession identity marker", () => {
+	const base = { id: "sess-1", projectId: "proj-1", isTerminated: false, updatedAt: "2026-06-10T16:15:04Z", status: "working", activity: { state: "idle", lastActivityAt: "2026-06-10T16:15:04Z" }, prs: [] };
+	const project = { id: "proj-1", name: "proj" };
+	const map = (overrides: object) => toWorkspaceSession({ ...base, ...overrides } as never, project);
+
+	it("flags a live session whose identity proof is missing, and nothing else", () => {
+		expect(map({ identity: { proof: "missing", anonymousCalls: 3 } }).needsIdentityRelaunch).toBe(true);
+		expect(map({ identity: { proof: "present", anonymousCalls: 0 } }).needsIdentityRelaunch).toBeUndefined();
+		expect(map({}).needsIdentityRelaunch).toBeUndefined();
+		// A session that ended cannot be relaunched into a proof: the daemon omits the field, and a stale one is ignored.
+		expect(map({ isTerminated: true, identity: { proof: "missing", anonymousCalls: 0 } }).needsIdentityRelaunch).toBeUndefined();
 	});
 });
