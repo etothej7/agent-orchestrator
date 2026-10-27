@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
+	"github.com/aoagents/agent-orchestrator/backend/internal/procidentity"
 )
 
 type proofStore struct{ hashes map[domain.SessionID]string }
@@ -232,4 +234,105 @@ type reviewRows map[string]domain.Review
 func (r reviewRows) GetReviewByID(_ context.Context, id string) (domain.Review, bool, error) {
 	row, ok := r[id]
 	return row, ok, nil
+}
+
+// --- the live-identity bridge (process ancestry) ---
+
+func (p *proofStore) SessionProofGeneration(_ context.Context, id domain.SessionID) (int, error) {
+	if _, ok := p.hashes[id]; ok {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+type countingAncestry struct {
+	res   procidentity.Result
+	err   error
+	calls int
+	ports [2]int
+}
+
+func (c *countingAncestry) Identify(_ context.Context, client, server int) (procidentity.Result, error) {
+	c.calls++
+	c.ports = [2]int{client, server}
+	return c.res, c.err
+}
+
+// loopbackRequest is a request as the daemon's listener sees a local caller: a loopback peer on
+// an ephemeral port, arriving at the daemon's port.
+func loopbackRequest(t *testing.T, proof string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/worker-1/send", nil)
+	req.RemoteAddr = "127.0.0.1:50321"
+	req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3001}))
+	if proof != "" {
+		req.Header.Set(identity.HeaderProof, proof)
+	}
+	return req
+}
+
+func seenCaller(resolver *identity.Resolver, req *http.Request) identity.Caller {
+	var seen identity.Caller
+	h := callerIdentityMiddleware(resolver, slog.New(slog.NewTextHandler(io.Discard, nil)))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = identity.FromContext(r.Context())
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	return seen
+}
+
+func TestAProoflessLoopbackCallerInsideASessionTreeIsThatSession(t *testing.T) {
+	store := &proofStore{hashes: map[domain.SessionID]string{}} // no proof issued: a pre-upgrade session
+	sessions := proofSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	ancestry := &countingAncestry{res: procidentity.Result{Session: "worker-1", PID: 4242, Comm: "ao"}}
+	resolver := identity.NewResolver(store, sessions).WithAncestry(ancestry)
+
+	got := seenCaller(resolver, loopbackRequest(t, ""))
+	if !got.IsAgent() || got.Session != "worker-1" || got.Via != identity.ViaAncestry {
+		t.Fatalf("caller = %+v, want worker-1 via ancestry", got)
+	}
+	if ancestry.ports != [2]int{50321, 3001} {
+		t.Fatalf("ports used = %v, want the client's and the daemon's ports from the socket", ancestry.ports)
+	}
+}
+
+// Ancestry is a last resort for a caller with NO proof. A proof that is presented but wrong
+// never falls back to it; a human capability and a LAN request never consult it.
+func TestAncestryIsOnlyConsultedForALoopbackCallerWithNoProofAndNoCapability(t *testing.T) {
+	store := &proofStore{hashes: map[domain.SessionID]string{}}
+	sessions := proofSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	newResolver := func() (*identity.Resolver, *countingAncestry) {
+		a := &countingAncestry{res: procidentity.Result{Session: "worker-1"}}
+		return identity.NewResolver(store, sessions).WithAncestry(a), a
+	}
+	stale, _ := identity.NewProof()
+	human := func(r *http.Request) *http.Request { return r.WithContext(requestscope.WithHumanUI(r.Context())) }
+	lan := func(r *http.Request) *http.Request { return r.WithContext(requestscope.WithLAN(r.Context())) }
+	remote := func(r *http.Request) *http.Request { r.RemoteAddr = "192.0.2.7:50321"; return r }
+
+	for name, tc := range map[string]struct {
+		req  func() *http.Request
+		want func(identity.Caller) bool
+	}{
+		"a wrong proof does not fall back to ancestry": {func() *http.Request { return loopbackRequest(t, stale) }, func(c identity.Caller) bool { return c.Kind == identity.KindAnonymous }},
+		"the human capability is not replaced":         {func() *http.Request { return human(loopbackRequest(t, "")) }, func(c identity.Caller) bool { return c.IsHuman() }},
+		"a LAN request is never identified this way":   {func() *http.Request { return lan(loopbackRequest(t, "")) }, func(c identity.Caller) bool { return c.Kind == identity.KindAnonymous }},
+		"a non-loopback peer is never identified":      {func() *http.Request { return remote(loopbackRequest(t, "")) }, func(c identity.Caller) bool { return c.Kind == identity.KindAnonymous }},
+	} {
+		resolver, ancestry := newResolver()
+		if got := seenCaller(resolver, tc.req()); !tc.want(got) {
+			t.Errorf("%s: caller = %+v", name, got)
+		}
+		if ancestry.calls != 0 {
+			t.Errorf("%s: ancestry was consulted %d times", name, ancestry.calls)
+		}
+	}
+}
+
+func TestTheBridgeFailingLeavesTheCallerAnonymous(t *testing.T) {
+	store := &proofStore{hashes: map[domain.SessionID]string{}}
+	sessions := proofSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	resolver := identity.NewResolver(store, sessions).WithAncestry(&countingAncestry{err: procidentity.ErrNotInSession})
+	if got := seenCaller(resolver, loopbackRequest(t, "")); got.Kind != identity.KindAnonymous {
+		t.Fatalf("caller = %+v, want anonymous", got)
+	}
 }

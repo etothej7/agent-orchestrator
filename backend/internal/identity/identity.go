@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/procidentity"
 )
 
 const (
@@ -68,12 +69,26 @@ const (
 	KindReviewer Kind = "reviewer"
 )
 
+// Via says how a session caller was established.
+type Via string
+
+const (
+	// ViaProof means the caller presented its session's identity proof.
+	ViaProof Via = "proof"
+	// ViaAncestry means the daemon matched the caller's process tree to a process it started for
+	// the session. Only for a session that has never been given a proof.
+	ViaAncestry Via = "ancestry"
+)
+
 // Caller is the verified identity of one request.
 type Caller struct {
 	Kind        Kind
 	Session     domain.SessionID
 	SessionKind domain.SessionKind
 	Project     domain.ProjectID
+	// Via says how a session caller was established: by its proof, or (for a session that has
+	// never been given one) by the process tree it is in. Empty for the human and anonymous.
+	Via Via
 	// Review and Worker are set for a reviewer: the review row it was launched for and the
 	// worker session whose pull request that review covers. A route that acts on a review run
 	// checks the run's review against Review, so a reviewer can act only on its own run.
@@ -281,6 +296,7 @@ type Resolver struct {
 	sessions SessionReader
 	reviews  ReviewStore
 	reviewed ReviewReader
+	ancestry Ancestry
 }
 
 // NewResolver builds a Resolver.
@@ -323,7 +339,7 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if !ok || rec.IsTerminated {
 		return Anonymous(), ErrSessionEnded
 	}
-	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID}, nil
+	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaProof}, nil
 }
 
 // resolveReviewer verifies a proof that is not a session's: it may belong to a native reviewer.
@@ -355,4 +371,59 @@ func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, er
 		return Anonymous(), ErrSessionEnded
 	}
 	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID}, nil
+}
+
+// Ancestry finds the session a loopback caller belongs to from the socket and the kernel's
+// process table (package procidentity). Nothing the request says is an input.
+type Ancestry interface {
+	Identify(ctx context.Context, clientPort, serverPort int) (procidentity.Result, error)
+}
+
+// proofCounter reports how many proofs a session has had (0 when it never had one).
+type proofCounter interface {
+	SessionProofGeneration(ctx context.Context, id domain.SessionID) (int, error)
+}
+
+// WithAncestry enables the live-identity bridge.
+func (r *Resolver) WithAncestry(a Ancestry) *Resolver {
+	r.ancestry = a
+	return r
+}
+
+// HasAncestry reports whether the bridge is wired.
+func (r *Resolver) HasAncestry() bool { return r.ancestry != nil }
+
+// ResolveByAncestry identifies a caller that presented no proof through its process tree. It is
+// the bridge for sessions that were already running when proofs arrived: they have no proof in
+// their environment, but the daemon knows which processes it started for them. The caller comes
+// from the daemon's own session record, is marked ViaAncestry, and only exists for a session
+// that has NEVER been given a proof: once a session is relaunched (and so proven) the bridge no
+// longer applies to it. Any failure is anonymous (fail closed).
+func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort int) (Caller, error) {
+	if r.ancestry == nil {
+		return Anonymous(), ErrInvalid
+	}
+	res, err := r.ancestry.Identify(ctx, clientPort, serverPort)
+	if err != nil {
+		return Anonymous(), err
+	}
+	counter, ok := r.store.(proofCounter)
+	if !ok {
+		return Anonymous(), errors.New("proof state is unavailable")
+	}
+	gen, err := counter.SessionProofGeneration(ctx, res.Session)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve by ancestry: %w", err)
+	}
+	if gen > 0 {
+		return Anonymous(), ErrInvalid // proven sessions are identified by their proof only
+	}
+	rec, found, err := r.sessions.GetSession(ctx, res.Session)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve by ancestry: %w", err)
+	}
+	if !found || rec.IsTerminated {
+		return Anonymous(), ErrSessionEnded
+	}
+	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaAncestry}, nil
 }

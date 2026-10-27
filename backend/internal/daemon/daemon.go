@@ -1009,8 +1009,11 @@ func Run(buildVersion string) error {
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
-		UICapability:    uiCapabilityVerifier,
-		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store),
+		UICapability: uiCapabilityVerifier,
+		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store).WithAncestry(
+			newAncestryBridge(log, store, func(ctx context.Context, handle string) ([]int, error) {
+				return runtimeAdapter.ProcessRootPIDs(ctx, ports.RuntimeHandle{ID: handle})
+			}, cfg.DataDir)),
 		// Observe until the app signs every human action; AO_ROUTE_CLASS_MODE=enforce turns it on.
 		RouteClassMode:     httpd.ParseRouteClassMode(os.Getenv("AO_ROUTE_CLASS_MODE")),
 		Awake:              awakeSvc,
