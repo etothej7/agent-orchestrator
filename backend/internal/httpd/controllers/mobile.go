@@ -332,6 +332,7 @@ func (b *BridgeService) Status() MobileStatusResponse {
 	if st.LoopbackOnly {
 		lan, ts = nil, nil
 	}
+	secure := b.securePairingStatus(st.SecurePairing, enabled)
 	res := MobileStatusResponse{
 		Enabled:             enabled,
 		LoopbackOnly:        st.LoopbackOnly,
@@ -342,10 +343,11 @@ func (b *BridgeService) Status() MobileStatusResponse {
 		Warning:             mobileUnencryptedWarning,
 		BrowserRemoteAccess: st.BrowserRemoteAccess,
 		Endpoints: mobilebridge.Endpoints(mobilebridge.EndpointInputs{
-			LANHosts:       lan,
-			TailscaleHosts: ts,
-			Port:           b.LAN.BoundPort(),
-			Tunnel:         b.tunnelEndpoint(),
+			LANHosts:        lan,
+			TailscaleHosts:  ts,
+			SecureTailscale: secureTailscaleHost(secure, st.LoopbackOnly),
+			Port:            b.LAN.BoundPort(),
+			Tunnel:          b.tunnelEndpoint(),
 		}),
 		Tunnel: b.tunnelStatus(),
 		HostID: b.HostID,
@@ -356,7 +358,7 @@ func (b *BridgeService) Status() MobileStatusResponse {
 	if enabled {
 		res.Password = st.Password
 	}
-	res.SecurePairing = b.securePairingStatus(st.SecurePairing, enabled)
+	res.SecurePairing = secure
 	if st.ServeCleanupPending && res.SecurePairing.Reason == "" {
 		res.SecurePairing.Reason = "clear_failed"
 	}
@@ -392,11 +394,24 @@ func (b *BridgeService) AdvertisedEndpoints() []mobilebridge.Endpoint {
 		lan, ts = b.lanHosts(), b.tailscaleHosts()
 	}
 	return mobilebridge.Endpoints(mobilebridge.EndpointInputs{
-		LANHosts:       lan,
-		TailscaleHosts: ts,
-		Port:           b.LAN.BoundPort(),
-		Tunnel:         b.tunnelEndpoint(),
+		LANHosts:        lan,
+		TailscaleHosts:  ts,
+		SecureTailscale: secureTailscaleHost(b.securePairingStatus(st.SecurePairing, b.LAN.Running()), st.LoopbackOnly),
+		Port:            b.LAN.BoundPort(),
+		Tunnel:          b.tunnelEndpoint(),
 	})
+}
+
+// secureTailscaleHost is the MagicDNS name to advertise as the TLS tailnet
+// route, or "" while it is not verified: serve must be applied to the live
+// bridge port with a certificate available (Active). Anything less keeps the
+// raw address instead of promising a route that would not answer. Tunnel-only
+// mode never uses serve, so it never advertises it either.
+func secureTailscaleHost(sp SecurePairingStatus, loopbackOnly bool) string {
+	if loopbackOnly || !sp.Active {
+		return ""
+	}
+	return sp.Host
 }
 
 // tunnel reads the current connector without resolving one.

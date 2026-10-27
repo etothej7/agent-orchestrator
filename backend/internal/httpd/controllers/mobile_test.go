@@ -1102,3 +1102,114 @@ func TestMobileRestoreOnBootRollsBackHashWhenStartFails(t *testing.T) {
 		t.Fatalf("account token hash after failed restore = %q, want previous-account-hash", got)
 	}
 }
+
+// secureEndpointBridge is a running bridge on port 3011 with stubbed address
+// scans, so endpoint lists are independent of the host's real interfaces.
+func secureEndpointBridge(t *testing.T, info mobilebridge.TailscaleInfo, target func() int) *BridgeService {
+	t.Helper()
+	b := newSecureBridge(t, info, target)
+	b.PickLANHosts = func() []string { return []string{"192.168.1.42"} }
+	b.PickTailscaleHosts = func() []string { return []string{"100.72.46.7"} }
+	return b
+}
+
+func assertBothEndpointLists(t *testing.T, b *BridgeService, want []mobilebridge.Endpoint) {
+	t.Helper()
+	for name, got := range map[string][]mobilebridge.Endpoint{
+		"offer (Status.Endpoints)":      b.Status().Endpoints,
+		"refresh (AdvertisedEndpoints)": b.AdvertisedEndpoints(),
+	} {
+		if len(got) != len(want) {
+			t.Fatalf("%s = %v, want %v", name, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s[%d] = %+v, want %+v", name, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+var (
+	rawTailscale    = mobilebridge.Endpoint{Kind: mobilebridge.KindTailscale, Host: "100.72.46.7", Port: 3011}
+	lanEndpoint     = mobilebridge.Endpoint{Kind: mobilebridge.KindLAN, Host: "192.168.1.42", Port: 3011}
+	secureTailscale = mobilebridge.Endpoint{Kind: mobilebridge.KindTailscale, Host: tsUp.Name, Port: 443, Secure: true}
+)
+
+func TestSecurePairingAdvertisesSecureTailscaleInOfferAndRefresh(t *testing.T) {
+	b := secureEndpointBridge(t, tsUp, func() int { return 3011 })
+	if _, err := b.SetSecurePairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	// Secure first, LAN next, and no plaintext 100.x entry beside the TLS one.
+	assertBothEndpointLists(t, b, []mobilebridge.Endpoint{secureTailscale, lanEndpoint})
+}
+
+func TestSecurePairingAdvertisesSecureTailscaleAheadOfTheTunnel(t *testing.T) {
+	b := secureEndpointBridge(t, tsUp, func() int { return 3011 })
+	b.Tunnel = &fakeTunnel{endpoint: &mobilebridge.TunnelEndpoint{Ready: true, Hostname: "x.trycloudflare.com"}}
+	if _, err := b.SetSecurePairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	assertBothEndpointLists(t, b, []mobilebridge.Endpoint{
+		secureTailscale, lanEndpoint,
+		{Kind: mobilebridge.KindTunnel, Host: "x.trycloudflare.com", Port: 443, Secure: true},
+	})
+}
+
+func TestSecurePairingOffKeepsRawTailscaleEndpoint(t *testing.T) {
+	b := secureEndpointBridge(t, tsUp, func() int { return 3011 })
+	if _, err := b.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	assertBothEndpointLists(t, b, []mobilebridge.Endpoint{lanEndpoint, rawTailscale})
+}
+
+// While the TLS route cannot be verified, the raw address stays advertised —
+// dropping it would leave an older phone with no tailnet route at all — and the
+// secure entry is never invented.
+func TestSecurePairingNotActiveDoesNotAdvertiseSecureTailscale(t *testing.T) {
+	cases := []struct {
+		name   string
+		info   mobilebridge.TailscaleInfo
+		target func() int
+		apply  func(int) error
+	}{
+		{"no cli", mobilebridge.TailscaleInfo{}, func() int { return 3011 }, nil},
+		{"no certs", mobilebridge.TailscaleInfo{Name: tsUp.Name}, func() int { return 3011 }, nil},
+		{"port mismatch", tsUp, func() int { return 9999 }, nil},
+		{"foreign serve target", tsUp, func() int { return 0 }, nil},
+		{"serve apply failed", tsUp, func() int { return 3011 }, func(int) error { return errors.New("boom") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := secureEndpointBridge(t, tc.info, tc.target)
+			if tc.apply != nil {
+				b.ApplyServe = tc.apply
+			}
+			if _, err := b.SetSecurePairing(true); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.Enable(); err != nil {
+				t.Fatal(err)
+			}
+			assertBothEndpointLists(t, b, []mobilebridge.Endpoint{lanEndpoint, rawTailscale})
+		})
+	}
+}
+
+func TestSecurePairingEndpointNeedsARunningBridge(t *testing.T) {
+	b := secureEndpointBridge(t, tsUp, func() int { return 3011 })
+	if _, err := b.SetSecurePairing(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.AdvertisedEndpoints(); len(got) != 0 {
+		t.Fatalf("endpoints = %v, want none while the bridge is off", got)
+	}
+}
