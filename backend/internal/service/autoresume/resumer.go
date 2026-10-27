@@ -562,7 +562,7 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 		r.fail(ctx, intent, domain.ResumeFailed, string(sessionmanager.ResumeFailureReason(err)))
 	case sessionmanager.ResumeFailurePermanent:
 		reason := string(sessionmanager.ResumeReasonUnresumable)
-		if errors.Is(err, sessionmanager.ErrIncompleteHandle) {
+		if errors.Is(err, sessionmanager.ErrIncompleteHandle) || errors.Is(err, sessionmanager.ErrWorkspaceMissing) {
 			reason = ReasonWorktreeMissing
 		}
 		r.fail(ctx, intent, domain.ResumeAbandoned, reason)

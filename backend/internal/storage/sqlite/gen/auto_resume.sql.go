@@ -108,6 +108,7 @@ func (q *Queries) HeartbeatDaemonRun(ctx context.Context, arg HeartbeatDaemonRun
 
 const insertDaemonRun = `-- name: InsertDaemonRun :exec
 INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?)
+ON CONFLICT(boot_id) DO NOTHING
 `
 
 type InsertDaemonRunParams struct {
@@ -116,6 +117,7 @@ type InsertDaemonRunParams struct {
 	HeartbeatAt time.Time
 }
 
+// A shutdown stamp may already have created this run's row (see InsertShutdownDaemonRun).
 func (q *Queries) InsertDaemonRun(ctx context.Context, arg InsertDaemonRunParams) error {
 	_, err := q.db.ExecContext(ctx, insertDaemonRun, arg.BootID, arg.StartedAt, arg.HeartbeatAt)
 	return err
@@ -136,6 +138,32 @@ func (q *Queries) InsertResumeIntent(ctx context.Context, arg InsertResumeIntent
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const insertShutdownDaemonRun = `-- name: InsertShutdownDaemonRun :exec
+INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at, shutdown_started_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(boot_id) DO NOTHING
+`
+
+type InsertShutdownDaemonRunParams struct {
+	BootID            string
+	StartedAt         time.Time
+	HeartbeatAt       time.Time
+	ShutdownStartedAt sql.NullTime
+}
+
+// A run that shuts down before it recorded itself (it died or was stopped during the
+// boot health pass) still leaves a row, started now, so the next boot's shutdown window
+// starts after this run's own boot-pass exits and cannot re-capture them.
+func (q *Queries) InsertShutdownDaemonRun(ctx context.Context, arg InsertShutdownDaemonRunParams) error {
+	_, err := q.db.ExecContext(ctx, insertShutdownDaemonRun,
+		arg.BootID,
+		arg.StartedAt,
+		arg.HeartbeatAt,
+		arg.ShutdownStartedAt,
+	)
+	return err
 }
 
 const listInterruptedHumanTurnsForSession = `-- name: ListInterruptedHumanTurnsForSession :many
@@ -234,7 +262,7 @@ func (q *Queries) MarkDaemonEndedClean(ctx context.Context, arg MarkDaemonEndedC
 	return err
 }
 
-const markDaemonShutdownStarted = `-- name: MarkDaemonShutdownStarted :exec
+const markDaemonShutdownStarted = `-- name: MarkDaemonShutdownStarted :execrows
 UPDATE daemon_runs SET shutdown_started_at = ?1, heartbeat_at = MAX(heartbeat_at, ?2) WHERE boot_id = ?3 AND shutdown_started_at IS NULL
 `
 
@@ -244,9 +272,12 @@ type MarkDaemonShutdownStartedParams struct {
 	BootID            string
 }
 
-func (q *Queries) MarkDaemonShutdownStarted(ctx context.Context, arg MarkDaemonShutdownStartedParams) error {
-	_, err := q.db.ExecContext(ctx, markDaemonShutdownStarted, arg.ShutdownStartedAt, arg.HeartbeatFloor, arg.BootID)
-	return err
+func (q *Queries) MarkDaemonShutdownStarted(ctx context.Context, arg MarkDaemonShutdownStartedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDaemonShutdownStarted, arg.ShutdownStartedAt, arg.HeartbeatFloor, arg.BootID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const pruneDaemonRuns = `-- name: PruneDaemonRuns :exec

@@ -161,6 +161,7 @@ func TestClassifyResumeFailure(t *testing.T) {
 		{"not found", wrap(ErrNotFound), ResumeFailurePermanent},
 		{"incomplete handle", wrap(ErrIncompleteHandle), ResumeFailurePermanent},
 		{"something else", errors.New("boom"), ResumeFailureUnknown},
+		{"a missing worktree is permanent", wrap(ErrWorkspaceMissing), ResumeFailurePermanent},
 	}
 	for _, c := range cases {
 		if got := ClassifyResumeFailure(c.err); got != c.want {
@@ -215,5 +216,28 @@ func TestResumeAgentStrictRefusesAProtectedOrStoppedSessionItself(t *testing.T) 
 				t.Fatalf("a refused resume launched something: %d %d", len(launcher.started), rt.created)
 			}
 		})
+	}
+}
+
+func TestClassifyResumeFailureOfNilIsNone(t *testing.T) {
+	if got := ClassifyResumeFailure(nil); got != ResumeFailureNone {
+		t.Fatalf("ClassifyResumeFailure(nil) = %v, want ResumeFailureNone", got)
+	}
+}
+
+// A worktree that is gone is never recreated by an unattended resume: it ends in a
+// permanent, named failure instead of a launch error retried to the attempt cap.
+func TestResumeAgentStrictWithAMissingWorktreeIsPermanentAndLaunchesNothing(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, rt := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityExited)
+	mgr.workspaceExistsFn = func(string) bool { return false }
+
+	_, err := mgr.ResumeAgentStrict(context.Background(), "mer-1")
+	if !errors.Is(err, ErrWorkspaceMissing) || ClassifyResumeFailure(err) != ResumeFailurePermanent {
+		t.Fatalf("error = %v (class %v), want a permanent ErrWorkspaceMissing", err, ClassifyResumeFailure(err))
+	}
+	if len(launcher.started) != 0 || rt.created != 0 {
+		t.Fatalf("a missing worktree launched something: %d %d", len(launcher.started), rt.created)
 	}
 }

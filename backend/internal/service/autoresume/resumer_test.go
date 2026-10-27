@@ -336,6 +336,7 @@ func TestOutcomesOfAResumeAttempt(t *testing.T) {
 		{"unresumable history needs a person", sessionmanager.ErrNotResumable, domain.ResumeFailed, 1, string(sessionmanager.ResumeReasonHistory)},
 		{"a missing provider session needs a person", ports.ErrChatResumeFailed, domain.ResumeFailed, 1, string(sessionmanager.ResumeReasonHistory)},
 		{"no workspace is permanent", sessionmanager.ErrIncompleteHandle, domain.ResumeAbandoned, 1, ReasonWorktreeMissing},
+		{"a missing worktree is permanent and named", sessionmanager.ErrWorkspaceMissing, domain.ResumeAbandoned, 1, ReasonWorktreeMissing},
 		{"terminated is permanent", sessionmanager.ErrTerminated, domain.ResumeAbandoned, 1, string(sessionmanager.ResumeReasonUnresumable)},
 	}
 	for _, tc := range cases {

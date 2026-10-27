@@ -15,13 +15,23 @@ ON CONFLICT(session_id) DO UPDATE SET stop_reason = excluded.stop_reason, update
 UPDATE session_auto_resume SET stop_reason = '', updated_at = ? WHERE session_id = ? AND stop_reason <> '';
 
 -- name: InsertDaemonRun :exec
-INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?);
+-- A shutdown stamp may already have created this run's row (see InsertShutdownDaemonRun).
+INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?)
+ON CONFLICT(boot_id) DO NOTHING;
 
 -- name: HeartbeatDaemonRun :exec
 UPDATE daemon_runs SET heartbeat_at = ? WHERE boot_id = ?;
 
--- name: MarkDaemonShutdownStarted :exec
+-- name: MarkDaemonShutdownStarted :execrows
 UPDATE daemon_runs SET shutdown_started_at = sqlc.arg(shutdown_started_at), heartbeat_at = MAX(heartbeat_at, sqlc.arg(heartbeat_floor)) WHERE boot_id = sqlc.arg(boot_id) AND shutdown_started_at IS NULL;
+
+-- name: InsertShutdownDaemonRun :exec
+-- A run that shuts down before it recorded itself (it died or was stopped during the
+-- boot health pass) still leaves a row, started now, so the next boot's shutdown window
+-- starts after this run's own boot-pass exits and cannot re-capture them.
+INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at, shutdown_started_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(boot_id) DO NOTHING;
 
 -- name: MarkDaemonEndedClean :exec
 UPDATE daemon_runs SET ended_clean_at = ? WHERE boot_id = ?;

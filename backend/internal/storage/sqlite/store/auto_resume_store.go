@@ -108,8 +108,16 @@ func (s *Store) MarkDaemonShutdownStarted(ctx context.Context, bootID string, no
 	now = now.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.qw.MarkDaemonShutdownStarted(ctx, gen.MarkDaemonShutdownStartedParams{
+	n, err := s.qw.MarkDaemonShutdownStarted(ctx, gen.MarkDaemonShutdownStartedParams{
 		ShutdownStartedAt: sql.NullTime{Time: now, Valid: true}, HeartbeatFloor: now, BootID: bootID,
+	})
+	if err != nil || n > 0 {
+		return err
+	}
+	// No row, or the first stamp already won. If there is no row (the run stopped
+	// before it recorded itself) create it, started now; otherwise this is a no-op.
+	return s.qw.InsertShutdownDaemonRun(ctx, gen.InsertShutdownDaemonRunParams{
+		BootID: bootID, StartedAt: now, HeartbeatAt: now, ShutdownStartedAt: sql.NullTime{Time: now, Valid: true},
 	})
 }
 

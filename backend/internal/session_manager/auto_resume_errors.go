@@ -11,9 +11,11 @@ import (
 type ResumeFailure int
 
 const (
+	// ResumeFailureNone is no failure at all (a nil error).
+	ResumeFailureNone ResumeFailure = iota
 	// ResumeFailureUnknown is an error nothing recognises: retried a bounded number
 	// of times, then reported.
-	ResumeFailureUnknown ResumeFailure = iota
+	ResumeFailureUnknown
 	// ResumeFailureAlreadyRunning means the agent is already up (someone resumed it,
 	// or boot reconciliation reattached it): the intent is satisfied.
 	ResumeFailureAlreadyRunning
@@ -48,14 +50,14 @@ const (
 func ClassifyResumeFailure(err error) ResumeFailure {
 	switch {
 	case err == nil:
-		return ResumeFailureUnknown
+		return ResumeFailureNone
 	case errors.Is(err, ErrAgentNotExited):
 		return ResumeFailureAlreadyRunning
 	case errors.Is(err, ErrSessionProtected), errors.Is(err, ErrStoppedOnPurpose):
 		return ResumeFailureRefused
 	case needsPerson(err):
 		return ResumeFailureNeedsPerson
-	case errors.Is(err, ErrTerminated), errors.Is(err, ErrNotFound), errors.Is(err, ErrIncompleteHandle),
+	case errors.Is(err, ErrTerminated), errors.Is(err, ErrNotFound), errors.Is(err, ErrIncompleteHandle), errors.Is(err, ErrWorkspaceMissing),
 		errors.Is(err, ports.ErrSessionNotFound), errors.Is(err, ports.ErrChatUnsupported):
 		return ResumeFailurePermanent
 	case errors.Is(err, ErrResumeInProgress), errors.Is(err, ErrOperationInProgress),

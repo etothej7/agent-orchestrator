@@ -20,6 +20,10 @@ var ErrSessionProtected = errors.New("session is protected: its auto-resume poli
 // did), so an unattended resume must leave it stopped.
 var ErrStoppedOnPurpose = errors.New("agent was stopped on purpose")
 
+// ErrWorkspaceMissing means the session's worktree is gone from disk. An unattended
+// resume never recreates it (that is a restore, and a person's call).
+var ErrWorkspaceMissing = errors.New("session workspace is missing")
+
 // autoResumePolicyStore is the optional part of the store that answers the policy.
 // AutoResumeAllowed fails closed: a read error is "not allowed".
 type autoResumePolicyStore interface {

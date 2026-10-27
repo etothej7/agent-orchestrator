@@ -437,7 +437,9 @@ type Manager struct {
 	startupBackgroundReconcileDone chan struct{}
 	// startupRetries tracks the background reattach retries of chats whose boot check
 	// failed transiently; their last attempt may capture a resume intent minutes in.
-	startupRetries                 sync.WaitGroup
+	startupRetries sync.WaitGroup
+	// workspaceExistsFn replaces the on-disk worktree check in tests.
+	workspaceExistsFn              func(string) bool
 	startupBackgroundReconcileOnce sync.Once
 	// A cold Chat resume must not launch a new persistent host while startup's
 	// orphan-host sweep is using its earlier snapshot of sleeping sessions.
@@ -3284,6 +3286,10 @@ func (m *Manager) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (R
 		if reason, err := reader.StopReason(ctx, id); err != nil || reason != domain.StopReasonNone {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, errors.Join(ErrStoppedOnPurpose, err))
 		}
+	}
+	if rec, found, err := m.store.GetSession(ctx, id); err == nil && found && rec.Metadata.WorkspacePath != "" &&
+		!m.workspaceExists(rec.Metadata.WorkspacePath) {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrWorkspaceMissing)
 	}
 	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, neverFresh: true, skipReadinessReconcile: true})
 }

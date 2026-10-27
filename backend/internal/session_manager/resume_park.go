@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -61,6 +62,16 @@ func (m *Manager) ProbeNativeHistory(ctx context.Context, id domain.SessionID) N
 	default:
 		return NativeHistoryMissing
 	}
+}
+
+// workspaceExists reports whether a worktree directory is still on disk. It is a
+// field-free helper so tests can stand in a path that does not exist.
+func (m *Manager) workspaceExists(path string) bool {
+	if m.workspaceExistsFn != nil {
+		return m.workspaceExistsFn(path)
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // sessionParker is the optional part of the store that parks a session.

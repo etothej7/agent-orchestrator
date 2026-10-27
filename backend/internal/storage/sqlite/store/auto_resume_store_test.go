@@ -424,3 +424,35 @@ func TestDaemonRunsAreOrderedByInstantNotByTheZoneOfTheCaller(t *testing.T) {
 		t.Fatalf("starts since 10:30Z = %d (err %v), want 1", n, err)
 	}
 }
+
+// A run that is stopped before it recorded itself (it died or was stopped during the
+// boot health pass) still leaves a row, started at its shutdown stamp, so the next
+// boot's shutdown window cannot reach back over this run's own boot-pass exits.
+func TestShutdownBeforeTheRunRecordedItselfStillLeavesARow(t *testing.T) {
+	db, _ := autoResumeSession(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	if err := db.StartDaemonRun(ctx, "old", t0.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	stopped := t0.Add(5 * time.Second)
+	if err := db.MarkDaemonShutdownStarted(ctx, "short", stopped); err != nil {
+		t.Fatal(err)
+	}
+	prev, found, err := db.PreviousDaemonRun(ctx, "next")
+	if err != nil || !found || prev.BootID != "short" || !prev.StartedAt.Equal(stopped) ||
+		prev.ShutdownStartedAt == nil || !prev.ShutdownStartedAt.Equal(stopped) {
+		t.Fatalf("previous run = %+v found=%v err=%v, want the short run started and stopped at %v", prev, found, err, stopped)
+	}
+	// The run's own late start is a no-op, and a repeat stamp keeps the first.
+	if err := db.StartDaemonRun(ctx, "short", stopped.Add(time.Second)); err != nil {
+		t.Fatalf("a late start after the shutdown stamp failed: %v", err)
+	}
+	if err := db.MarkDaemonShutdownStarted(ctx, "short", stopped.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	prev, _, _ = db.PreviousDaemonRun(ctx, "next")
+	if !prev.StartedAt.Equal(stopped) || !prev.ShutdownStartedAt.Equal(stopped) {
+		t.Fatalf("the first stamp must win: %+v", prev)
+	}
+}
