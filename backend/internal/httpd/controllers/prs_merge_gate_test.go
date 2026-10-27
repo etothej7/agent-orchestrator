@@ -114,7 +114,11 @@ func newGateRig(store gateStore) *gateRig {
 	g.router = chi.NewRouter()
 	g.router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(identity.WithCaller(r.Context(), g.caller)))
+			ctx := identity.WithCaller(r.Context(), g.caller)
+			if g.claim != "" {
+				ctx = identity.WithClaim(ctx, g.claim) // what the daemon's identity middleware does with X-AO-Session-Claim
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
 	(&controllers.PRsController{Svc: g.merger, Store: store, Requests: g.requests, Reproof: g.reproof}).Register(g.router)
@@ -124,9 +128,6 @@ func newGateRig(store gateStore) *gateRig {
 func (g *gateRig) merge(caller identity.Caller) (int, string) {
 	g.caller = caller
 	req := httptest.NewRequest(http.MethodPost, "/prs/7/merge", strings.NewReader(gateBody))
-	if g.claim != "" {
-		req.Header.Set(identity.HeaderClaim, string(g.claim))
-	}
 	rec := httptest.NewRecorder()
 	g.router.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
@@ -208,6 +209,35 @@ func TestAnUnprovenSessionIsToldToBeRelaunchedAndGetsNoRequest(t *testing.T) {
 	}
 	if len(g.reproof.asked) != 1 || g.reproof.asked[0] != gateWorker {
 		t.Fatalf("re-proof asked for %v", g.reproof.asked)
+	}
+}
+
+// A pre-upgrade session the daemon recognised only by its process tree is Kind agent but not IsAgent: it has no
+// authority, so it is asked to be relaunched (whatever the setting) and a request is never filed on its behalf.
+func TestABridgedSessionIsToldToBeRelaunchedEvenWhenTheProjectAllowsMerging(t *testing.T) {
+	for name, caller := range map[string]identity.Caller{
+		"the PR's own worker":   {Kind: identity.KindAgent, Session: gateWorker, SessionKind: domain.KindWorker, Project: "repo", Via: identity.ViaAncestry},
+		"the project's manager": {Kind: identity.KindAgent, Session: gateMgr, SessionKind: domain.KindOrchestrator, Project: "repo", Via: identity.ViaAncestry},
+	} {
+		g := newGateRig(gateStore{agentMayMerge: true})
+		g.reproof.live[caller.Session] = true
+		status, body := g.merge(caller)
+		if status != http.StatusForbidden || !strings.Contains(body, "SESSION_NEEDS_IDENTITY") {
+			t.Errorf("%s: %d %s", name, status, body)
+		}
+		if len(g.requests.filed) != 0 || len(g.merger.merged) != 0 {
+			t.Errorf("%s: requests %d merges %d; a bridged caller must get neither", name, len(g.requests.filed), len(g.merger.merged))
+		}
+		if len(g.reproof.asked) != 1 || g.reproof.asked[0] != caller.Session {
+			t.Errorf("%s: re-proof asked for %v, want the kernel-matched session %q", name, g.reproof.asked, caller.Session)
+		}
+	}
+	// A bridged caller whose session the re-proof will not act for (protected, hibernated) is just a terminal: a request.
+	g := newGateRig(gateStore{agentMayMerge: true})
+	g.reproof.live = map[domain.SessionID]bool{} // not a session the re-proof acts for
+	status, _ := g.merge(identity.Caller{Kind: identity.KindAgent, Session: gateWorker, SessionKind: domain.KindWorker, Project: "repo", Via: identity.ViaAncestry})
+	if status != http.StatusAccepted || len(g.requests.filed) != 1 || g.requests.filed[0].Requester.Kind != domain.HumanRequesterTerminal || len(g.merger.merged) != 0 {
+		t.Fatalf("a bridged caller the re-proof does not act for: %d, requests %+v", status, g.requests.filed)
 	}
 }
 

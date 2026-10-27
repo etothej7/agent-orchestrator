@@ -48,8 +48,8 @@ type PRsController struct {
 	Svc      prsvc.ActionManager
 	Store    PRMergeStore
 	Requests HumanRequestService
-	// Reproof, with the caller's X-AO-Session-Claim (a claim, never an identity), tells an unproven live session
-	// from a terminal. Nil treats every unproven caller as a terminal.
+	// Reproof tells an unproven live session (see identity.ClaimFromContext) from a terminal. Nil treats every
+	// unproven caller as a terminal.
 	Reproof SessionReproof
 }
 
@@ -176,8 +176,11 @@ func (c *PRsController) mayMergeNow(w http.ResponseWriter, r *http.Request, prID
 	// NeedsHuman. A caller that proved nothing but claims to be a live session is a session that started before
 	// it could be given a proof: it is asked to be relaunched, and it is not given a request the person would
 	// have to approve on its behalf for every routine action.
-	if caller.Kind == identity.KindAnonymous && c.Reproof != nil {
-		if claimed := domain.SessionID(strings.TrimSpace(r.Header.Get(identity.HeaderClaim))); claimed != "" && len(claimed) <= 128 && c.Reproof.Prioritize(ctx, claimed) {
+	// ClaimFromContext is the session an UNPROVEN caller is attributed to: the kernel-matched session of a pre-upgrade
+	// session recognised by its process tree (a bridged caller: Kind agent, but not IsAgent), else the claim an
+	// anonymous caller made. The re-proof service says whether it is a live session that can be given a proof.
+	if c.Reproof != nil {
+		if claimed := identity.ClaimFromContext(ctx); claimed != "" && c.Reproof.Prioritize(ctx, claimed) {
 			envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "SESSION_NEEDS_IDENTITY", "This session has no identity proof yet; it will be relaunched automatically when idle.", nil)
 			return false
 		}

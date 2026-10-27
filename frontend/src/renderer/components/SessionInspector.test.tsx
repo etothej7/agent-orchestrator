@@ -956,7 +956,7 @@ describe("SessionInspector PR section", () => {
     const note = document.querySelector("[data-slot='identity-relaunch-note']") as HTMLElement;
     expect(note).toHaveTextContent("Needs relaunch for identity");
     // It explains itself without asking for anything: no button but the explanation, no dialog, no alert.
-    expect(screen.getByRole("button", { name: /relaunches it automatically when it is idle/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /may relaunch it when it is idle/ })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     unmount();
