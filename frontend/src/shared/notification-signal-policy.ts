@@ -1,6 +1,8 @@
 /**
- * Which OS-level attention signals a notification may raise. Ed's decision: none, ever. There is no
- * setting for these; flipping a constant here (and nowhere else) turns a signal back on.
+ * Which OS-level attention signals a notification may raise. Ed's FINAL decision: none, ever: no banner,
+ * no Dock bounce, no sound, no taskbar flash. They are permanently off and there is no setting or UI for
+ * them. The signal code stays behind these constants only so it does not have to be deleted; they are
+ * not a supported switch.
  *
  * Attention reaches Ed through the red Dock badge (open coordinator questions and unread results and
  * stops) and the chat itself, never through a banner, a bounce, a sound or a taskbar flash.
