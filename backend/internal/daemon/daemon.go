@@ -81,6 +81,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
+	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 // usageReconcileTick is the safety-net interval for the usage pipeline
@@ -126,11 +127,16 @@ func Run(buildVersion string) error {
 
 	log := newLogger()
 	var browserRuntimeToken string
+	// Only a token the desktop app handed over can back a human-UI capability: a
+	// daemon that minted its own token below has a secret nobody else knows, so no
+	// request to it can ever be human-authorized (headless daemons cannot lift).
+	var uiCapabilityVerifier *uicapability.Verifier
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
 		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
 		if err != nil {
 			return err
 		}
+		uiCapabilityVerifier = uicapability.New(uicapability.DeriveSecret(browserRuntimeToken))
 	}
 	if browserRuntimeToken == "" {
 		browserRuntimeToken, err = browserruntime.NewToken()
@@ -996,6 +1002,7 @@ func Run(buildVersion string) error {
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		UICapability:       uiCapabilityVerifier,
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
 		ArtifactVersions:   lcStack.ArtifactVersions,

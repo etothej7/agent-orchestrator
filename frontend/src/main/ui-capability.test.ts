@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	deriveUiCapabilitySecret,
 	signUiCapability,
 	signUiRequestCapability,
 	UI_CAPABILITY_HEADER,
@@ -13,6 +14,10 @@ describe("signUiCapability", () => {
 		expect(
 			signUiRequestCapability("test-secret", "POST", "/api/v1/sessions/sess-1/auto-resume/lift", 1793102400_000),
 		).toBe("v1.1793102400.8VJhn2Mul_MHx3kNbKsRwyjuZlHU3YmE7pkfdvRUMos");
+	});
+
+	it("derives the same secret as the daemon", () => {
+		expect(deriveUiCapabilitySecret("test-token")).toBe("TFmczbvMaO3L6eBh9WJalDFprS--z2nHeaXiUAiKO7U");
 	});
 
 	it("binds the secret, purpose, subject and second", () => {

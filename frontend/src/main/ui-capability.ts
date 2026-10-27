@@ -8,6 +8,15 @@ export const UI_CAPABILITY_HEADER = "X-AO-UI-Capability";
 export const UI_CAPABILITY_PURPOSE_HUMAN_WRITE = "human-write";
 const VERSION = "v1";
 
+/**
+ * Derive the capability secret from the per-launch runtime token. Mirror of
+ * uicapability.DeriveSecret: its own label keeps this channel and the browser-runtime
+ * channel from sharing a key. Pinned by a shared vector.
+ */
+export function deriveUiCapabilitySecret(runtimeToken: string): string {
+	return createHmac("sha256", runtimeToken).update(`ao-ui-capability-secret:${VERSION}`).digest("base64url");
+}
+
 /** Subject a capability is bound to: the exact request it authorises. Mirror of uicapability.RequestSubject. */
 export function uiCapabilityRequestSubject(method: string, path: string): string {
 	return `${method.toUpperCase()} ${path}`;

@@ -18,3 +18,18 @@ func IsLAN(ctx context.Context) bool {
 	value, _ := ctx.Value(lanKey{}).(bool)
 	return value
 }
+
+type humanUIKey struct{}
+
+// WithHumanUI marks a request whose per-request UI capability the daemon verified: it
+// was made by the person at the keyboard through AO's own desktop UI. Only the daemon's
+// capability middleware may call this; a header cannot set it.
+func WithHumanUI(ctx context.Context) context.Context {
+	return context.WithValue(ctx, humanUIKey{}, true)
+}
+
+// IsHumanUI reports whether the request carried a valid human-UI capability.
+func IsHumanUI(ctx context.Context) bool {
+	value, _ := ctx.Value(humanUIKey{}).(bool)
+	return value
+}

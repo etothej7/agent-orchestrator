@@ -98,3 +98,16 @@ func TestSharedVectorWithTheElectronSigner(t *testing.T) {
 		t.Fatalf("Sign = %q, want %q (update frontend/src/main/ui-capability.test.ts too)", got, want)
 	}
 }
+
+func TestDeriveSecretSharedVector(t *testing.T) {
+	const want = "TFmczbvMaO3L6eBh9WJalDFprS--z2nHeaXiUAiKO7U"
+	if got := DeriveSecret("test-token"); got != want {
+		t.Fatalf("DeriveSecret = %q, want %q (update frontend/src/main/ui-capability.test.ts too)", got, want)
+	}
+	if DeriveSecret("") != "" {
+		t.Fatal("an empty runtime token must derive no secret")
+	}
+	if DeriveSecret("a") == DeriveSecret("b") {
+		t.Fatal("different tokens must derive different secrets")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
 	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
+	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 // APIDeps bundles every service the API layer's controllers depend on.
@@ -70,7 +71,11 @@ type APIDeps struct {
 	PreviewServer            controllers.ManagedPreviewServer
 	SessionCapabilities      controllers.SessionCapabilityValidator
 	ShellPreviewCapabilities controllers.ShellPreviewCapabilityValidator
-	SystemChecks             controllers.SystemChecker
+	// UICapability verifies the per-request capability the desktop UI attaches to
+	// human-authored writes. Nil marks no request as human (a daemon the app did not
+	// start, so nothing human-only can be done through it).
+	UICapability *uicapability.Verifier
+	SystemChecks controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.

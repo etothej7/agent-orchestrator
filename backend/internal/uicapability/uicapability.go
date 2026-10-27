@@ -37,6 +37,20 @@ const PurposeHumanWrite = "human-write"
 // RequestSubject is the subject a human-write capability is bound to.
 func RequestSubject(method, path string) string { return strings.ToUpper(method) + " " + path }
 
+// DeriveSecret derives the capability secret from the per-launch runtime token the main
+// process already hands the daemon over stdin. It is a one-way derivation with its own
+// label, so the capability channel and the browser-runtime channel never share a key:
+// a value that leaks from one cannot be turned into the other. Mirror of the Electron
+// main process; both sides are pinned by a shared test vector.
+func DeriveSecret(runtimeToken string) string {
+	if runtimeToken == "" {
+		return ""
+	}
+	h := hmac.New(sha256.New, []byte(runtimeToken))
+	h.Write([]byte("ao-ui-capability-secret:" + version))
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
 // Window is how long a capability stays valid after it was signed, in either
 // direction, so a captured header cannot be replayed later.
 const Window = 60 * time.Second
