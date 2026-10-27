@@ -127,16 +127,22 @@ func Run(buildVersion string) error {
 
 	log := newLogger()
 	var browserRuntimeToken string
-	// Only a token the desktop app handed over can back a human-UI capability: a
-	// daemon that minted its own token below has a secret nobody else knows, so no
-	// request to it can ever be human-authorized (headless daemons cannot lift).
+	// Only a key the desktop app handed over on the private stdin pipe can back a
+	// human-UI capability: a daemon the app did not start (headless, ao start) has no
+	// key, so no request to it is ever human (it cannot lift a protection).
 	var uiCapabilityVerifier *uicapability.Verifier
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
-		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
+		var uiKey string
+		browserRuntimeToken, uiKey, err = browserruntime.ReadRuntimeHandoff(os.Stdin, os.Getenv(uicapability.StdinEnv) == "1")
 		if err != nil {
 			return err
 		}
-		uiCapabilityVerifier = uicapability.New(uicapability.DeriveSecret(browserRuntimeToken))
+		if uiKey != "" {
+			uiCapabilityVerifier = uicapability.New(uiKey)
+		}
+		// The handoff is read once. Closing the pipe keeps the key from any later reader of
+		// fd 0; no child is ever given os.Stdin (exec gives a nil Stdin /dev/null).
+		_ = os.Stdin.Close()
 	}
 	if browserRuntimeToken == "" {
 		browserRuntimeToken, err = browserruntime.NewToken()

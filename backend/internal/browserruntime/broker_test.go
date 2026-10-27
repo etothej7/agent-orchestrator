@@ -422,3 +422,37 @@ func browserRuntimeTestTimeout() time.Duration {
 	}
 	return 5 * time.Second
 }
+
+func TestReadRuntimeHandoffReadsTheTokenAndTheUICapabilityKeyFromOnePipe(t *testing.T) {
+	key := strings.Repeat("k", 43)
+	token, uiKey, err := ReadRuntimeHandoff(strings.NewReader("tok-1\n"+key+"\n"), true)
+	if err != nil || token != "tok-1" || uiKey != key {
+		t.Fatalf("handoff = %q, %q, %v", token, uiKey, err)
+	}
+	// An older app sends only the token and sets no key marker: the token is read, no key.
+	token, uiKey, err = ReadRuntimeHandoff(strings.NewReader("tok-1\n"), false)
+	if err != nil || token != "tok-1" || uiKey != "" {
+		t.Fatalf("token-only handoff = %q, %q, %v", token, uiKey, err)
+	}
+	// A trailing line without a newline (the pipe closed) is still a complete key.
+	if _, uiKey, err = ReadRuntimeHandoff(strings.NewReader("tok-1\n"+key), true); err != nil || uiKey != key {
+		t.Fatalf("unterminated key = %q, %v", uiKey, err)
+	}
+}
+
+func TestReadRuntimeHandoffRefusesAMissingOrMalformedKeyWhenOneWasPromised(t *testing.T) {
+	for name, input := range map[string]string{
+		"no second line":    "tok-1\n",
+		"empty second line": "tok-1\n\n",
+		"too short":         "tok-1\nshort\n",
+		"not base64url":     "tok-1\n" + strings.Repeat("k", 42) + "=\n",
+		"too long":          "tok-1\n" + strings.Repeat("k", 300) + "\n",
+		"no token":          "\n" + strings.Repeat("k", 43) + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := ReadRuntimeHandoff(strings.NewReader(input), true); err == nil {
+				t.Fatalf("handoff %q succeeded", input)
+			}
+		})
+	}
+}

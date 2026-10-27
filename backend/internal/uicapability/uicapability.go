@@ -1,18 +1,18 @@
 // Package uicapability proves that a request came from AO's own desktop UI.
 //
-// The Electron main process mints one random secret per app launch and hands it to
+// The Electron main process mints one random key per app launch and hands it to
 // the daemon it spawns over that daemon's private stdin pipe (the same handoff the
-// browser runtime uses): never an environment variable, a file or a command line,
+// browser runtime uses; the key is the second line): never an environment variable, a file or a command line,
 // which a same-user agent could read. The daemon keeps it in memory only. A request
 // that must come from the person at the keyboard carries a capability derived from
 // that secret: an HMAC over a purpose, a subject and a timestamp. The secret itself
 // never travels, and a capability cannot be used for another purpose, another
 // session, or later than its window.
 //
-// An agent process (same Unix user) has neither the secret nor a way to ask the
-// main process to sign for it: the signer is reachable only from the trusted shell
-// window's preload bridge. A daemon that was not started by the app (headless) holds
-// a random secret nobody knows, so nothing can be lifted there.
+// An agent process (same Unix user) has neither the key nor a way to get the main
+// process to sign for it: main signs only requests the trusted shell window sends to
+// the daemon. A daemon that was not started by the app (headless) has no key, so no
+// request to it is ever human.
 package uicapability
 
 import (
@@ -37,18 +37,28 @@ const PurposeHumanWrite = "human-write"
 // RequestSubject is the subject a human-write capability is bound to.
 func RequestSubject(method, path string) string { return strings.ToUpper(method) + " " + path }
 
-// DeriveSecret derives the capability secret from the per-launch runtime token the main
-// process already hands the daemon over stdin. It is a one-way derivation with its own
-// label, so the capability channel and the browser-runtime channel never share a key:
-// a value that leaks from one cannot be turned into the other. Mirror of the Electron
-// main process; both sides are pinned by a shared test vector.
-func DeriveSecret(runtimeToken string) string {
-	if runtimeToken == "" {
-		return ""
+// StdinEnv tells an app-spawned daemon that the second line of its private stdin
+// handoff is the human-capability key (the first line is the browser-runtime token).
+// The variable carries only this marker, never the key.
+const StdinEnv = "AO_UI_CAPABILITY_STDIN"
+
+// MinKeyBytes is the shortest key the daemon accepts (base64url text of 32 random bytes
+// is 43 characters); a shorter handoff is refused rather than trusted.
+const MinKeyBytes = 32
+
+// ValidKey reports whether a handed-over key is long enough and base64url text.
+func ValidKey(key string) bool {
+	if len(key) < MinKeyBytes {
+		return false
 	}
-	h := hmac.New(sha256.New, []byte(runtimeToken))
-	h.Write([]byte("ao-ui-capability-secret:" + version))
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	for _, c := range key {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Window is how long a capability stays valid after it was signed, in either

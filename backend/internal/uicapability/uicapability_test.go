@@ -1,7 +1,11 @@
 package uicapability
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,15 +103,64 @@ func TestSharedVectorWithTheElectronSigner(t *testing.T) {
 	}
 }
 
-func TestDeriveSecretSharedVector(t *testing.T) {
-	const want = "TFmczbvMaO3L6eBh9WJalDFprS--z2nHeaXiUAiKO7U"
-	if got := DeriveSecret("test-token"); got != want {
-		t.Fatalf("DeriveSecret = %q, want %q (update frontend/src/main/ui-capability.test.ts too)", got, want)
+
+type vectorFile struct {
+	Secret  string `json:"secret"`
+	NowMs   int64  `json:"nowMs"`
+	Vectors []struct {
+		Name   string `json:"name"`
+		Method string `json:"method"`
+		URL    string `json:"url"`
+		Path   string `json:"path"`
+		Header string `json:"header"`
+	} `json:"vectors"`
+}
+
+// The same file is read by frontend/src/main/ui-capability.test.ts. A path that the Electron
+// signer (new URL(url).pathname) and the daemon (net/http EscapedPath) spell differently
+// would make every such request fail verification, so each vector pins the spelling on both
+// sides and the signature that results.
+func TestSharedVectorsWithTheElectronSignerIncludingHardPaths(t *testing.T) {
+	raw, err := os.ReadFile("testdata/vectors.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if DeriveSecret("") != "" {
-		t.Fatal("an empty runtime token must derive no secret")
+	var file vectorFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
 	}
-	if DeriveSecret("a") == DeriveSecret("b") {
-		t.Fatal("different tokens must derive different secrets")
+	if len(file.Vectors) == 0 {
+		t.Fatal("no vectors")
+	}
+	now := time.UnixMilli(file.NowMs)
+	verifier := New(file.Secret)
+	for _, v := range file.Vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			if got := Sign(file.Secret, PurposeHumanWrite, RequestSubject(v.Method, v.Path), now); got != v.Header {
+				t.Fatalf("Sign = %q, vector %q", got, v.Header)
+			}
+			req := httptest.NewRequest(v.Method, v.URL, nil)
+			if got := req.URL.EscapedPath(); got != v.Path {
+				t.Fatalf("EscapedPath = %q, the Electron signer signs %q", got, v.Path)
+			}
+			if err := verifier.VerifyRequest(v.Header, req.Method, req.URL.EscapedPath(), now); err != nil {
+				t.Fatalf("daemon refuses the signer's header: %v", err)
+			}
+			if err := verifier.VerifyRequest(v.Header, req.Method, req.URL.EscapedPath()+"x", now); err == nil {
+				t.Fatal("a different path was accepted")
+			}
+		})
+	}
+}
+
+func TestValidKey(t *testing.T) {
+	good := strings.Repeat("a", 43)
+	for _, tc := range []struct {
+		key  string
+		want bool
+	}{{good, true}, {strings.Repeat("A-_9", 11), true}, {"", false}, {"short", false}, {good + "=", false}, {good + " ", false}, {strings.Repeat("é", 40), false}} {
+		if got := ValidKey(tc.key); got != tc.want {
+			t.Errorf("ValidKey(%q) = %v, want %v", tc.key, got, tc.want)
+		}
 	}
 }
