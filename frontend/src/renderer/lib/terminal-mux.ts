@@ -13,6 +13,8 @@
 // The renderer connects directly to the loopback daemon (same host/port as the
 // REST API, path `/mux`); it is not proxied through the Electron main process.
 
+import { notifyHumanCapabilityRequired } from "./human-capability-notice";
+
 type ServerFrame = {
 	ch: string;
 	id?: string;
@@ -93,7 +95,11 @@ export function muxUrlFromApiBase(apiBaseUrl: string): string {
 
 const TICKET_PATH = "/api/v1/terminal-tickets";
 const TICKET_TIMEOUT_MS = 3000;
-const TICKET_NEGATIVE_CACHE_MS = 10_000;
+// A daemon that has no tickets (404/501) is not asked again for a while; a refusal or a failed request may be a
+// moment of start-up (main has not finished proving the daemon yet), so it is retried almost at once.
+const TICKET_UNSUPPORTED_CACHE_MS = 5 * 60_000;
+const TICKET_RETRY_CACHE_MS = 1500;
+const CAPABILITY_REQUIRED_CODE = "HUMAN_CAPABILITY_REQUIRED";
 const TICKET_SHAPE = /^[A-Za-z0-9_-]{16,128}$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const ticketRefusedUntil = new Map<string, number>();
@@ -113,19 +119,34 @@ function localDaemonBase(muxUrl: string): string | undefined {
 	}
 }
 
-export async function fetchTerminalTicket(muxUrl: string, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
+/**
+ * `onCapabilityRequired` runs when the daemon refused the request because it could not tie it to the app: a terminal
+ * that then opens without a ticket will be refused too, and the person should be told why (as for any other write).
+ */
+export async function fetchTerminalTicket(
+	muxUrl: string,
+	fetchImpl: typeof fetch = fetch,
+	onCapabilityRequired?: () => void,
+): Promise<string | undefined> {
 	const base = localDaemonBase(muxUrl);
 	if (base === undefined) return undefined;
 	if ((ticketRefusedUntil.get(base) ?? 0) > Date.now()) return undefined;
+	let cacheMs = TICKET_RETRY_CACHE_MS;
 	try {
 		const response = await fetchImpl(`${base}${TICKET_PATH}`, { method: "POST", signal: AbortSignal.timeout(TICKET_TIMEOUT_MS) });
-		if (!response.ok) throw new Error(`ticket answered ${response.status}`);
+		if (!response.ok) {
+			if (response.status === 404 || response.status === 501) cacheMs = TICKET_UNSUPPORTED_CACHE_MS;
+			if (response.status === 403) {
+				const body = (await response.json().catch(() => undefined)) as { code?: unknown } | undefined;
+				if (body?.code === CAPABILITY_REQUIRED_CODE) onCapabilityRequired?.();
+			}
+			throw new Error(`ticket answered ${response.status}`);
+		}
 		const body = (await response.json()) as { ticket?: unknown };
 		if (typeof body.ticket !== "string" || !TICKET_SHAPE.test(body.ticket)) throw new Error("ticket has an unexpected shape");
 		return body.ticket;
 	} catch {
-		// Not every daemon issues tickets (and the app's own may not have proven itself yet): do not ask again at once.
-		ticketRefusedUntil.set(base, Date.now() + TICKET_NEGATIVE_CACHE_MS);
+		ticketRefusedUntil.set(base, Date.now() + cacheMs);
 		return undefined;
 	}
 }
@@ -134,7 +155,7 @@ export async function fetchTerminalTicket(muxUrl: string, fetchImpl: typeof fetc
 export function createDaemonTerminalMux(apiBaseUrl: string): TerminalMux {
 	const url = muxUrlFromApiBase(apiBaseUrl);
 	// Only the local daemon takes tickets; every other address connects at once, exactly as before.
-	return createTerminalMux(url, WebSocket, localDaemonBase(url) === undefined ? undefined : fetchTerminalTicket);
+	return createTerminalMux(url, WebSocket, localDaemonBase(url) === undefined ? undefined : (muxUrl) => fetchTerminalTicket(muxUrl, fetch, notifyHumanCapabilityRequired));
 }
 
 type DataListener = (bytes: Uint8Array) => void;

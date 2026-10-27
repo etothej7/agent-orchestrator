@@ -380,6 +380,40 @@ describe("fetchTerminalTicket", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 
+	it("tells the person when the daemon could not tie the request to the app, and only then", async () => {
+		const notify = vi.fn();
+		await fetchTerminalTicket("ws://127.0.0.1:50201/mux", answering(403, { code: "HUMAN_CAPABILITY_REQUIRED" }) as never, notify);
+		expect(notify).toHaveBeenCalledTimes(1);
+		await fetchTerminalTicket("ws://127.0.0.1:50202/mux", answering(403, { code: "SOMETHING_ELSE" }) as never, notify);
+		await fetchTerminalTicket("ws://127.0.0.1:50203/mux", answering(500, { code: "HUMAN_CAPABILITY_REQUIRED" }) as never, notify);
+		await fetchTerminalTicket("ws://127.0.0.1:50204/mux", answering(201, { ticket, expiresInSeconds: 30 }) as never, notify);
+		expect(notify).toHaveBeenCalledTimes(1);
+	});
+
+	it("retries a refusal or failure within a couple of seconds but leaves a daemon without tickets alone for minutes", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-10-27T09:00:00Z"));
+			const refused = answering(403, { code: "HUMAN_CAPABILITY_REQUIRED" });
+			const noTickets = answering(404, {});
+			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
+			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
+			vi.setSystemTime(new Date("2026-10-27T09:00:01Z"));
+			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
+			expect(refused).toHaveBeenCalledTimes(1); // inside the pause
+			vi.setSystemTime(new Date("2026-10-27T09:00:03Z"));
+			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
+			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
+			expect(refused).toHaveBeenCalledTimes(2); // asked again once the pause passed
+			expect(noTickets).toHaveBeenCalledTimes(1); // still left alone
+			vi.setSystemTime(new Date("2026-10-27T09:06:00Z"));
+			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
+			expect(noTickets).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("returns nothing when the request fails", async () => {
 		const fetchImpl = vi.fn(async () => {
 			throw new Error("ECONNREFUSED");
