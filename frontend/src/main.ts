@@ -830,6 +830,8 @@ async function createWindowInternal(): Promise<void> {
 		profileStore: browserProfileStore,
 		historyStore: browserHistoryStore,
 		fromPartition: (partition) => session.fromPartition(partition),
+		// Cookies saved in persistent or imported profiles would be protected by file permissions only under the stand-in key.
+		cookieImportRefused: shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform }),
 	});
 	await profileImporter.initialize();
 	const windowOptions: Electron.BaseWindowConstructorOptions = {

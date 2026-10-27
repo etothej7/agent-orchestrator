@@ -42,6 +42,10 @@ describe("safeStorageUsesStandInKey", () => {
 describe("how main applies it", () => {
 	const main = readFileSync(path.join(srcDir, "main.ts"), "utf8");
 
+	it("refuses browser cookie import under exactly the same policy (history still imports)", () => {
+		expect(main).toMatch(/cookieImportRefused:\s*shouldUseMockKeychain\(\{\s*isPackaged: app\.isPackaged,\s*version: app\.getVersion\(\),\s*platform: process\.platform\s*\}\)/);
+	});
+
 	it("sets the switch from the policy, before the app is ready", () => {
 		const use = main.indexOf("shouldUseMockKeychain({");
 		const sw = main.indexOf('appendSwitch("use-mock-keychain")');

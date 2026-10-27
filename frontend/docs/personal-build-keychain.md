@@ -14,6 +14,13 @@ keychain (`main/keychain-policy.ts`, applied at `main.ts` before the app is read
   imported Browser profiles** (named and imported profiles persist across restarts, so their cookies are protected by
   file permissions only). Temporary Browser partitions are discarded when AO quits. Nothing sensitive is stored in
   that place today (no `cloud-auth.bin`, and no encrypted data in the existing profile).
+* **Browser import refuses cookies** while the stand-in key is in use: an import would copy the person's real browser
+  sessions into a persistent profile (which can become the default for agent browser sessions), protected by file
+  permissions only. The Browser import dialog turns the cookie choice off with a plain reason ("Cookies are not
+  imported in this build ... History can still be imported."), and history still imports. A request for cookies only
+  is refused with a plain message and creates nothing. The refusal happens before anything is read, so no browser's
+  keychain entry (Chrome, Edge, Brave ...) is asked for either. The same policy function decides it
+  (`cookieImportRefused` in `main.ts`); switching back to the real keychain turns cookie import on again.
 * **That stays true on purpose:** while the stand-in key is in use in a packaged build, the cloud sign-in
   (`main/cloud-auth.ts`, which would otherwise write `cloud-auth.bin` with Electron's safeStorage) refuses to persist
   anything. The sign-in lives in memory for that run only, so after an AO restart the person signs in again.

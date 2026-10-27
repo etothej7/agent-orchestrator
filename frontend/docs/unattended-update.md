@@ -123,6 +123,51 @@ AO must never stay closed, whatever dies. Before the app honours a quit it arms 
   (`xox…`) tokens, 32+ hex characters, and long (40+) base64 runs that mix letters and digits.
 * The update manager reads it and tells the coordinator, which sends the single `ao tell` for the update.
 
+## 4. The quiet window: the daemon defers wakes and deliveries (SPEC for ed.8 / ed.9, not in ed.7.2)
+
+Lesson from the ed.7 install: a chat host that restarts while the quit is pending changes the host set, and the
+installer's own "host set changed" check then stops the install. The window between "the runner decides to update" and
+"the new app is verified" must therefore be quiet: no session starts, restarts or is woken, and nobody is asked
+anything. ed.7.2 does not have this (its gates are idle Mac, no focused window, no unsent draft, staged package, armed
+net); until the daemon side exists the **runner must not write the request unless every session is idle and the host
+set has been stable** (the installer's check stays as the backstop).
+
+**Pending request.** `update-restart/quit-request.json` exists and passes the same checks main applies: a regular
+file owned by the user, mode 0600, at most 4 KB, valid JSON, `expiresAt` in the future and at most 30 minutes after
+`issuedAt`. The daemon re-checks this at most once a second while any session is idle or a wake is queued; it never
+trusts a file that fails them, and it never deletes the file (main and the runner own it).
+
+**While a request is pending the daemon:**
+1. does not start or restart any chat host, and does not auto-resume or resume any session (ed.7 auto-resume
+   included);
+2. does not deliver a wake or a message that would start a turn in an idle session, and does not start a manager turn
+   for a CDC event or a settled report batch: each is queued durably, in order, with its original time;
+3. lets turns that are already running finish normally (they are not interrupted, killed or steered);
+4. spawns nothing new (no worker, reviewer, scratch daemon or notification helper), and sends no notification that asks
+   the person to do something;
+5. answers `GET /api/v1/update/quiet` with `{ "quiet": bool, "busySessions": n, "queued": n, "hostSetStableSeconds": s,
+   "frozen": bool }` and writes the same to `update-restart/freeze-status.json` (0600, atomic).
+
+**The quiet gate for the quit.** From ed.8/ed.9 main also asks the daemon before it honours a request (after the staged,
+idle and draft gates and before the net is armed): it proceeds only when `busySessions == 0` and
+`hostSetStableSeconds >= 30`; otherwise it defers with `reason: "sessions_busy"` and keeps the request alive like a draft
+deferral. The runner reads the same endpoint before it writes the request.
+
+**Release.** The freeze lifts when the request file is gone (success, cancel or expiry), when `expiresAt` plus 60 s
+has passed (a stale file can never freeze AO), or when the daemon stops. On release the queued wakes and deliveries
+run in their original order, each once. If the update succeeded, the new daemon starts with the queue it inherits
+from the durable store, so nothing is lost across the swap.
+
+**Never ask the person during the quit window.** No dialog, no sign-in prompt, no permission request, no notification
+that needs an answer: anything that would need the person is deferred until the window is over, and then reported in
+the single update message. The same rule applies to the runner and to this build's quit path (it never opens a
+dialog; a draft defers the quit).
+
+**Tests the daemon change must carry:** a pending valid request freezes wakes, deliveries, host starts and auto-resume;
+running turns finish; an expired, wrong-mode, oversized or unreadable request freezes nothing; the freeze lifts when
+the file disappears and at expiry plus 60 s, and queued items then run once, in order; `/update/quiet` reports busy
+sessions and host-set stability; a host set that changed within 30 s refuses the quit gate.
+
 ## Why these choices
 
 * A quit that never prompts is the point of the update window: the runner only starts it when the Mac is idle and no
