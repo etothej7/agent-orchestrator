@@ -641,6 +641,13 @@ func (s *Service) SpawnOrchestrator(
 			// authoritative.
 			mode = newestSession(existing).Mode
 		}
+		// All-or-nothing: refuse BEFORE retiring any, so a protected orchestrator can
+		// never leave the project half-retired.
+		for _, orch := range existing {
+			if s.sessionProtected(ctx, orch.ID) {
+				return domain.Session{}, toAPIError(fmt.Errorf("replace orchestrator %s: %w", orch.ID, sessionmanager.ErrSessionProtected))
+			}
+		}
 		retireCtx := context.WithoutCancel(ctx)
 		for _, orch := range existing {
 			_ = s.sendRetireNotice(retireCtx, orch.ID)
@@ -1191,6 +1198,12 @@ func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID)
 	if err != nil {
 		return err
 	}
+	// Refuse while any live session of the project is protected, before killing any.
+	for i := range recs {
+		if !recs[i].IsTerminated && s.sessionProtected(ctx, recs[i].ID) {
+			return toAPIError(fmt.Errorf("tear down project %s: session %s: %w", project, recs[i].ID, sessionmanager.ErrSessionProtected))
+		}
+	}
 	errs := make([]error, len(recs))
 	var wg sync.WaitGroup
 	for i := range recs {
@@ -1454,6 +1467,9 @@ func mapSessionError(err error) error {
 			"AO cannot link this account's folder to this computer's history. On Windows, turn on Developer Mode.", nil)
 	case errors.Is(err, sessionmanager.ErrNotRestorable):
 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
+	case errors.Is(err, sessionmanager.ErrSessionProtected):
+		return apierr.Conflict("SESSION_PROTECTED",
+			"This session is protected from replacement and teardown. Run `ao session set-auto-resume <session> allowed` first if you really mean it.", nil)
 	case errors.Is(err, sessionmanager.ErrTerminated):
 		return apierr.Conflict("SESSION_TERMINATED", "Session is terminated", nil)
 	case errors.Is(err, sessionmanager.ErrAgentExited):
@@ -1740,4 +1756,13 @@ func (s *Service) harnessSignals(h domain.AgentHarness) bool {
 		return false
 	}
 	return s.signalCapable(h)
+}
+
+// sessionProtected asks the manager whether a session is protected. A manager that
+// keeps no policy protects nothing.
+func (s *Service) sessionProtected(ctx context.Context, id domain.SessionID) bool {
+	checker, ok := s.manager.(interface {
+		SessionProtected(context.Context, domain.SessionID) bool
+	})
+	return ok && checker.SessionProtected(ctx, id)
 }

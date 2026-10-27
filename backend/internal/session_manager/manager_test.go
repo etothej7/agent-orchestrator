@@ -70,11 +70,21 @@ type fakeStore struct {
 	// part of the store); stopReasonErr makes the write fail.
 	stopReasons   map[domain.SessionID]domain.StopReason
 	stopReasonErr error
+	// protected makes AutoResumeAllowed false for a session (policy never);
+	// policyUnreadable makes every policy read fail (and so fail closed).
+	protected        map[domain.SessionID]bool
+	policyUnreadable bool
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
+}
+
+// AutoResumeAllowed is the optional autoResumePolicyStore part of the store. It
+// fails closed, like the real store.
+func (s *fakeStore) AutoResumeAllowed(_ context.Context, id domain.SessionID) bool {
+	return !s.policyUnreadable && !s.protected[id]
 }
 
 // SetStopReason is the optional stopReasonStore part of the store.

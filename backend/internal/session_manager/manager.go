@@ -2600,6 +2600,14 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	// one in the same race window. A runtime that cannot be confirmed dead
 	// stops Kill here — same shape as a dirty-workspace refusal — rather than
 	// letting the worktree disappear out from under it.
+	// A protected session is still terminated (that is Ed's explicit choice) but its
+	// worktree is never removed. The decision comes before EVERY destroyer below: the
+	// background cleanup branch, the pre-remove user scripts (which may delete files
+	// before the worktree goes), the workspace-project rows and workspace.Destroy.
+	if ws.Path != "" && m.SessionProtected(ctx, id) {
+		m.logger.Info("kill: protected session terminated; its worktree is preserved", "sessionID", id)
+		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, true)
+	}
 	var releaseTerminals func()
 	defer func() {
 		if releaseTerminals != nil {
@@ -2700,6 +2708,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 // This deliberately does not write a session_worktrees row: those rows are
 // boot-restore markers, and a replaced orchestrator must stay terminated.
 func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
+	// A protected session is never retired: retirement force-removes even a dirty
+	// worktree. Checked first, before any operation gate or side effect.
+	if m.SessionProtected(ctx, id) {
+		return fmt.Errorf("retire replacement %s: %w", id, ErrSessionProtected)
+	}
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -5331,6 +5344,12 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	}
 	for _, rec := range recs {
 		if !rec.IsTerminated {
+			continue
+		}
+		if m.SessionProtected(ctx, rec.ID) {
+			// Never reclaimed on its own: its worktree is untracked by AO after a kill,
+			// and removing it is a deliberate, manual step after the unlock.
+			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "protected: run `ao session set-auto-resume " + string(rec.ID) + " allowed` first"})
 			continue
 		}
 		ws := workspaceInfo(rec)
