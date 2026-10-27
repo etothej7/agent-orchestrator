@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { APP_LOCALES } from "../shared/ui-locale";
+import { AGENTS_DIALOG_BODY, AGENTS_DIALOG_TITLE } from "./quit-agents-dialog";
+import { SLEEP_DIALOG_BODY, SLEEP_DIALOG_TITLE } from "./quit-sleep-dialog";
 import {
 	chooseQuitDialog, confirmFullQuit, KEEP_RUNNING_LABEL, QUIT_ANYWAY_LABEL, QUIT_CHECK_TIMEOUT_MS, quitDialogContent, type QuitConfirmationDeps,
 } from "./quit-confirmation";
@@ -26,6 +29,34 @@ describe("quit dialogs", () => {
 	it("carries the verbatim titles", () => {
 		expect(quitDialogContent("sleep").title).toBe("Your Mac will go to sleep and lock");
 		expect(quitDialogContent("agents").title).toBe("Your agents will pause");
+	});
+
+	it("serves Ed's English wording from the catalog byte-for-byte, by default and for en", () => {
+		for (const content of [quitDialogContent("sleep"), quitDialogContent("sleep", "en")]) {
+			expect(content.title).toBe(SLEEP_DIALOG_TITLE);
+			expect(content.body).toBe(SLEEP_DIALOG_BODY);
+			expect(content.buttons).toEqual([KEEP_RUNNING_LABEL, QUIT_ANYWAY_LABEL]);
+		}
+		for (const content of [quitDialogContent("agents"), quitDialogContent("agents", "en")]) {
+			expect(content.title).toBe(AGENTS_DIALOG_TITLE);
+			expect(content.body).toBe(AGENTS_DIALOG_BODY);
+			expect(content.buttons).toEqual([KEEP_RUNNING_LABEL, QUIT_ANYWAY_LABEL]);
+		}
+	});
+
+	it.each(APP_LOCALES)("has complete content for %s, with Keep Running still the default and the cancel button", (locale) => {
+		for (const kind of ["sleep", "agents"] as const) {
+			const content = quitDialogContent(kind, locale);
+			expect([content.title, content.body, ...content.buttons].every((text) => text.trim().length > 0)).toBe(true);
+			expect(content.defaultId).toBe(0);
+			expect(content.cancelId).toBe(0);
+		}
+	});
+
+	it("shows the dialog in the locale the deps report", async () => {
+		const d = { ...deps({ "/api/v1/awake": awake }, 1), locale: () => "de" as const };
+		await confirmFullQuit(d);
+		expect(d.showDialog).toHaveBeenCalledWith(quitDialogContent("sleep", "de"));
 	});
 
 	it("shows only the sleep dialog when both conditions apply", async () => {
