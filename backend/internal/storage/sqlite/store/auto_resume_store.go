@@ -43,6 +43,7 @@ func (s *Store) AutoResumeAllowed(ctx context.Context, id domain.SessionID) bool
 
 // SetAutoResumePolicy stores a session's policy and keeps any recorded stop reason.
 func (s *Store) SetAutoResumePolicy(ctx context.Context, id domain.SessionID, policy domain.AutoResumePolicy, now time.Time) error {
+	now = now.UTC()
 	if !policy.Valid() {
 		return fmt.Errorf("invalid auto-resume policy %q", policy)
 	}
@@ -66,6 +67,7 @@ func (s *Store) StopReason(ctx context.Context, id domain.SessionID) (domain.Sto
 // SetStopReason records (or, with StopReasonNone, clears) why an agent was stopped
 // on purpose, keeping the session's policy.
 func (s *Store) SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error {
+	now = now.UTC()
 	if !reason.Valid() {
 		return fmt.Errorf("invalid stop reason %q", reason)
 	}
@@ -81,6 +83,7 @@ func (s *Store) SetStopReason(ctx context.Context, id domain.SessionID, reason d
 
 // StartDaemonRun records a new run and prunes the log to the most recent runs.
 func (s *Store) StartDaemonRun(ctx context.Context, bootID string, now time.Time) error {
+	now = now.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "start daemon run", func(q *gen.Queries) error {
@@ -93,6 +96,7 @@ func (s *Store) StartDaemonRun(ctx context.Context, bootID string, now time.Time
 
 // HeartbeatDaemonRun refreshes the run's liveness stamp.
 func (s *Store) HeartbeatDaemonRun(ctx context.Context, bootID string, now time.Time) error {
+	now = now.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.HeartbeatDaemonRun(ctx, gen.HeartbeatDaemonRunParams{HeartbeatAt: now, BootID: bootID})
@@ -101,15 +105,17 @@ func (s *Store) HeartbeatDaemonRun(ctx context.Context, bootID string, now time.
 // MarkDaemonShutdownStarted stamps the start of a graceful shutdown. The first
 // stamp wins; a repeat is a no-op.
 func (s *Store) MarkDaemonShutdownStarted(ctx context.Context, bootID string, now time.Time) error {
+	now = now.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.MarkDaemonShutdownStarted(ctx, gen.MarkDaemonShutdownStartedParams{
-		ShutdownStartedAt: sql.NullTime{Time: now, Valid: true}, MAX: now, BootID: bootID,
+		ShutdownStartedAt: sql.NullTime{Time: now, Valid: true}, HeartbeatFloor: now, BootID: bootID,
 	})
 }
 
 // MarkDaemonEndedClean stamps the end of a graceful shutdown.
 func (s *Store) MarkDaemonEndedClean(ctx context.Context, bootID string, now time.Time) error {
+	now = now.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.qw.MarkDaemonEndedClean(ctx, gen.MarkDaemonEndedCleanParams{EndedCleanAt: sql.NullTime{Time: now, Valid: true}, BootID: bootID})
@@ -138,6 +144,7 @@ func (s *Store) PreviousDaemonRun(ctx context.Context, bootID string) (domain.Da
 
 // DaemonRunsSince counts runs (including the current one) that started at or after since.
 func (s *Store) DaemonRunsSince(ctx context.Context, since time.Time) (int, error) {
+	since = since.UTC()
 	n, err := s.qr.CountDaemonRunsSince(ctx, since)
 	return int(n), err
 }
@@ -212,8 +219,12 @@ func (s *Store) CaptureResumeIntent(ctx context.Context, fresh domain.ResumeInte
 			if encodeErr != nil {
 				return encodeErr
 			}
-			if _, updateErr := q.UpdateResumeIntent(ctx, gen.UpdateResumeIntentParams{Record: string(payload), SessionID: string(fresh.SessionID), Revision: row.Revision}); updateErr != nil {
+			n, updateErr := q.UpdateResumeIntent(ctx, gen.UpdateResumeIntentParams{Record: string(payload), SessionID: string(fresh.SessionID), Revision: row.Revision})
+			if updateErr != nil {
 				return updateErr
+			}
+			if n != 1 {
+				return fmt.Errorf("capture resume intent for %s: %d rows updated, want 1", fresh.SessionID, n)
 			}
 			fresh.Revision = row.Revision + 1
 			stored, created = fresh, true
@@ -223,8 +234,12 @@ func (s *Store) CaptureResumeIntent(ctx context.Context, fresh domain.ResumeInte
 		if encodeErr != nil {
 			return encodeErr
 		}
-		if _, insertErr := q.InsertResumeIntent(ctx, gen.InsertResumeIntentParams{SessionID: string(fresh.SessionID), Record: string(payload)}); insertErr != nil {
+		n, insertErr := q.InsertResumeIntent(ctx, gen.InsertResumeIntentParams{SessionID: string(fresh.SessionID), Record: string(payload)})
+		if insertErr != nil {
 			return insertErr
+		}
+		if n != 1 {
+			return fmt.Errorf("capture resume intent for %s: %d rows inserted, want 1", fresh.SessionID, n)
 		}
 		fresh.Revision = 1
 		stored, created = fresh, true
@@ -258,6 +273,7 @@ func (s *Store) DeleteResumeIntent(ctx context.Context, id domain.SessionID) err
 // "controller ended before the turn completed" between windowStart and bootStart.
 // Each carries whether the provider had accepted it (a provider turn id was bound).
 func (s *Store) InterruptedHumanTurns(ctx context.Context, id domain.SessionID, windowStart, bootStart time.Time) ([]domain.InterruptedTurn, error) {
+	windowStart, bootStart = windowStart.UTC(), bootStart.UTC()
 	rows, err := s.qr.ListInterruptedHumanTurnsForSession(ctx, gen.ListInterruptedHumanTurnsForSessionParams{
 		SessionID: id, WindowStart: sql.NullTime{Time: windowStart, Valid: true}, BootStart: sql.NullTime{Time: bootStart, Valid: true},
 	})

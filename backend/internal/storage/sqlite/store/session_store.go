@@ -384,6 +384,7 @@ func (s *Store) SetSessionHibernated(ctx context.Context, id domain.SessionID, e
 // if the caller's session snapshot is still current. It reports false when the row
 // changed first (the caller retries) or is no longer a live Chat session.
 func (s *Store) ParkSessionHibernated(ctx context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
+	at = at.UTC()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.ParkSessionHibernated(ctx, gen.ParkSessionHibernatedParams{

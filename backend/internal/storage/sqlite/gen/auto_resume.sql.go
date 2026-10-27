@@ -235,17 +235,17 @@ func (q *Queries) MarkDaemonEndedClean(ctx context.Context, arg MarkDaemonEndedC
 }
 
 const markDaemonShutdownStarted = `-- name: MarkDaemonShutdownStarted :exec
-UPDATE daemon_runs SET shutdown_started_at = ?, heartbeat_at = MAX(heartbeat_at, ?) WHERE boot_id = ? AND shutdown_started_at IS NULL
+UPDATE daemon_runs SET shutdown_started_at = ?1, heartbeat_at = MAX(heartbeat_at, ?2) WHERE boot_id = ?3 AND shutdown_started_at IS NULL
 `
 
 type MarkDaemonShutdownStartedParams struct {
 	ShutdownStartedAt sql.NullTime
-	MAX               interface{}
+	HeartbeatFloor    interface{}
 	BootID            string
 }
 
 func (q *Queries) MarkDaemonShutdownStarted(ctx context.Context, arg MarkDaemonShutdownStartedParams) error {
-	_, err := q.db.ExecContext(ctx, markDaemonShutdownStarted, arg.ShutdownStartedAt, arg.MAX, arg.BootID)
+	_, err := q.db.ExecContext(ctx, markDaemonShutdownStarted, arg.ShutdownStartedAt, arg.HeartbeatFloor, arg.BootID)
 	return err
 }
 

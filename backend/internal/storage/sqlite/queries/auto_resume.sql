@@ -21,7 +21,7 @@ INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?);
 UPDATE daemon_runs SET heartbeat_at = ? WHERE boot_id = ?;
 
 -- name: MarkDaemonShutdownStarted :exec
-UPDATE daemon_runs SET shutdown_started_at = ?, heartbeat_at = MAX(heartbeat_at, ?) WHERE boot_id = ? AND shutdown_started_at IS NULL;
+UPDATE daemon_runs SET shutdown_started_at = sqlc.arg(shutdown_started_at), heartbeat_at = MAX(heartbeat_at, sqlc.arg(heartbeat_floor)) WHERE boot_id = sqlc.arg(boot_id) AND shutdown_started_at IS NULL;
 
 -- name: MarkDaemonEndedClean :exec
 UPDATE daemon_runs SET ended_clean_at = ? WHERE boot_id = ?;

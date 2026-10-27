@@ -380,3 +380,47 @@ func TestInterruptedHumanTurnsFindsWhatARestartCutOff(t *testing.T) {
 		t.Fatalf("a turn failed after the boot began was captured: %v", got)
 	}
 }
+
+// Timestamps are compared as text by several queries, so the store normalises to UTC:
+// a caller passing local time must still get the right previous run, the right start
+// count and a heartbeat that never moves backwards.
+func TestDaemonRunsAreOrderedByInstantNotByTheZoneOfTheCaller(t *testing.T) {
+	db, _ := autoResumeSession(t)
+	ctx := context.Background()
+	pacific := time.FixedZone("PST", -8*3600)
+	base := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+
+	if err := db.StartDaemonRun(ctx, "run-1", base); err != nil { // 10:00Z
+		t.Fatal(err)
+	}
+	later := base.Add(time.Hour).In(pacific) // 11:00Z written as 03:00-08:00
+	if err := db.StartDaemonRun(ctx, "run-2", later); err != nil {
+		t.Fatal(err)
+	}
+	prev, found, err := db.PreviousDaemonRun(ctx, "run-3")
+	if err != nil || !found || prev.BootID != "run-2" {
+		t.Fatalf("previous run = %q found=%v err=%v; want run-2 (the later instant), not the lexically larger text", prev.BootID, found, err)
+	}
+	if !prev.StartedAt.Equal(later) {
+		t.Fatalf("started_at = %v, want the same instant as %v", prev.StartedAt, later)
+	}
+
+	// The heartbeat floor holds across zones: a shutdown stamp earlier in text but later
+	// in time must win.
+	if err := db.HeartbeatDaemonRun(ctx, "run-2", base.Add(time.Hour+time.Minute).In(pacific)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkDaemonShutdownStarted(ctx, "run-2", base.Add(time.Hour+2*time.Minute).In(pacific)); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := db.PreviousDaemonRun(ctx, "run-3")
+	if want := base.Add(time.Hour + 2*time.Minute); !got.HeartbeatAt.Equal(want) || got.ShutdownStartedAt == nil || !got.ShutdownStartedAt.Equal(want) {
+		t.Fatalf("heartbeat %v shutdown %v, want both %v", got.HeartbeatAt, got.ShutdownStartedAt, want)
+	}
+
+	// Counting starts since an instant given in another zone.
+	n, err := db.DaemonRunsSince(ctx, base.Add(30*time.Minute).In(pacific)) // 10:30Z: only run-2
+	if err != nil || n != 1 {
+		t.Fatalf("starts since 10:30Z = %d (err %v), want 1", n, err)
+	}
+}
