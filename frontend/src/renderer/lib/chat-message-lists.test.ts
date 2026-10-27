@@ -76,6 +76,38 @@ describe("splitMessageLists", () => {
 		]);
 	});
 
+	it("does not turn a sentence that starts with a number and a dot into a list", () => {
+		for (const sample of ["2024. was a year", "In review:\n2024. was a year\nand more", "7) seven", "Notes\n\n10. ten things", "2024. was a year\n\n2025. was another"]) {
+			expect(splitMessageLists(sample)).toEqual([text(sample)]);
+		}
+	});
+
+	it("starts an ordered list at 1, after a list line, or when two numbered lines are in a row", () => {
+		expect(splitMessageLists("1. a")).toEqual([list(true, 1, [text("a")])]);
+		expect(splitMessageLists("2024. a\n2025. b")).toEqual([list(true, 2024, [text("a")], [text("b")])]);
+		expect(splitMessageLists("- a\n3. b")).toEqual([bullets("a"), list(true, 3, [text("b")])]);
+		// A numbered list continued after a blank line is still a list: the line before the gap was a list line.
+		expect(splitMessageLists("1. a\n\n2. b")).toEqual([list(true, 1, [text("a")]), list(true, 2, [text("b")])]);
+		// Prose between the lists ends that continuity.
+		expect(splitMessageLists("1. a\nthen\n2. b")).toEqual([list(true, 1, [text("a")]), text("then\n2. b")]);
+	});
+
+	it("looks past lines indented under a numbered item for the next numbered line", () => {
+		expect(splitMessageLists("3. c\n   - inner\n4. d")).toEqual([list(true, 3, [text("c"), bullets("inner")], [text("d")])]);
+		expect(splitMessageLists("2024. a\n   still part of it\nplain")).toEqual([text("2024. a\n   still part of it\nplain")]);
+	});
+
+	it("never renders a thematic break as a bullet", () => {
+		for (const sample of ["* * *", "- - -", "***", "---", "  * * * ", "a\n* * *\nb", "_ _ _"]) {
+			expect(splitMessageLists(sample)).toEqual([text(sample)]);
+		}
+		// It ends a list instead of becoming a nested or extra item.
+		expect(splitMessageLists("- a\n* * *\n- b")).toEqual([bullets("a"), text("* * *"), bullets("b")]);
+		expect(splitMessageLists("- a\n  * * *")).toEqual([list(false, 1, [text("a\n* * *")])]);
+		// Real bullets that merely start with a star and a space are untouched.
+		expect(splitMessageLists("* one\n* two")).toEqual([bullets("one", "two")]);
+	});
+
 	it("never loses or reorders the words of a message", () => {
 		const sample = "intro\n- a\n  cont\n\n1. b\nplain\n```\n- x\n```\n- c\n  - nested";
 		const words = (value: string) => value.split(/\s+/).filter((word) => word !== "" && !/^(?:[-*+]|\d+[.)])$/.test(word));
