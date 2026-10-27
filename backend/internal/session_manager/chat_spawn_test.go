@@ -1405,6 +1405,7 @@ func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 		EnvBrowserCapability:        "project-token",
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
+		EnvUICapabilityStdin:        "1",
 	}
 	store.projects[string(chatTestProject)] = project
 	launcher.beforeStart = func(cfg ChatStart) {
@@ -1430,9 +1431,9 @@ func TestChatSpawnPersistsBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	if got := start.Env[EnvBrowserCapability]; got != "chat-token" {
 		t.Fatalf("controller capability = %q, want issued token", got)
 	}
-	if start.Env[EnvBrowserRuntimeToken] != "" || start.Env[EnvBrowserRuntimeTokenStdin] != "" {
-		t.Fatalf("browser runtime secrets reached Chat controller: token=%q stdin=%q",
-			start.Env[EnvBrowserRuntimeToken], start.Env[EnvBrowserRuntimeTokenStdin])
+	if start.Env[EnvBrowserRuntimeToken] != "" || start.Env[EnvBrowserRuntimeTokenStdin] != "" || start.Env[EnvUICapabilityStdin] != "" {
+		t.Fatalf("browser runtime secrets reached Chat controller: token=%q stdin=%q capability marker=%q",
+			start.Env[EnvBrowserRuntimeToken], start.Env[EnvBrowserRuntimeTokenStdin], start.Env[EnvUICapabilityStdin])
 	}
 	if got := rec.Metadata.BrowserCapabilityVerifier; got != "chat-verifier" {
 		t.Fatalf("committed verifier = %q, want chat-verifier", got)

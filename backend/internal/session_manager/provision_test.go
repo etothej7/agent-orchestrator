@@ -106,9 +106,13 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
+		EnvUICapabilityStdin:        "1",
 	})
 	if env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
 		t.Fatalf("daemon browser runtime credentials leaked to worker: token=%q stdin=%q", env[EnvBrowserRuntimeToken], env[EnvBrowserRuntimeTokenStdin])
+	}
+	if env[EnvUICapabilityStdin] != "" {
+		t.Fatalf("the daemon-only human-capability marker leaked to worker: %q", env[EnvUICapabilityStdin])
 	}
 }
 

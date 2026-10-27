@@ -203,6 +203,9 @@ const (
 	// EnvBrowserRuntimeTokenStdin is the daemon-only token handoff marker and
 	// must be cleared before a worker process is spawned.
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
+	// EnvUICapabilityStdin is the daemon-only marker that line two of the app's stdin handoff is the
+	// human-capability key. Like its sibling it is inert for a worker and must not reach one.
+	EnvUICapabilityStdin = "AO_UI_CAPABILITY_STDIN"
 )
 
 type lifecycleRecorder interface {
@@ -6286,6 +6289,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
+	setProtectedEnv(env, EnvUICapabilityStdin, "", caseInsensitive)
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {

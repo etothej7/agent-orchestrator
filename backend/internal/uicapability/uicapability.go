@@ -119,7 +119,8 @@ func (v *Verifier) Verify(header, purpose, subject string, now time.Time) error 
 		return ErrInvalid
 	}
 	unix, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
+	// Only the canonical spelling: "+123" and "0123" parse to the same number but are a different header.
+	if err != nil || strconv.FormatInt(unix, 10) != parts[1] {
 		return ErrInvalid
 	}
 	// The MAC is checked before the clock so an unauthentic value never learns whether

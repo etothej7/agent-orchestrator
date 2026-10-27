@@ -28,6 +28,17 @@ export function originOf(url: string): string | undefined {
 	return `${parsed.protocol}//${parsed.host}`;
 }
 
+/**
+ * The origin to sign for: the daemon this app run spawned itself, and only while it is ready. A daemon the app
+ * merely found running (attached) never received this run's key, so signing for it would hand a valid capability
+ * to whatever answers on that port. `spawnedPid` is the pid of the child this run started; the status pid on
+ * the attach path comes from the run file and differs.
+ */
+export function ownDaemonOrigin(status: { state: string; port?: number; pid?: number }, spawnedPid: number | undefined): string | undefined {
+	if (status.state !== "ready" || !status.port || spawnedPid === undefined || status.pid !== spawnedPid) return undefined;
+	return `http://127.0.0.1:${status.port}`;
+}
+
 const STATE_CHANGING_METHODS: ReadonlySet<string> = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 type Frame = Pick<NonNullable<Electron.OnBeforeSendHeadersListenerDetails["frame"]>, "url" | "processId" | "routingId">;
@@ -80,16 +91,39 @@ export function installHumanCapabilityHeaders(options: HumanCapabilityHeaderOpti
 	// Match every http request and decide in the listener: match patterns are unreliable about ports,
 	// and the daemon's port changes on every restart. The packaged renderer is app://, so it never hits this.
 	options.session.webRequest.onBeforeSendHeaders({ urls: ["http://*/*"] }, (details, callback) => {
-		const headers: Record<string, string> = {};
-		for (const [name, value] of Object.entries(details.requestHeaders)) {
-			if (name.toLowerCase() !== UI_CAPABILITY_HEADER.toLowerCase()) headers[name] = value;
-		}
-		if (shouldSign(details, options)) {
-			headers[UI_CAPABILITY_HEADER] = signUiRequestCapability(options.key, details.method, new URL(details.url).pathname, now());
+		// This runs for every http request the shell session makes, and the request waits for `callback`. Anything
+		// that throws here (a frame or web contents that is going away, a bad url, a throwing getter) must end in
+		// "send it unsigned", never in a request that never completes: the daemon treats an unsigned write as not
+		// the person's, which is the safe direction.
+		let headers: Record<string, string>;
+		try {
+			headers = withoutCapability(details.requestHeaders);
+			if (shouldSign(details, options)) {
+				headers[UI_CAPABILITY_HEADER] = signUiRequestCapability(options.key, details.method, new URL(details.url).pathname, now());
+			}
+		} catch {
+			headers = safeHeaders(details);
 		}
 		callback({ requestHeaders: headers });
 	});
 	return () => options.session.webRequest.onBeforeSendHeaders(null);
+}
+
+function withoutCapability(requestHeaders: Record<string, string>): Record<string, string> {
+	const headers: Record<string, string> = {};
+	for (const [name, value] of Object.entries(requestHeaders)) {
+		if (name.toLowerCase() !== UI_CAPABILITY_HEADER.toLowerCase()) headers[name] = value;
+	}
+	return headers;
+}
+
+/** The request's own headers minus any capability, for the path where deciding failed; never throws. */
+function safeHeaders(details: SendHeadersDetails): Record<string, string> {
+	try {
+		return withoutCapability(details.requestHeaders);
+	} catch {
+		return {};
+	}
 }
 
 function shouldSign(details: SendHeadersDetails, options: HumanCapabilityHeaderOptions): boolean {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, type HeaderSession, type SendHeadersDetails } from "./human-capability";
+import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, ownDaemonOrigin, type HeaderSession, type SendHeadersDetails } from "./human-capability";
 import { signUiRequestCapability, UI_CAPABILITY_HEADER } from "./ui-capability";
 
 const KEY = "k".repeat(43);
@@ -112,6 +112,57 @@ describe("installHumanCapabilityHeaders", () => {
 		expect(Object.keys(unsigned).some((name) => name.toLowerCase() === UI_CAPABILITY_HEADER.toLowerCase())).toBe(false);
 	});
 
+	it("always calls back, unsigned, when deciding throws: a request must never hang on a teardown or a bad frame", () => {
+		const boom = () => {
+			throw new Error("WebFrameMain was disposed");
+		};
+		const forged = { Origin: PAGE_ORIGIN, "X-AO-UI-Capability": "v1.1.forged", Accept: "*/*" };
+		const run = (setup: { shell?: unknown; daemonOrigin?: () => string | undefined }, details: Partial<Details>) => {
+			const calls: Record<string, string>[] = [];
+			let listener: ((d: Details, cb: (r: { requestHeaders?: Record<string, string> }) => void) => void) | null = null;
+			installHumanCapabilityHeaders({
+				session: { webRequest: { onBeforeSendHeaders: (...args: unknown[]) => { listener = (args.length === 2 ? args[1] : args[0]) as typeof listener; } } } as unknown as HeaderSession,
+				key: KEY,
+				shellWebContents: () => ("shell" in setup ? (setup.shell as never) : shell),
+				daemonOrigin: setup.daemonOrigin ?? (() => DAEMON),
+				shellPageOrigin: () => originOf(PAGE_ORIGIN) ?? "",
+				now: () => NOW,
+			});
+			listener!({ url: `${DAEMON}/api/v1/x`, method: "POST", webContentsId: 5, frame: shellFrame, requestHeaders: forged, ...details } as Details, (r) => calls.push(r.requestHeaders ?? {}));
+			return calls;
+		};
+		const throwingShell = { get id(): number { return boom(); }, mainFrame: shellFrame, isDestroyed: () => false };
+		const throwingMainFrame = { id: 5, get mainFrame(): unknown { return boom(); }, isDestroyed: () => false };
+		const throwingFrameUrl = { ...shellFrame, get url(): string { return boom(); } };
+		const cases: [string, ReturnType<typeof run>][] = [
+			["a shell whose id getter throws", run({ shell: throwingShell }, {})],
+			["a main frame that is disposed", run({ shell: throwingMainFrame }, {})],
+			["a request frame whose url getter throws", run({}, { frame: throwingFrameUrl })],
+			["a daemonOrigin that throws", run({ daemonOrigin: boom }, {})],
+			["a url that cannot be parsed", run({}, { url: "http://" })],
+		];
+		for (const [name, calls] of cases) {
+			expect(calls, name).toHaveLength(1);
+			expect(calls[0]?.["X-AO-UI-Capability"], name).toBeUndefined();
+			expect(calls[0]?.Accept, name).toBe("*/*");
+		}
+	});
+
+	it("still strips a forged capability header when the request details themselves cannot be read", () => {
+		let listener: ((d: Details, cb: (r: { requestHeaders?: Record<string, string> }) => void) => void) | null = null;
+		installHumanCapabilityHeaders({
+			session: { webRequest: { onBeforeSendHeaders: (...args: unknown[]) => { listener = (args.length === 2 ? args[1] : args[0]) as typeof listener; } } } as unknown as HeaderSession,
+			key: KEY,
+			shellWebContents: () => shell,
+			daemonOrigin: () => DAEMON,
+			shellPageOrigin: () => originOf(PAGE_ORIGIN) ?? "",
+		});
+		const calls: Record<string, string>[] = [];
+		const details = { requestHeaders: { "X-AO-UI-Capability": "forged" }, get method(): string { throw new Error("torn down"); } } as unknown as Details;
+		listener!(details, (r) => calls.push(r.requestHeaders ?? {}));
+		expect(calls).toEqual([{}]);
+	});
+
 	it("unsubscribes on dispose", () => {
 		const h = capture();
 		expect(h.listener).not.toBeNull();
@@ -146,5 +197,20 @@ describe("daemonStdinHandoff", () => {
 		const key = newHumanCapabilityKey();
 		expect(daemonStdinHandoff("tok-1", key)).toBe(`tok-1\n${key}\n`);
 		expect(daemonStdinHandoff("tok-1", key).split("\n")).toEqual(["tok-1", key, ""]);
+	});
+});
+
+describe("ownDaemonOrigin", () => {
+	it("signs for the daemon this run spawned, once it is ready", () => {
+		expect(ownDaemonOrigin({ state: "ready", port: 41234, pid: 900 }, 900)).toBe("http://127.0.0.1:41234");
+	});
+
+	it("never signs for a daemon it attached to (different pid), one that is not ready, or when it spawned none", () => {
+		expect(ownDaemonOrigin({ state: "ready", port: 41234, pid: 777 }, 900)).toBeUndefined();
+		expect(ownDaemonOrigin({ state: "ready", port: 41234, pid: 900 }, undefined)).toBeUndefined();
+		expect(ownDaemonOrigin({ state: "ready", port: 41234 }, 900)).toBeUndefined();
+		expect(ownDaemonOrigin({ state: "starting", port: 41234, pid: 900 }, 900)).toBeUndefined();
+		expect(ownDaemonOrigin({ state: "stopped", pid: 900 }, 900)).toBeUndefined();
+		expect(ownDaemonOrigin({ state: "ready", pid: 900 }, 900)).toBeUndefined();
 	});
 });

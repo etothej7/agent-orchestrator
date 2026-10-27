@@ -94,7 +94,7 @@ import {
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
-import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, UI_CAPABILITY_STDIN_ENV } from "./main/human-capability";
+import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, ownDaemonOrigin, UI_CAPABILITY_STDIN_ENV } from "./main/human-capability";
 import { forbiddenDebugSwitch } from "./main/packaged-hardening";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
@@ -943,7 +943,7 @@ async function createWindowInternal(): Promise<void> {
 		session: shellWebContents.session,
 		key: uiCapabilityKey,
 		shellWebContents: getShellWebContents,
-		daemonOrigin: () => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : undefined),
+		daemonOrigin: () => ownDaemonOrigin(daemonStatus, spawnedDaemonPid),
 		shellPageOrigin: () => originOf(rendererUrl()) ?? "",
 	});
 
@@ -1458,6 +1458,9 @@ const browserRuntimeToken = randomBytes(32).toString("base64url");
 // private stdin pipe as the token above (second line), held in memory only. Never an env var, file,
 // argv, log or renderer value; main signs each state-changing request the shell sends the daemon.
 const uiCapabilityKey = newHumanCapabilityKey();
+// The pid of the daemon this run spawned (set when it reports its port). Main signs only for that daemon: one it
+// attached to never received the key.
+let spawnedDaemonPid: number | undefined;
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -2273,6 +2276,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		if (portConfirmed || daemonProcess !== child || daemonStoppingProcess === child) return;
 		portConfirmed = true;
 		stopDiscovery();
+		spawnedDaemonPid = child.pid;
 		setDaemonStatus({ state: "ready", port, pid: child.pid });
 
 		// Establish the OS-native liveness link on the spawn path (we own this

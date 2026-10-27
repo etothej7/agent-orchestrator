@@ -163,3 +163,19 @@ func TestValidKey(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyTheCanonicalSpellingOfTheTimestampVerifies(t *testing.T) {
+	now := time.Unix(1793102400, 0)
+	subject := RequestSubject("POST", "/api/v1/x")
+	good := Sign("k", PurposeHumanWrite, subject, now)
+	if err := New("k").Verify(good, PurposeHumanWrite, subject, now); err != nil {
+		t.Fatalf("the canonical header was refused: %v", err)
+	}
+	parts := strings.Split(good, ".")
+	for name, unix := range map[string]string{"plus sign": "+" + parts[1], "leading zero": "0" + parts[1], "trailing space": parts[1] + " "} {
+		forged := strings.Join([]string{parts[0], unix, parts[2]}, ".")
+		if err := New("k").Verify(forged, PurposeHumanWrite, subject, now); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+		}
+	}
+}
