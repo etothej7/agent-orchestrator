@@ -441,12 +441,15 @@ type Manager struct {
 	persistentHostReconcileDone <-chan struct{}
 	statusRecoveryMu            sync.RWMutex
 	statusRecoveryFailed        bool
-	statusRecoveryRevision      uint64
-	statusRecoveries            map[domain.SessionID]statusRecovery
-	statusVerificationLimit     time.Duration
-	startupChatRetryDelays      []time.Duration
-	agentOpMu                   sync.Mutex
-	agentOperations             map[domain.SessionID]agentOperationKind
+	// resumeCapture arms boot-time resume-intent capture (SetBootWindow).
+	resumeCaptureMu         sync.Mutex
+	resumeCapture           *resumeCapture
+	statusRecoveryRevision  uint64
+	statusRecoveries        map[domain.SessionID]statusRecovery
+	statusVerificationLimit time.Duration
+	startupChatRetryDelays  []time.Duration
+	agentOpMu               sync.Mutex
+	agentOperations         map[domain.SessionID]agentOperationKind
 	// launchStartWait bounds the wait to see a new supervised launch alive.
 	launchStartWait           time.Duration
 	interfaceRecoveryMu       sync.Mutex

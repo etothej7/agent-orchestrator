@@ -9,6 +9,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 const clearStopReason = `-- name: ClearStopReason :exec
@@ -134,6 +136,61 @@ func (q *Queries) InsertResumeIntent(ctx context.Context, arg InsertResumeIntent
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const listInterruptedHumanTurnsForSession = `-- name: ListInterruptedHumanTurnsForSession :many
+SELECT t.id, t.provider_turn_id
+FROM conversation_turns t
+WHERE t.handled_by_session_id = ?1
+  AND t.rolled_back_at IS NULL
+  AND (
+    t.state IN ('queued', 'running')
+    OR (t.state = 'failed'
+        AND t.error_message = 'controller ended before the turn completed'
+        AND t.completed_at >= ?2
+        AND t.completed_at <= ?3)
+  )
+  AND EXISTS (
+    SELECT 1 FROM conversation_messages m
+    WHERE m.turn_id = t.id AND m.role = 'user' AND m.origin = 'human'
+  )
+ORDER BY t.requested_at, t.id
+`
+
+type ListInterruptedHumanTurnsForSessionParams struct {
+	SessionID   domain.SessionID
+	WindowStart sql.NullTime
+	BootStart   sql.NullTime
+}
+
+type ListInterruptedHumanTurnsForSessionRow struct {
+	ID             string
+	ProviderTurnID string
+}
+
+// Human-origin turns a restart cut off: still queued or running, or failed by the
+// controller-stop cleanup inside the shutdown window.
+func (q *Queries) ListInterruptedHumanTurnsForSession(ctx context.Context, arg ListInterruptedHumanTurnsForSessionParams) ([]ListInterruptedHumanTurnsForSessionRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInterruptedHumanTurnsForSession, arg.SessionID, arg.WindowStart, arg.BootStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInterruptedHumanTurnsForSessionRow{}
+	for rows.Next() {
+		var i ListInterruptedHumanTurnsForSessionRow
+		if err := rows.Scan(&i.ID, &i.ProviderTurnID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listResumeIntents = `-- name: ListResumeIntents :many

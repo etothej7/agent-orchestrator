@@ -303,3 +303,80 @@ func TestResumeIntentSaveIsCompareAndSwapListDeleteAndCascade(t *testing.T) {
 		t.Fatal("an intent was captured for a session that does not exist")
 	}
 }
+
+func TestInterruptedHumanTurnsFindsWhatARestartCutOff(t *testing.T) {
+	db, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedProject(t, db, "repo")
+	chat := sampleRecord("repo")
+	chat.Mode = domain.SessionModeChat
+	chat.Metadata.ProviderConversationID = "provider-conversation"
+	ctx := context.Background()
+	rec, err := db.CreateSession(ctx, chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := rec.ID
+	t0 := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	conv, err := db.CreateConversation(ctx, "conv-1", domain.ConversationScopeSession, "repo", id, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClaimChatControllerGeneration(ctx, id, "gen-1"); err != nil {
+		t.Fatal(err)
+	}
+	send := func(turn string, origin domain.MessageOrigin, at time.Time) {
+		t.Helper()
+		created, err := db.AppendUserMessage(ctx, conv.ID, id, "gen-1", domain.ConversationMessage{
+			ID: "msg-" + turn, Text: turn, Origin: origin, ClientMessageID: "client-" + turn,
+		}, turn, at)
+		if err != nil || !created {
+			t.Fatalf("AppendUserMessage %s: created=%v err=%v", turn, created, err)
+		}
+	}
+	send("human-delivered", domain.MessageOriginHuman, t0)
+	if err := db.BindTurnToProvider(ctx, "human-delivered", "provider-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	send("human-undelivered", domain.MessageOriginHuman, t0.Add(time.Second))
+	send("automation", domain.MessageOriginAutomation, t0.Add(2*time.Second))
+	send("human-completed", domain.MessageOriginHuman, t0.Add(3*time.Second))
+	if err := db.BindTurnToProvider(ctx, "human-completed", "provider-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SettleTurn(ctx, conv.ID, "provider-2", domain.TurnStateCompleted, "", t0.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	window := t0.Add(-time.Minute)
+	boot := t0.Add(time.Hour)
+
+	// Still queued or running: only the human turns that did not complete.
+	got, err := db.InterruptedHumanTurns(ctx, id, window, boot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.InterruptedTurn{{ID: "human-delivered", Delivered: true}, {ID: "human-undelivered", Delivered: false}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("live interrupted turns = %v, want %v", got, want)
+	}
+
+	// The controller-stop cleanup fails them; the same turns are found inside the window.
+	failedAt := t0.Add(10 * time.Minute)
+	if err := db.SettleOrphanedTurns(ctx, id, failedAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.InterruptedHumanTurns(ctx, id, failedAt.Add(-time.Minute), boot)
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("failed-in-window turns = %v (err %v), want %v", got, err, want)
+	}
+	// An older stop (before the window) or one after this boot began is not a restart's.
+	if got, _ = db.InterruptedHumanTurns(ctx, id, failedAt.Add(time.Minute), boot); len(got) != 0 {
+		t.Fatalf("a turn failed before the window was captured: %v", got)
+	}
+	if got, _ = db.InterruptedHumanTurns(ctx, id, window, failedAt.Add(-time.Second)); len(got) != 0 {
+		t.Fatalf("a turn failed after the boot began was captured: %v", got)
+	}
+}

@@ -50,3 +50,23 @@ DELETE FROM session_resume_intents WHERE session_id = ?;
 
 -- name: ListResumeIntents :many
 SELECT session_id, record, revision FROM session_resume_intents ORDER BY session_id;
+
+-- name: ListInterruptedHumanTurnsForSession :many
+-- Human-origin turns a restart cut off: still queued or running, or failed by the
+-- controller-stop cleanup inside the shutdown window.
+SELECT t.id, t.provider_turn_id
+FROM conversation_turns t
+WHERE t.handled_by_session_id = sqlc.arg(session_id)
+  AND t.rolled_back_at IS NULL
+  AND (
+    t.state IN ('queued', 'running')
+    OR (t.state = 'failed'
+        AND t.error_message = 'controller ended before the turn completed'
+        AND t.completed_at >= sqlc.arg(window_start)
+        AND t.completed_at <= sqlc.arg(boot_start))
+  )
+  AND EXISTS (
+    SELECT 1 FROM conversation_messages m
+    WHERE m.turn_id = t.id AND m.role = 'user' AND m.origin = 'human'
+  )
+ORDER BY t.requested_at, t.id;

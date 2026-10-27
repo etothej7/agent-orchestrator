@@ -1162,6 +1162,10 @@ func Run(buildVersion string) error {
 				log.Warn("reviewer chat recovery deferred", "err", reconcileErr)
 			}
 			close(reviewerChatsRecovered)
+			// Arm resume-intent capture with the window read before any startup write.
+			if armer, ok := sessMgr.(interface{ SetBootWindow(domain.BootWindow) }); ok {
+				armer.SetBootWindow(bootWindow)
+			}
 			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
 				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
 			}

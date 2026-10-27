@@ -252,3 +252,21 @@ func (s *Store) DeleteResumeIntent(ctx context.Context, id domain.SessionID) err
 	defer s.writeMu.Unlock()
 	return s.qw.DeleteResumeIntent(ctx, string(id))
 }
+
+// InterruptedHumanTurns lists the human-origin turns a restart cut off: turns that
+// are still queued or running, plus turns the controller-stop cleanup failed with
+// "controller ended before the turn completed" between windowStart and bootStart.
+// Each carries whether the provider had accepted it (a provider turn id was bound).
+func (s *Store) InterruptedHumanTurns(ctx context.Context, id domain.SessionID, windowStart, bootStart time.Time) ([]domain.InterruptedTurn, error) {
+	rows, err := s.qr.ListInterruptedHumanTurnsForSession(ctx, gen.ListInterruptedHumanTurnsForSessionParams{
+		SessionID: id, WindowStart: sql.NullTime{Time: windowStart, Valid: true}, BootStart: sql.NullTime{Time: bootStart, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list interrupted turns for %s: %w", id, err)
+	}
+	turns := make([]domain.InterruptedTurn, 0, len(rows))
+	for _, row := range rows {
+		turns = append(turns, domain.InterruptedTurn{ID: row.ID, Delivered: row.ProviderTurnID != ""})
+	}
+	return turns, nil
+}

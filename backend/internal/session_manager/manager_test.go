@@ -75,6 +75,9 @@ type fakeStore struct {
 	protected        map[domain.SessionID]bool
 	policyUnreadable bool
 	policies         map[domain.SessionID]domain.AutoResumePolicy
+	intents          map[domain.SessionID]domain.ResumeIntent
+	interrupted      map[domain.SessionID][]domain.InterruptedTurn
+	stories          []domain.Story
 	coordination     domain.CoordinationConfig
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
@@ -101,6 +104,31 @@ func (s *fakeStore) SetAutoResumePolicy(_ context.Context, id domain.SessionID, 
 	s.protected[id] = !policy.Allows()
 	return nil
 }
+
+// StopReason is the optional resumeCaptureStore part of the store.
+func (s *fakeStore) StopReason(_ context.Context, id domain.SessionID) (domain.StopReason, error) {
+	return s.stopReasons[id], nil
+}
+
+// InterruptedHumanTurns is the optional resumeCaptureStore part of the store.
+func (s *fakeStore) InterruptedHumanTurns(_ context.Context, id domain.SessionID, _, _ time.Time) ([]domain.InterruptedTurn, error) {
+	return s.interrupted[id], nil
+}
+
+// CaptureResumeIntent keeps a live intent, like the real store.
+func (s *fakeStore) CaptureResumeIntent(_ context.Context, fresh domain.ResumeIntent) (domain.ResumeIntent, bool, error) {
+	if s.intents == nil {
+		s.intents = map[domain.SessionID]domain.ResumeIntent{}
+	}
+	if existing, ok := s.intents[fresh.SessionID]; ok && existing.State.Live() {
+		return existing, false, nil
+	}
+	s.intents[fresh.SessionID] = fresh
+	return fresh, true, nil
+}
+
+// ListStories is the optional story reader part of the store.
+func (s *fakeStore) ListStories(context.Context) ([]domain.Story, error) { return s.stories, nil }
 
 // GetCoordination is the optional coordination reader part of the store.
 func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
