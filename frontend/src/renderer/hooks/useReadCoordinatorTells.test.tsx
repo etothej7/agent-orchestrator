@@ -5,14 +5,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { NotificationDTO } from "../lib/notifications";
 import type { ConversationItem } from "../types/conversation";
 
-const { markMock } = vi.hoisted(() => ({ markMock: vi.fn() }));
+const { markMock, getMock } = vi.hoisted(() => ({ markMock: vi.fn(), getMock: vi.fn() }));
 vi.mock("../lib/notifications", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../lib/notifications")>()),
 	markAllNotificationsRead: markMock,
 }));
 vi.mock("../lib/api-client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../lib/api-client")>()),
-	apiClient: { GET: () => new Promise(() => undefined) },
+	apiClient: { GET: (...args: unknown[]) => { getMock(...args); return new Promise(() => undefined); } },
 }));
 
 import { useReadCoordinatorTells } from "./useReadCoordinatorTells";
@@ -25,13 +25,13 @@ const note = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, body
 	createdAt: "2026-10-26T12:00:01Z", target: { kind: "session", sessionId: "coord" },
 });
 
-function mount(options: { enabled?: boolean; onScreen?: boolean; items: ConversationItem[]; notifications: NotificationDTO[]; inView?: string[]; askStatusOf?: Parameters<typeof useReadCoordinatorTells>[3]; openAsks?: NotificationDTO[] }) {
+function mount(options: { enabled?: boolean; onScreen?: boolean; items: ConversationItem[]; notifications: NotificationDTO[]; inView?: string[]; askStatusOf?: Parameters<typeof useReadCoordinatorTells>[3]; openAsks?: NotificationDTO[]; sessionId?: string }) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	const openCount = options.openAsks?.length ?? 0;
 	client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: options.notifications, unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: openCount }] });
 	if (options.openAsks) client.setQueryData(["coordinator-open-asks", openCount], options.openAsks);
 	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-	const rendered = renderHook(() => useReadCoordinatorTells(options.enabled ?? true, options.onScreen ?? true, options.items, options.askStatusOf), { wrapper });
+	const rendered = renderHook(() => useReadCoordinatorTells(options.enabled ?? true, options.onScreen ?? true, options.items, options.askStatusOf, options.sessionId ?? "coord"), { wrapper });
 	// By default every message is in the viewport; a test passes `inView` to say otherwise.
 	act(() => {
 		for (const id of options.inView ?? options.items.map((item) => item.id)) rendered.result.current.reportVisible(id, true);
@@ -132,16 +132,48 @@ it("counts unread results and open questions older than the loaded window, oldes
 		].map((n) => (n.messageId === "read-tell" ? { ...n, status: "read" as const } : n)),
 		openAsks: [older("decision-old", "blocking_decision", "2026-10-26T07:00:00Z")],
 	});
-	expect(result.current.older).toEqual({ count: 2, targetMessageId: "decision-old" });
+	expect(result.current.older).toEqual({ ids: ["decision-old", "old-tell"] });
 	expect(result.current.settled).toBe(true);
 });
 
 it("has nothing older when everything that waits is in the loaded window, and is not settled before notifications load", () => {
 	const loaded = mount({ items: [tellMessage("tell", "verified_result", "Verified: it works.")], notifications: [note("ntf_tell", "verified_result", "Verified: it works.")], openAsks: [] });
-	expect(loaded.result.current.older).toEqual({ count: 0, targetMessageId: undefined });
+	expect(loaded.result.current.older).toEqual({ ids: [] });
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-	const loading = renderHook(() => useReadCoordinatorTells(true, true, [tellMessage("tell", "verified_result", "x")]), { wrapper });
+	const loading = renderHook(() => useReadCoordinatorTells(true, true, [tellMessage("tell", "verified_result", "x")], undefined, "coord"), { wrapper });
 	expect(loading.result.current.settled).toBe(false);
-	expect(loading.result.current.older.count).toBe(0);
+	expect(loading.result.current.older.ids).toEqual([]);
+});
+
+// The hook runs in every orchestrator chat, but the notifications are global: a repo manager's chat has no
+// coordinator blocks, so the coordinator's older messages must never become a pill there.
+it("counts only notifications addressed to the session whose chat it is", () => {
+	const forSession = (id: string, sessionId: string, purpose: NonNullable<NotificationDTO["purpose"]>, at: string): NotificationDTO => ({
+		...note(`ntf_${id}`, purpose, "text"), messageId: id, sessionId, createdAt: at,
+	});
+	const notifications = [
+		forSession("tell-1", "coord", "verified_result", "2026-10-26T09:00:00Z"),
+		forSession("tell-2", "coord", "stopped_work", "2026-10-26T10:00:00Z"),
+	];
+	const openAsks = [forSession("decision-1", "coord", "blocking_decision", "2026-10-26T08:00:00Z")];
+	const manager = mount({ items: [], notifications, openAsks, sessionId: "manager-1" });
+	expect(manager.result.current.older.ids).toEqual([]);
+	const coordinator = mount({ items: [], notifications, openAsks, sessionId: "coord" });
+	expect(coordinator.result.current.older.ids).toEqual(["decision-1", "tell-1", "tell-2"]);
+});
+
+it("orders older messages deterministically even when a timestamp cannot be parsed", () => {
+	const at = (id: string, createdAt: string): NotificationDTO => ({ ...note(`ntf_${id}`, "verified_result", "text"), messageId: id, createdAt });
+	const { result } = mount({ items: [], notifications: [at("b", "not a date"), at("a", "not a date"), at("c", "2026-10-26T09:00:00Z")] });
+	expect(result.current.older.ids).toEqual(["a", "b", "c"]);
+});
+
+it("does not ask for the open questions before the first notification page has loaded", () => {
+	getMock.mockClear();
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+	renderHook(() => useReadCoordinatorTells(true, true, [], undefined, "coord"), { wrapper });
+	const askedForOpenQuestions = getMock.mock.calls.some((call) => JSON.stringify(call).includes('"status":"unresolved"'));
+	expect(askedForOpenQuestions).toBe(false);
 });

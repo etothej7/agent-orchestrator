@@ -4,6 +4,19 @@ const MAX_TRIES = 20;
 const MAX_PAGES = 60;
 const HIGHLIGHT_MS = 1800;
 
+/** How a jump ended. `missing`: the message is not in the loaded transcript and there is no older page to load. */
+export interface JumpEnd {
+	reached: boolean;
+	missing: boolean;
+	/** Another jump started before this one finished. */
+	replaced?: boolean;
+}
+
+export interface JumpCallbacks {
+	onReached?: () => void;
+	onEnd?: (end: JumpEnd) => void;
+}
+
 /**
  * Brings one coordinator block into view and marks it for a moment. The transcript may be virtualized or
  * have the block on an older page, so it keeps nudging (scroll to its row, load earlier) until the block
@@ -27,8 +40,11 @@ export function useJumpToCoordinatorMessage({
 	onLoadOlder?: () => void;
 	/** Stop the transcript following new output so it does not pull the reader back down. */
 	stopFollow: () => void;
-}): (messageId: string, onReached?: () => void, onEnd?: () => void) => void {
-	const [target, setTarget] = useState<{ id: string; tries: number; pages: number; onReached?: () => void; onEnd?: () => void }>();
+}): (messageId: string, callbacks?: JumpCallbacks) => void {
+	// The caller's callbacks live outside state so a jump that is replaced still gets to end.
+	const active = useRef<{ seq: number } & JumpCallbacks>(undefined);
+	const sequence = useRef(0);
+	const [target, setTarget] = useState<{ id: string; seq: number; tries: number; pages: number }>();
 	// The inputs churn every render; only a new target or retry should run the search.
 	const latest = useRef({ indexOf, scrollToIndex, hasOlder, loadingOlder, onLoadOlder, stopFollow });
 	latest.current = { indexOf, scrollToIndex, hasOlder, loadingOlder, onLoadOlder, stopFollow };
@@ -43,10 +59,13 @@ export function useJumpToCoordinatorMessage({
 	useEffect(() => {
 		if (!target) return;
 		// The jump is over: reached the block, or gave up (nothing to scroll to, no older page, out of retries).
-		const end = (reached: boolean) => {
+		const end = (reached: boolean, missing = false) => {
 			setTarget(undefined);
-			if (reached) target.onReached?.();
-			target.onEnd?.();
+			const callbacks = active.current;
+			if (callbacks?.seq !== target.seq) return;
+			active.current = undefined;
+			if (reached) callbacks.onReached?.();
+			callbacks.onEnd?.({ reached, missing });
 		};
 		const element = Array.from(root.current?.querySelectorAll<HTMLElement>("[data-coordinator-message-id]") ?? [])
 			.find((candidate) => candidate.dataset.coordinatorMessageId === target.id);
@@ -76,13 +95,13 @@ export function useJumpToCoordinatorMessage({
 		else if (older && !loading) {
 			// Page back until the message is loaded. Waiting for a page does not use up the retries.
 			if (pages >= MAX_PAGES) {
-				end(false);
+				end(false, true);
 				return;
 			}
 			pages += 1;
 			loadOlder?.();
-		} else if (!older) {
-			end(false);
+		} else if (!older && index < 0) {
+			end(false, true);
 			return;
 		}
 		const waitingForPage = index < 0 && loading;
@@ -96,5 +115,13 @@ export function useJumpToCoordinatorMessage({
 		);
 		return () => window.clearTimeout(retry);
 	}, [clearHighlight, root, target]);
-	return useCallback((messageId: string, onReached?: () => void, onEnd?: () => void) => setTarget({ id: messageId, tries: 0, pages: 0, onReached, onEnd }), []);
+	return useCallback((messageId: string, callbacks?: JumpCallbacks) => {
+		// A new jump replaces one still under way: let the old one end, so nothing waits on it forever.
+		const previous = active.current;
+		active.current = undefined;
+		previous?.onEnd?.({ reached: false, missing: false, replaced: true });
+		sequence.current += 1;
+		active.current = { seq: sequence.current, ...callbacks };
+		setTarget({ id: messageId, seq: sequence.current, tries: 0, pages: 0 });
+	}, []);
 }

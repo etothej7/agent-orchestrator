@@ -3552,25 +3552,36 @@ export function Timeline({
 	});
 	// What waits for Ed: items loaded but out of view, then items older than the loaded window (the
 	// oldest of those is the jump target; the jump pages back until it is loaded).
+	// Messages a finished jump could not find (their conversation was replaced, or the notification points at
+	// a message that is gone) are not offered again: the pill would otherwise stay with nothing to jump to.
+	const [unreachableCoordinatorIds, setUnreachableCoordinatorIds] = useState<ReadonlySet<string>>(() => new Set());
 	const coordinatorOutOfView = coordinatorUnreadState?.outOfView ?? [];
-	const coordinatorOlderCount = coordinatorUnreadState?.older.count ?? 0;
+	const coordinatorOlderIds = (coordinatorUnreadState?.older.ids ?? []).filter((id) => !unreachableCoordinatorIds.has(id));
+	const coordinatorOlderCount = coordinatorOlderIds.length;
 	const coordinatorWaiting = coordinatorOutOfView.length + coordinatorOlderCount;
-	const coordinatorTarget = coordinatorOlderCount > 0 ? coordinatorUnreadState?.older.targetMessageId : coordinatorOutOfView[0];
+	const coordinatorTarget = coordinatorOlderCount > 0 ? coordinatorOlderIds[0] : coordinatorOutOfView[0];
 	const coordinatorSettled = coordinatorUnreadState?.settled ?? false;
 	// Opening the main coordinator lands on the oldest thing that waits for Ed.
 	const jumpRequestedAt = useCoordinatorJumpStore((state) => state.requestedAt);
 	const jumpInFlight = useRef(false);
 	const coordinatorLoadedOnce = useRef(false);
+	// One way to start a jump, for the pill and for a row-click request alike, so a jump that replaces another
+	// still clears the request when it lands and still reports when it ends.
+	const startCoordinatorJump = useCallback((messageId: string) => {
+		jumpToCoordinatorMessage(messageId, {
+			// The request stays until the block is reached: the chat may still remount while it opens.
+			onReached: () => useCoordinatorJumpStore.getState().clear(),
+			onEnd: ({ missing, replaced }) => {
+				if (!replaced) jumpInFlight.current = false;
+				if (missing) setUnreachableCoordinatorIds((current) => new Set(current).add(messageId));
+			},
+		});
+		jumpInFlight.current = true; // after the call: a replaced jump's own end must not reset this
+	}, [jumpToCoordinatorMessage]);
 	useEffect(() => {
 		if (!coordinatorTarget || !coordinatorJumpRequested(jumpRequestedAt)) return;
-		// The request stays until the block is reached: the chat may still remount while it opens.
-		jumpInFlight.current = true;
-		jumpToCoordinatorMessage(
-			coordinatorTarget,
-			() => useCoordinatorJumpStore.getState().clear(),
-			() => { jumpInFlight.current = false; },
-		);
-	}, [coordinatorTarget, jumpRequestedAt, jumpToCoordinatorMessage]);
+		startCoordinatorJump(coordinatorTarget);
+	}, [coordinatorTarget, jumpRequestedAt, startCoordinatorJump]);
 	// A request that finds nothing waiting once the chat and its notifications have loaded is spent: left
 	// armed it would pull a reader scrolled up when a new message arrives within its lifetime.
 	useEffect(() => {
@@ -4332,7 +4343,7 @@ export function Timeline({
 					type="button"
 					size="sm"
 					variant="outline"
-					onClick={() => jumpToCoordinatorMessage(coordinatorTarget)}
+					onClick={() => startCoordinatorJump(coordinatorTarget)}
 					className="absolute top-3 left-1/2 -translate-x-1/2 gap-1.5 border-border-strong bg-raised text-foreground shadow-sm hover:bg-surface dark:bg-raised dark:hover:bg-surface"
 				>
 					{coordinatorTargetAbove ? <ArrowUp aria-hidden="true" className="size-3.5" /> : <ArrowDown aria-hidden="true" className="size-3.5" />}

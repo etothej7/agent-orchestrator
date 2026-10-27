@@ -15,10 +15,12 @@ export interface CoordinatorUnread {
 	/** Unread results/stops and open questions that are not in the viewport, oldest first. */
 	outOfView: readonly string[];
 	/**
-	 * Unread results/stops and open questions the daemon still counts that are OLDER than the loaded chat
-	 * window (their message is not in the loaded pages). `targetMessageId` is the oldest of them.
+	 * Message ids of unread results/stops and open questions of THIS conversation's session that the daemon
+	 * still counts but that are OLDER than the loaded chat window (their message is not in the loaded pages),
+	 * oldest first. Unread results come from the loaded notification pages (the first 100), so this can read
+	 * lower than the Dock badge when more are unread than that; open questions come from the complete list.
 	 */
-	older: { count: number; targetMessageId?: string };
+	older: { ids: readonly string[] };
 	/** The notification state needed to judge "nothing is waiting" has loaded. */
 	settled: boolean;
 }
@@ -34,6 +36,8 @@ export function useReadCoordinatorTells(
 	onScreen: boolean,
 	items: readonly ConversationItem[] | undefined,
 	askStatusOf?: (message: ConversationMessage) => CoordinatorAskStatus,
+	/** The session whose chat this is: only its own notifications can have a message in it. */
+	sessionId?: string,
 ): CoordinatorUnread {
 	const history = useNotificationsQuery("all", enabled);
 	const markRead = useMarkAllNotificationsReadMutation();
@@ -104,18 +108,24 @@ export function useReadCoordinatorTells(
 	// Server-side waiting items whose message is older than the loaded window: unread tells in the loaded
 	// notification history and the daemon's complete list of open questions.
 	const older = useMemo(() => {
-		if (!enabled || !items) return { count: 0 } as CoordinatorUnread["older"];
+		if (!enabled || !items || !sessionId) return { ids: [] } as CoordinatorUnread["older"];
 		const loaded = new Set(items.filter((item) => item.kind === "message").map((item) => item.id));
 		const unreadTells = (history.data?.pages.flatMap((page) => page.notifications) ?? []).filter(
 			(notification) => notification.type === "coordinator_message" && (notification.purpose === "verified_result" || notification.purpose === "stopped_work") && isUnreadCoordinatorTell(notification),
 		);
 		const candidates = new Map<string, NotificationDTO>();
 		for (const notification of [...unreadTells, ...(openAsks.data ?? [])]) {
-			if (notification.messageId && !loaded.has(notification.messageId)) candidates.set(notification.messageId, notification);
+			// A repo manager's chat has no coordinator blocks: only notifications addressed to this session count.
+			if (notification.sessionId === sessionId && notification.messageId && !loaded.has(notification.messageId)) {
+				candidates.set(notification.messageId, notification);
+			}
 		}
-		const oldest = [...candidates.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0];
-		return { count: candidates.size, targetMessageId: oldest?.messageId };
-	}, [enabled, history.data, items, openAsks.data]);
+		const stamp = (notification: NotificationDTO) => Date.parse(notification.createdAt) || 0;
+		const ids = [...candidates.values()]
+			.sort((a, b) => stamp(a) - stamp(b) || (a.messageId ?? "").localeCompare(b.messageId ?? ""))
+			.map((notification) => notification.messageId as string);
+		return { ids };
+	}, [enabled, history.data, items, openAsks.data, sessionId]);
 	const settled = enabled && history.isSuccess && (openAsks.isSuccess || openAsks.isError) && items !== undefined;
 	return { reportVisible, outOfView, older, settled };
 }

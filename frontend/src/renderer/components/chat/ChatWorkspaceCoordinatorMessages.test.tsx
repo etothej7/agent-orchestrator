@@ -196,7 +196,7 @@ describe("jumping to what waits for Ed", () => {
 	const renderWith = (outOfView: string[], reportVisible = vi.fn(), unread: Partial<CoordinatorUnread> = {}) =>
 		render(
 			<TooltipProvider>
-				<ChatWorkspace snapshot={snap()} coordinatorUnread={{ outOfView, reportVisible, older: { count: 0 }, settled: true, ...unread }} />
+				<ChatWorkspace snapshot={snap()} coordinatorUnread={{ outOfView, reportVisible, older: { ids: [] }, settled: true, ...unread }} />
 			</TooltipProvider>,
 		);
 	afterEach(() => {
@@ -262,7 +262,7 @@ describe("jumping to what waits for Ed", () => {
 	// shows, says so, and loads earlier messages until it can jump to the oldest one.
 	it("offers older waiting messages that are not loaded, and pages back to jump to the oldest", async () => {
 		const onLoadOlder = vi.fn();
-		const unread: CoordinatorUnread = { outOfView: [], reportVisible: vi.fn(), older: { count: 2, targetMessageId: "tell" }, settled: true };
+		const unread: CoordinatorUnread = { outOfView: [], reportVisible: vi.fn(), older: { ids: ["tell", "older-2"] }, settled: true };
 		const without = snapshot([message("u2", "ed2", 30, "user", "human", "Later", "human")], [turn("ed2", 9, "completed", "human")]);
 		const rendered = render(
 			<TooltipProvider><ChatWorkspace snapshot={without} coordinatorUnread={unread} hasOlder onLoadOlder={onLoadOlder} /></TooltipProvider>,
@@ -272,15 +272,22 @@ describe("jumping to what waits for Ed", () => {
 		await waitFor(() => expect(onLoadOlder).toHaveBeenCalled());
 		// The earlier page arrives: the block is loaded and the jump lands on it.
 		rendered.rerender(
-			<TooltipProvider><ChatWorkspace snapshot={snap()} coordinatorUnread={{ ...unread, older: { count: 0 }, outOfView: ["tell"] }} hasOlder onLoadOlder={onLoadOlder} /></TooltipProvider>,
+			<TooltipProvider><ChatWorkspace snapshot={snap()} coordinatorUnread={{ ...unread, older: { ids: [] }, outOfView: ["tell"] }} hasOlder onLoadOlder={onLoadOlder} /></TooltipProvider>,
 		);
 		const block = await screen.findByRole("region", { name: "From your coordinator: Verified result" });
 		await waitFor(() => expect(block).toHaveClass("ring-2"));
 	});
 
 	it("counts loaded and older waiting messages together", () => {
-		renderWith(["tell"], vi.fn(), { older: { count: 2, targetMessageId: "decision-old" } });
+		renderWith(["tell"], vi.fn(), { older: { ids: ["decision-old", "older-2"] } });
 		expect(screen.getByRole("button", { name: "3 messages from your coordinator" })).toBeInTheDocument();
+	});
+
+	it("stops offering a message a finished jump could not find", async () => {
+		// Nothing older to load and the message is not in the transcript: the jump ends, the pill goes.
+		renderWith([], vi.fn(), { older: { ids: ["gone"] } });
+		await userEvent.click(screen.getByRole("button", { name: "1 older message from your coordinator" }));
+		await waitFor(() => expect(screen.queryByRole("button", { name: /from your coordinator/ })).not.toBeInTheDocument());
 	});
 
 	// (a) A block taller than the viewport can never be a quarter in view.
