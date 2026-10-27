@@ -3,6 +3,7 @@ package mobilebridge
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,11 @@ func execTailscale(ctx context.Context, args ...string) ([]byte, error) {
 	return aoprocess.CommandContext(ctx, tailscaleBinary(), args...).Output()
 }
 
+// magicDNSName is the shape of a node's MagicDNS name: DNS labels under
+// <tailnet>.ts.net. It rejects ports, paths, userinfo and whitespace, since the
+// name is later embedded in an https URL and a pairing QR.
+var magicDNSName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\.ts\.net$`)
+
 // TailscaleInfo is what the local daemon can tell us about this node.
 type TailscaleInfo struct {
 	// Name is the MagicDNS name with no trailing dot, or "" when unavailable.
@@ -33,7 +39,7 @@ type TailscaleInfo struct {
 
 // QueryTailscale reports this node's MagicDNS name and certificate
 // availability. Every failure — missing binary, non-zero exit, malformed
-// output — yields the zero value; callers treat an empty Name as
+// output, a name that is not a MagicDNS name — yields the zero value; callers treat an empty Name as
 // "secure pairing unavailable" rather than as an error to surface.
 func QueryTailscale(ctx context.Context) TailscaleInfo {
 	return queryTailscale(ctx, execTailscale)
@@ -53,9 +59,17 @@ func queryTailscale(ctx context.Context, run TailscaleRunner) TailscaleInfo {
 	if err := json.Unmarshal(out, &parsed); err != nil || parsed.Self == nil {
 		return TailscaleInfo{}
 	}
-	name := strings.TrimSuffix(parsed.Self.DNSName, ".")
-	if name == "" {
+	name := strings.ToLower(strings.TrimSuffix(parsed.Self.DNSName, "."))
+	if !magicDNSName.MatchString(name) {
 		return TailscaleInfo{}
 	}
-	return TailscaleInfo{Name: name, CertsEnabled: len(parsed.CertDomains) > 0}
+	// Certificates must be available for THIS node's name, not merely exist for
+	// some other domain on the tailnet.
+	certs := false
+	for _, d := range parsed.CertDomains {
+		if strings.ToLower(strings.TrimSuffix(d, ".")) == name {
+			certs = true
+		}
+	}
+	return TailscaleInfo{Name: name, CertsEnabled: certs}
 }
