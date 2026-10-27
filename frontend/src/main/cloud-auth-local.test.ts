@@ -28,6 +28,7 @@ vi.mock("electron", () => ({
 			return mocks.isPackaged;
 		},
 		setAsDefaultProtocolClient: vi.fn(),
+		getVersion: () => "0.14.5",
 	},
 	dialog: { showMessageBox: vi.fn() },
 	ipcMain: { handle: vi.fn() },

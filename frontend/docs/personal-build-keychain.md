@@ -12,6 +12,11 @@ keychain (`main/keychain-policy.ts`, applied at `main.ts` before the app is read
   (`~/.ao/electron` is mode 0700, readable only by the Mac user), not by the keychain. They are not strongly
   encrypted, so programs running as the same Mac user could read them. Nothing is stored in that place today (no
   `cloud-auth.bin`; every Browser-panel partition is temporary).
+* **That stays true on purpose:** while the stand-in key is in use in a packaged build, the cloud sign-in
+  (`main/cloud-auth.ts`, which would otherwise write `cloud-auth.bin` with Electron's safeStorage) refuses to persist
+  anything. The sign-in lives in memory for that run only, so after an AO restart the person signs in again.
+  `safeStorageUsesStandInKey` in `keychain-policy.ts` decides this; unpackaged dev runs are unchanged. Switching back
+  to the real keychain (below) makes cloud sign-in persist again, in the same change.
 * Not affected: the agent tools' own sign-ins (for example Claude Code's), which they read from the keychain
   themselves, and the daemon's read of Claude Code's login through the macOS `security` tool. Those did not prompt
   before and do not now.

@@ -1,5 +1,6 @@
 import { createWorkOS, type User } from "@workos-inc/node";
 import { app, dialog, ipcMain, safeStorage, shell } from "electron";
+import { safeStorageUsesStandInKey } from "./keychain-policy";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -157,6 +158,9 @@ function storePath(dataDir: string): string {
 }
 
 function protectedStorageAvailable(): boolean {
+  // A personal build keys safeStorage with Chromium's fixed stand-in key (no keychain): that is obfuscation, not
+  // protection, so a credential must never be persisted with it. The sign-in stays in memory for this run.
+  if (safeStorageUsesStandInKey({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform })) return false;
   if (!safeStorage.isEncryptionAvailable()) return false;
   if (process.platform !== "linux") return true;
   const backend = safeStorage.getSelectedStorageBackend();

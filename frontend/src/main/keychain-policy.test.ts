@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { shouldUseMockKeychain } from "./keychain-policy";
+import { safeStorageUsesStandInKey, shouldUseMockKeychain } from "./keychain-policy";
 
 const srcDir = path.resolve(__dirname, "..");
 
@@ -26,6 +26,17 @@ describe("shouldUseMockKeychain", () => {
 			expect(shouldUseMockKeychain(input)).toBe(expected);
 		});
 	}
+});
+
+describe("safeStorageUsesStandInKey", () => {
+	it("is true only for a shipped build that runs on the stand-in key (a packaged personal build on macOS)", () => {
+		expect(safeStorageUsesStandInKey({ isPackaged: true, version: "0.14.5-ed.7.2", platform: "darwin" })).toBe(true);
+		expect(safeStorageUsesStandInKey({ isPackaged: true, version: "0.14.5", platform: "darwin" })).toBe(false);
+		expect(safeStorageUsesStandInKey({ isPackaged: true, version: "0.14.5-ed.7.2", platform: "linux" })).toBe(false);
+		expect(safeStorageUsesStandInKey({ isPackaged: true, version: "0.14.5-ed.7.2", platform: "win32" })).toBe(false);
+		// an unpackaged dev run also uses the stand-in key but is not a shipped build: its behaviour is unchanged
+		expect(safeStorageUsesStandInKey({ isPackaged: false, version: "0.14.5", platform: "darwin" })).toBe(false);
+	});
 });
 
 describe("how main applies it", () => {

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   encryptString: vi.fn((value: string) => Buffer.from(value, "utf8")),
   encryptionAvailable: true,
   selectedStorageBackend: "gnome_libsecret",
+  appVersion: "0.14.5",
   getAuthorizationUrlWithPKCE: vi.fn(),
   ipcHandle: vi.fn(),
   notifyRenderers: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("electron", () => ({
     // These tests exercise the packaged deep-link (ao-app://) sign-in flow;
     // unpackaged builds default to a loopback redirect instead.
     isPackaged: true,
+    getVersion: () => mocks.appVersion,
   },
   dialog: { showMessageBox: mocks.showMessageBox },
   ipcMain: { handle: mocks.ipcHandle },
@@ -78,6 +80,7 @@ describe("native WorkOS authentication", () => {
     vi.clearAllMocks();
     mocks.encryptionAvailable = true;
     mocks.selectedStorageBackend = "gnome_libsecret";
+    mocks.appVersion = "0.14.5";
     dataDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-auth-"));
     installCloudIPC(() => dataDir, mocks.notifyRenderers);
     mocks.getAuthorizationUrlWithPKCE.mockResolvedValue({
@@ -286,6 +289,36 @@ describe("native WorkOS authentication", () => {
     await expect(getCloudSession(dataDir)).resolves.toMatchObject({
       user: { email: "person@example.com" },
     });
+    await signOutCloud(dataDir);
+  });
+
+  it("never persists the auth store in a personal build, whose stand-in keychain key would only obfuscate it", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    mocks.appVersion = "0.14.5-ed.7.2";
+    await beginCloudSignIn(dataDir);
+    const account = await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+
+    expect(account?.user.email).toBe("person@example.com");
+    expect(mocks.encryptString).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(dataDir, "cloud-auth.bin")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(getCloudSession(dataDir)).resolves.toMatchObject({
+      user: { email: "person@example.com" },
+    });
+    await signOutCloud(dataDir);
+  });
+
+  it("still persists in a stock packaged build on macOS (real keychain key)", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    mocks.appVersion = "0.14.5";
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink("ao-app://callback?code=code_123&state=state_123", dataDir);
+    expect(mocks.encryptString).toHaveBeenCalled();
+    await expect(readFile(path.join(dataDir, "cloud-auth.bin"))).resolves.toBeInstanceOf(Buffer);
     await signOutCloud(dataDir);
   });
 
