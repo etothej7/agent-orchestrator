@@ -97,7 +97,18 @@ for line in sys.stdin:
         out({})
 '''
 
-SHIM = '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.0.0; exit 0; fi\nexec "$AO_SCRATCH_PYTHON" "$AO_SCRATCH_FAKE_ACP" "$@"\n'
+# `opencode session export <id> --standalone` is the adapter's saved-history probe: present unless the fixture says the
+# conversation is gone. Without it the probe reads "unproven" and idle sessions are resumed instead of parked.
+SHIM = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo 2.0.0; exit 0; fi
+if [ "$1" = "session" ] && [ "$2" = "export" ]; then
+  id="$3"
+  if [ -e "$AO_SCRATCH_ROOT/fail-load/${id##*:}" ]; then exit 1; fi
+  printf '{"info":{"id":"%s"}}\\n' "$id"
+  exit 0
+fi
+exec "$AO_SCRATCH_PYTHON" "$AO_SCRATCH_FAKE_ACP" "$@"
+"""
 
 
 def tree_fingerprint(path):
@@ -393,6 +404,19 @@ def failure_notice_gate(notices, failed, others, after, timeline):
     # A host may exist briefly while the failing resume attempt runs; what matters is that it ends exited with no host.
     down = (after['sessions'].get(failed['sid'], {}).get('activity') == 'exited') and not (timeline and timeline[-1]['hosts'].get(failed['sid']))
     return gate(len(mine) == 1 and not stray and down, noticesForFailed=len(mine), strayNotices=len(stray), failedStaysExited=down)
+
+
+def failed_no_fresh_gate(before, after, shim, restart_at, sid):
+    """The session whose history is gone must not get a fresh conversation, even one that then died."""
+    old, new = before['sessions'].get(sid, {}), after['sessions'].get(sid, {})
+    issues = []
+    if old.get('providerConversation') != new.get('providerConversation'):
+        issues.append('conversation_changed')
+    cwd = old.get('workspace')
+    fresh = [c for c in shim if c['t'] >= restart_at and c['method'] == 'session/new' and c.get('cwd') == cwd]
+    if fresh:
+        issues.append(f'fresh_session_new={len(fresh)}')
+    return gate(not issues, issues=issues, fixtureChecks=bool(shim))
 
 
 def codex_settle_gate(timeline, after, notices, sid, restart_at, bound, names=()):
@@ -863,9 +887,6 @@ class Cycle(A.Harness):
         if parked:
             gates['idle_sessions_hibernated'] = hibernate_gate(self.timeline, pre_wake, parked)
             gates['idle_sessions_hibernated']['intentStates'] = {sid: intents.get(sid) for sid in parked}
-            if self.args.mode == 'mechanics':
-                gates['idle_sessions_hibernated']['fixtureNote'] = ('parking needs the adapter history probe to prove the saved conversation exists; '
-                                                                    'the fixture provider leaves no saved state, so a daemon that resumes instead is behaving per design')
             gates['hibernated_sessions_wake_on_message'] = wake_gate(self.wake)
         if excluded:
             gates['excluded_sessions_stay_down'] = stays_down_gate(self.timeline, before, after, role('stopped', 'terminated'), intents=intents)
@@ -890,6 +911,7 @@ class Cycle(A.Harness):
             gates['one_stopped_work_notice_on_resume_failure'] = failure_notice_gate(
                 notices, {'sid': r[failed], 'names': names(failed)}, [names('wkr'), [r['coord']]], after, self.timeline)
             gates['other_sessions_still_resume'] = active_resume_gate(self.timeline, before, after, role('coord', 'wkr'))
+            gates['failed_session_never_started_fresh'] = failed_no_fresh_gate(before, after, shim, restart_at, r[failed])
         if self.spec.get('flap'):
             gates['flap_exceeded_boot_storm_threshold'] = gate(self.starts > 3, daemonStarts=self.starts)  # harness precondition
             gates['flap_no_duplicate_resumes'] = duplicate_gate(self.timeline, after, resumed)

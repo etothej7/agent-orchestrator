@@ -265,6 +265,34 @@ class DuplicatesNoticesCodex(unittest.TestCase):
         self.assertEqual(R.codex_settle_gate([sample(1, [])], after, [], 'c', 0, 120)['outcome'], 'neither')
 
 
+class FailedFreshAndShim(unittest.TestCase):
+    def test_failed_session_fresh_start_is_caught(self):
+        before = snap({'f': view(workspace='/w/f')})
+        after = snap({'f': view(workspace='/w/f')})
+        self.assertTrue(R.failed_no_fresh_gate(before, after, [{'t': 2, 'method': 'session/load', 'cwd': '/w/f'}], 0, 'f')['passed'])
+        fresh = [{'t': 2, 'method': 'session/new', 'cwd': '/w/f'}]
+        self.assertFalse(R.failed_no_fresh_gate(before, after, fresh, 0, 'f')['passed'])
+        self.assertTrue(R.failed_no_fresh_gate(before, after, [{'t': -1, 'method': 'session/new', 'cwd': '/w/f'}], 0, 'f')['passed'])
+        self.assertTrue(R.failed_no_fresh_gate(before, after, [{'t': 2, 'method': 'session/new', 'cwd': '/w/other'}], 0, 'f')['passed'])
+        changed = snap({'f': view(workspace='/w/f', providerConversation='ao-harness:x:new')})
+        self.assertFalse(R.failed_no_fresh_gate(before, changed, [], 0, 'f')['passed'])
+
+    def test_shim_answers_the_history_probe(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / 'opencode'
+            shim.write_text(R.SHIM)
+            shim.chmod(0o755)
+            (Path(tmp) / 'fail-load').mkdir()
+            env = {**os.environ, 'AO_SCRATCH_ROOT': tmp}
+            run = lambda *a: subprocess.run([str(shim), *a], env=env, capture_output=True, text=True)  # noqa: E731
+            self.assertEqual(run('--version').stdout.strip(), '2.0.0')
+            ok = run('session', 'export', 'ao-harness:opencode-v2:ar-1', '--standalone')
+            self.assertEqual(json.loads(ok.stdout), {'info': {'id': 'ao-harness:opencode-v2:ar-1'}})
+            (Path(tmp) / 'fail-load' / 'ar-1').write_text('x')
+            self.assertEqual(run('session', 'export', 'ao-harness:opencode-v2:ar-1', '--standalone').returncode, 1)
+
+
 class Plumbing(unittest.TestCase):
     def test_provider_sid_and_host_regex(self):
         self.assertEqual(R.provider_sid('ao-harness:opencode-v2:ar-123'), 'ar-123')
