@@ -136,6 +136,9 @@ func (w *Workspace) preserveForRemoval(ctx context.Context, repo, dir, path stri
 	if err := checkPreservable(dir, entries); err != nil {
 		return report, fmt.Errorf("cannot preserve %q: %w", path, preserveRefusal(err))
 	}
+	if err := w.checkSubmodules(ctx, dir); err != nil {
+		return report, fmt.Errorf("cannot preserve %q: %w", path, preserveRefusal(err))
+	}
 	head := w.resolveHead(ctx, dir)
 	unreachable := false
 	if head != "" && (rec.Detached || rec.Branch == "") {
@@ -694,6 +697,73 @@ func checkPreservable(dir string, entries []dirtyEntry) error {
 	return nil
 }
 
+// checkSubmodules refuses a worktree whose submodules hold work a backup commit
+// cannot carry: the superproject's backup stores only each submodule's recorded
+// commit (a gitlink), never the files inside it. A submodule with modified,
+// staged or untracked files, or one that keeps its git directory inside the
+// worktree (so its commits would go with the directory), is named in the error.
+// An uninitialised submodule has nothing on disk to lose.
+func (w *Workspace) checkSubmodules(ctx context.Context, dir string) error {
+	paths, err := w.gitlinkPaths(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("cannot list the submodules of %q: %w", dir, err)
+	}
+	for _, path := range paths {
+		sub := filepath.Join(dir, path)
+		gitDir, statErr := os.Lstat(filepath.Join(sub, ".git"))
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue // not initialised
+			}
+			return fmt.Errorf("cannot inspect submodule %s: %w", path, statErr)
+		}
+		if gitDir.IsDir() {
+			return fmt.Errorf("submodule %s keeps its git directory inside the worktree, so removing it would delete the submodule's commits", path)
+		}
+		status, statusErr := w.run(ctx, w.binary, "-C", sub, "status", "--porcelain=v1", "--untracked-files=all")
+		if statusErr != nil {
+			return fmt.Errorf("cannot read the git status of submodule %s: %w", path, statusErr)
+		}
+		if strings.TrimSpace(string(status)) != "" {
+			return fmt.Errorf("submodule %s has uncommitted or untracked files that a backup commit cannot hold", path)
+		}
+	}
+	return nil
+}
+
+// gitlinkPaths lists the submodule (gitlink) paths recorded in dir's index.
+func (w *Workspace) gitlinkPaths(ctx context.Context, dir string) ([]string, error) {
+	out, err := w.run(ctx, w.binary, "-C", dir, "ls-files", "-s", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, record := range strings.Split(string(out), "\x00") {
+		meta, path, found := strings.Cut(record, "\t")
+		if found && strings.HasPrefix(meta, "160000 ") {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+// hasInitializedSubmodule reports whether dir has a checked-out submodule (or git
+// could not say, which is treated the same). Such a worktree is preserved and
+// removed in place: a submodule's .git file holds a relative path, so renaming the
+// worktree aside breaks `git status` inside it and with it the preservation.
+func (w *Workspace) hasInitializedSubmodule(ctx context.Context, dir string) bool {
+	paths, err := w.gitlinkPaths(ctx, dir)
+	if err != nil {
+		return true
+	}
+	for _, path := range paths {
+		if _, statErr := os.Lstat(filepath.Join(dir, path, ".git")); statErr == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // PreflightRemoval says, without changing anything, whether ForceDestroy could
 // keep this worktree's work safe by backing it up. A caller that is about to
 // terminate a session before force-removing its worktree (RetireForReplacement)
@@ -736,6 +806,9 @@ func (w *Workspace) PreflightRemoval(ctx context.Context, info ports.WorkspaceIn
 		return fmt.Errorf("cannot read the git status of %q: %w", path, preserveRefusal(err))
 	}
 	if err := checkPreservable(path, entries); err != nil {
+		return fmt.Errorf("worktree %q has work that cannot be backed up: %w", path, preserveRefusal(err))
+	}
+	if err := w.checkSubmodules(ctx, path); err != nil {
 		return fmt.Errorf("worktree %q has work that cannot be backed up: %w", path, preserveRefusal(err))
 	}
 	// Secrets: only prove the private archive location is writable.

@@ -37,6 +37,9 @@ type stubRuntime struct {
 	// that all other tests relied on.
 	aliveByHandle    map[string]bool
 	destroyedHandles []string
+	// onDestroy, when set, runs inside Destroy (tests use it to change the
+	// session's worktree between a retirement's preflight and its removal).
+	onDestroy func()
 }
 
 func (s *stubRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
@@ -46,6 +49,9 @@ func (s *stubRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.
 func (s *stubRuntime) Destroy(_ context.Context, h ports.RuntimeHandle) error {
 	s.destroyed++
 	s.destroyedHandles = append(s.destroyedHandles, h.ID)
+	if s.onDestroy != nil {
+		s.onDestroy()
+	}
 	return nil
 }
 func (s *stubRuntime) IsAlive(_ context.Context, h ports.RuntimeHandle) (bool, error) {

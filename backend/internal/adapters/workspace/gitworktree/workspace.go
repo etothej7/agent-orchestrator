@@ -1015,7 +1015,13 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	// rename the directory out of the way, drop the registration, unlink in the
 	// background. This runs on daemon shutdown and orchestrator replacement,
 	// which stalled on the same unlink that used to stall a kill.
-	if discarded, moved := w.discard(path); moved {
+	// A worktree with a checked-out submodule is preserved and removed in place
+	// (see hasInitializedSubmodule): renaming it aside would break git inside it.
+	discarded, moved := "", false
+	if !w.hasInitializedSubmodule(ctx, path) {
+		discarded, moved = w.discard(path)
+	}
+	if moved {
 		// Preserve what is about to be unlinked. This runs on the directory after
 		// the rename (the same race-free ordering Destroy uses), so it covers
 		// anything written since the caller's own capture. A worktree that cannot

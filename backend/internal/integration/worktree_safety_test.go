@@ -408,3 +408,50 @@ func TestRetireForReplacementRefusesBeforeTerminatingAnUnpreservableWorktree(t *
 		t.Fatalf("worktree no longer registered: %s", listing)
 	}
 }
+
+// The preflight passes, then something changes before the removal (here the agent's
+// runtime teardown leaves a nested git repository behind). RetireForReplacement must
+// still succeed: the worktree is kept aside whole, the registration released, and the
+// replacement can claim the branch.
+func TestRetireForReplacementKeepsTheWorktreeAsideWhenItBecomesUnpreservableLate(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	rec, _, _ := h.store.GetSession(ctx, id)
+	branch := rec.Metadata.Branch
+	h.runtime.onDestroy = func() {
+		nested := filepath.Join(worktree, "vendor", "tool")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			h.t.Fatal(err)
+		}
+		for _, args := range [][]string{{"init"}, {"-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "--allow-empty", "-m", "nested"}} {
+			if out, err := exec.Command(h.git, append([]string{"-C", nested}, args...)...).CombinedOutput(); err != nil {
+				h.t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(nested, "work.txt"), []byte("late nested work\n"), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	if err := h.manager.PreflightRetireForReplacement(ctx, id); err != nil {
+		t.Fatalf("preflight must pass before the late change: %v", err)
+	}
+	if err := h.manager.RetireForReplacement(ctx, id); err != nil {
+		t.Fatalf("RetireForReplacement must succeed by keeping the worktree aside: %v", err)
+	}
+	rec, _, _ = h.store.GetSession(ctx, id)
+	if !rec.IsTerminated {
+		t.Fatal("the retired session must be terminated")
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original worktree path should be free: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(worktree+".kept", "vendor", "tool", "work.txt")); err != nil || string(got) != "late nested work\n" {
+		t.Fatalf("kept worktree lost its content: %v %q", err, got)
+	}
+	// The replacement can claim the same branch.
+	replacement := filepath.Join(filepath.Dir(worktree), "replacement")
+	if out, err := exec.Command(h.git, "-C", h.repo, "worktree", "add", replacement, branch).CombinedOutput(); err != nil {
+		t.Fatalf("the branch %s is still held: %v\n%s", branch, err, out)
+	}
+}

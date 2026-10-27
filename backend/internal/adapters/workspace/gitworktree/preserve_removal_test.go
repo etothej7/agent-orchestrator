@@ -764,3 +764,66 @@ func TestDestroyRefusesACleanWorktreeWithAnUnreadableSecretAndSaysHowToProceed(t
 		t.Fatalf("a failed archive left a partial copy behind: %v", entries)
 	}
 }
+
+// A submodule's own uncommitted files are not in the superproject's backup commit
+// (it stores only the recorded commit), so verification would pass while work is
+// lost. A dirty submodule is therefore refused up front and kept aside whole.
+func (f *removalFixture) addSubmodule() string {
+	f.t.Helper()
+	sub := filepath.Join(filepath.Dir(f.repo), "submodule-src")
+	run(f.t, f.git, "init", sub)
+	runGit(f.t, f.git, sub, "config", "user.email", "ao@example.com")
+	runGit(f.t, f.git, sub, "config", "user.name", "Ao")
+	if err := os.WriteFile(filepath.Join(sub, "lib.txt"), []byte("lib\n"), 0o644); err != nil {
+		f.t.Fatalf("write: %v", err)
+	}
+	runGit(f.t, f.git, sub, "add", "lib.txt")
+	runGit(f.t, f.git, sub, "commit", "-m", "lib")
+	runGit(f.t, f.git, f.info.Path, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendor/sub")
+	runGit(f.t, f.git, f.info.Path, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "add submodule")
+	return filepath.Join(f.info.Path, "vendor", "sub")
+}
+
+func TestPreflightAndForceDestroyRefuseADirtySubmodule(t *testing.T) {
+	f := newRemovalFixture(t, "sess-submodule")
+	sub := f.addSubmodule()
+	if err := os.WriteFile(filepath.Join(sub, "lib.txt"), []byte("modified inside the submodule\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "new.txt"), []byte("untracked inside the submodule\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	err := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "submodule vendor/sub") {
+		t.Fatalf("PreflightRemoval = %v, want a refusal naming submodule vendor/sub", err)
+	}
+	if err := f.force(); err != nil {
+		t.Fatalf("ForceDestroy must keep the directory aside, not fail: %v", err)
+	}
+	kept := f.keptAside(".kept")
+	for name, want := range map[string]string{"lib.txt": "modified inside the submodule\n", "new.txt": "untracked inside the submodule\n"} {
+		if got, _ := os.ReadFile(filepath.Join(kept, "vendor", "sub", name)); string(got) != want {
+			t.Fatalf("submodule file %s lost: %q", name, got)
+		}
+	}
+	if refs := f.backupRefs(); len(refs) != 0 {
+		t.Fatalf("a refused submodule worktree must not produce a backup that claims to hold it: %v", refs)
+	}
+}
+
+func TestACleanSubmoduleDoesNotBlockRemoval(t *testing.T) {
+	f := newRemovalFixture(t, "sess-submodule-clean")
+	f.addSubmodule()
+	if err := f.ws.PreflightRemoval(context.Background(), f.info); err != nil {
+		t.Fatalf("a clean submodule must not refuse the preflight: %v", err)
+	}
+	if err := f.force(); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	if !f.removed() {
+		t.Fatal("a worktree with a clean submodule should be removed")
+	}
+	if _, err := os.Stat(f.info.Path + ".kept"); err == nil {
+		t.Fatalf("a clean submodule must not force the directory to be kept: %s", f.logs.String())
+	}
+}

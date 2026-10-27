@@ -1443,7 +1443,8 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 func replacementNotPreservable(err error) error {
 	if errors.Is(err, ports.ErrWorkspaceDirty) {
 		return apierr.Conflict("ORCHESTRATOR_WORKTREE_NOT_PRESERVABLE",
-			"The existing orchestrator was left running because its worktree has work that cannot be safely backed up: "+err.Error(), nil)
+			"The existing orchestrator was left running because its worktree has work that cannot be safely backed up: "+err.Error()+
+				". To proceed, commit or push that work, or move the named nested repository, submodule changes or large files out of the worktree, then retry once; this refusal repeats until the worktree changes.", nil)
 	}
 	return toAPIError(err)
 }
