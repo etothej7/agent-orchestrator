@@ -75,6 +75,8 @@ type fakeStore struct {
 	protected        map[domain.SessionID]bool
 	policyUnreadable bool
 	policies         map[domain.SessionID]domain.AutoResumePolicy
+	// parkRevisionBump makes the next park see a row someone else just changed.
+	parkRevisionBump bool
 	intents          map[domain.SessionID]domain.ResumeIntent
 	interrupted      map[domain.SessionID][]domain.InterruptedTurn
 	stories          []domain.Story
@@ -103,6 +105,24 @@ func (s *fakeStore) SetAutoResumePolicy(_ context.Context, id domain.SessionID, 
 	}
 	s.protected[id] = !policy.Allows()
 	return nil
+}
+
+// ParkSessionHibernated is the optional sessionParker part of the store: the revision
+// check and the idle-plus-marker write, like the real one.
+func (s *fakeStore) ParkSessionHibernated(_ context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
+	rec, ok := s.sessions[id]
+	if s.parkRevisionBump {
+		rec.Revision++
+		s.sessions[id] = rec
+	}
+	if !ok || rec.Revision != expectedRevision || rec.IsTerminated || rec.HibernatedAt != nil {
+		return false, nil
+	}
+	rec.HibernatedAt = &at
+	rec.Activity.State = domain.ActivityIdle
+	rec.Revision++
+	s.sessions[id] = rec
+	return true, nil
 }
 
 // StopReason is the optional resumeCaptureStore part of the store.

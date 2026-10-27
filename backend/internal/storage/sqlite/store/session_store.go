@@ -380,6 +380,23 @@ func (s *Store) SetSessionHibernated(ctx context.Context, id domain.SessionID, e
 	return rows > 0, nil
 }
 
+// ParkSessionHibernated puts an exited Chat session to sleep as idle in one write,
+// if the caller's session snapshot is still current. It reports false when the row
+// changed first (the caller retries) or is no longer a live Chat session.
+func (s *Store) ParkSessionHibernated(ctx context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.ParkSessionHibernated(ctx, gen.ParkSessionHibernatedParams{
+		HibernatedAt:     sql.NullTime{Time: at, Valid: true},
+		ID:               id,
+		ExpectedRevision: expectedRevision,
+	})
+	if err != nil {
+		return false, fmt.Errorf("park session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // MarkHarnessSessionsStale marks the live launches of harness as running a
 // release that version replaced, and returns how many it marked.
 func (s *Store) MarkHarnessSessionsStale(ctx context.Context, harness domain.AgentHarness, version string, at time.Time) (int64, error) {

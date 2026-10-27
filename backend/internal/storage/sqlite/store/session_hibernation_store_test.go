@@ -169,3 +169,59 @@ func TestSessionHibernationMarkerEmitsOneChangePerTransition(t *testing.T) {
 		t.Fatalf("wake event payload = %+v, %v", payload, err)
 	}
 }
+
+// Parking replaces an exited row with the shape the idle sweeper leaves: idle plus
+// the sleep marker, in one revision-checked write.
+func TestParkSessionHibernatedWritesIdleAndTheMarkerTogether(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.Mode, rec.Activity.State, rec.Metadata.ProviderConversationID = domain.SessionModeChat, domain.ActivityExited, "native-id"
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+
+	// A stale revision parks nothing.
+	if applied, err := s.ParkSessionHibernated(ctx, created.ID, created.Revision-1, at); err != nil || applied {
+		t.Fatalf("park with a stale revision = %v, %v; want not applied", applied, err)
+	}
+	if got, _, _ := s.GetSession(ctx, created.ID); got.HibernatedAt != nil || got.Activity.State != domain.ActivityExited {
+		t.Fatalf("a refused park changed the row: %+v", got)
+	}
+
+	if applied, err := s.ParkSessionHibernated(ctx, created.ID, created.Revision, at); err != nil || !applied {
+		t.Fatalf("park = %v, %v; want applied", applied, err)
+	}
+	got, _, _ := s.GetSession(ctx, created.ID)
+	if got.HibernatedAt == nil || !got.HibernatedAt.Equal(at) || got.Activity.State != domain.ActivityIdle {
+		t.Fatalf("parked row = hibernated %v, activity %q; want the marker and idle together", got.HibernatedAt, got.Activity.State)
+	}
+	// Parked twice is a no-op: the marker is already there.
+	if applied, err := s.ParkSessionHibernated(ctx, created.ID, got.Revision, at.Add(time.Minute)); err != nil || applied {
+		t.Fatalf("second park = %v, %v; want not applied", applied, err)
+	}
+}
+
+func TestParkSessionHibernatedRefusesTerminatedAndTerminalSessions(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedProject(t, s, "mer")
+	for name, change := range map[string]func(*domain.SessionRecord){
+		"terminated": func(r *domain.SessionRecord) { r.IsTerminated = true },
+		"tui":        func(r *domain.SessionRecord) { r.Mode = domain.SessionModeTUI },
+	} {
+		rec := sampleRecord("mer")
+		rec.Mode, rec.Activity.State = domain.SessionModeChat, domain.ActivityExited
+		change(&rec)
+		created, err := s.CreateSession(ctx, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := s.ParkSessionHibernated(ctx, created.ID, created.Revision, time.Now().UTC()); err != nil || applied {
+			t.Fatalf("%s: park = %v, %v; want not applied", name, applied, err)
+		}
+	}
+}

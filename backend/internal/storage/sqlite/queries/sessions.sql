@@ -71,6 +71,18 @@ UPDATE sessions
 SET hibernated_at = sqlc.narg(hibernated_at)
 WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
 
+-- name: ParkSessionHibernated :execrows
+-- Boot-time auto-resume parks an idle session: the sleep marker and the idle state
+-- in ONE revision-checked write, so the row has exactly the shape the idle sweeper
+-- leaves (idle plus the marker) and every reader that treats exited as dead sees a
+-- session a message can wake. No provider is launched.
+UPDATE sessions
+SET hibernated_at = sqlc.arg(hibernated_at),
+    activity_state = 'idle',
+    updated_at = sqlc.arg(hibernated_at)
+WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision)
+    AND is_terminated = 0 AND hibernated_at IS NULL AND session_mode = 'chat';
+
 -- name: MarkHarnessSessionsStale :execrows
 -- Marks the live launches of a harness an update just replaced. A launch that
 -- was already marked keeps when it first went stale; the version moves on.
