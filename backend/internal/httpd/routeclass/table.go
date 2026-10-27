@@ -227,7 +227,7 @@ var table = []Entry{
 	{Method: "POST", Pattern: "/internal/telemetry/cli-invoked", Class: O, Note: "telemetry only; fixed schema, no authority"},
 	{Method: "POST", Pattern: "/internal/telemetry/cli-usage-error", Class: O, Note: "telemetry only; fixed schema, no authority"},
 	{Method: "POST", Pattern: "/internal/telemetry/identity", Class: O, Note: "telemetry only; fixed schema, no authority"},
-	{Method: "GET", Pattern: "/mux", Class: H, Note: "terminal WebSocket upgrade: capability on the upgrade request (R1)"},
+	{Method: "GET", Pattern: "/mux", Class: OwnProof, Note: "terminal WebSocket upgrade: its credential is the single-use ticket minted by the class-H POST /api/v1/terminal-tickets and redeemed in terminal_mux.go (loopback); LAN = LAN listener auth. Not H: a browser cannot set headers on the upgrade and main signs only POST/PUT/PATCH/DELETE (R1, design 14.6)"},
 	{Method: "POST", Pattern: "/shutdown", Class: LC, Note: "loopback, no Origin; per-minute limit (D4)"},
 	// Lands with the terminal-ticket route on ao/ed8-caller-identity: human-only, agents never get a ticket.
 	{Method: "POST", Pattern: "/api/v1/terminal-tickets", Class: H, Note: "single-use /mux attach ticket; only the app can ask", Future: "ao/ed8-caller-identity"},

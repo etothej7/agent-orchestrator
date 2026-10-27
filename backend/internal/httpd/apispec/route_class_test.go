@@ -95,8 +95,8 @@ func TestRouteClassTableIsExactlyTheLiveWriteRoutes(t *testing.T) {
 // The classes the design fixed by name must not drift in a regeneration.
 func TestRouteClassPinnedRows(t *testing.T) {
 	pinned := map[string]routeclass.Class{
-		"POST /api/v1/terminal-tickets":                           routeclass.H, // agents never get a /mux attach ticket
-		"GET /mux":                                                routeclass.H, // the terminal WebSocket upgrade (R1)
+		"POST /api/v1/terminal-tickets":                           routeclass.H,        // agents never get a /mux attach ticket
+		"GET /mux":                                                routeclass.OwnProof, // the terminal WebSocket upgrade (R1)
 		"POST /api/v1/mobile/enable":                              routeclass.H,
 		"POST /api/v1/mobile/regenerate":                          routeclass.H, // returns the pairing password
 		"POST /api/v1/mobile/disable":                             routeclass.H, // coordinator ruling: no agent exception

@@ -17,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/routeclass"
 	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 )
 
@@ -98,7 +99,7 @@ func newGuard(cfg GuardConfig, caller *identity.Caller) guardFixture {
 	r.Post("/api/v1/sessions", ok)                                                  // A, per kind
 	r.Post("/api/v1/brand-new-write-route", ok)                                     // not in the table
 	r.Get("/api/v1/sessions", ok)                                                   // read: no class needed
-	r.Get("/mux", ok)                                                               // H: a write-capable upgrade
+	r.Get("/mux", ok)                                                               // OwnProof: the ticket is the credential
 	r.Put("/api/v1/projects/{id}", ok)                                              // HP: project settings
 	r.Put("/api/v1/projects/{id}/config", ok)                                       // HP: project config
 	r.Post("/api/v1/projects", ok)                                                  // HP: project add
@@ -135,7 +136,6 @@ func TestHumanOnlyRoutesNeedTheHumanCapability(t *testing.T) {
 	type route struct{ method, path string }
 	h := route{"POST", "/api/v1/mobile/enable"}
 	hp := route{"PUT", "/api/v1/sessions/worker-1/auto-resume"}
-	mux := route{"GET", "/mux"}
 	for _, mode := range []RouteClassMode{RouteClassObserve, RouteClassEnforce} {
 		for name, tc := range map[string]struct {
 			caller identity.Caller
@@ -148,8 +148,6 @@ func TestHumanOnlyRoutesNeedTheHumanCapability(t *testing.T) {
 			"nobody on a human-only route":       {anonymous, h, http.StatusForbidden},
 			"agent on a human-or-pending route":  {worker, hp, http.StatusForbidden},
 			"person on a human-or-pending route": {human, hp, http.StatusNoContent},
-			"nobody on the terminal upgrade":     {anonymous, mux, http.StatusForbidden},
-			"person on the terminal upgrade":     {human, mux, http.StatusNoContent},
 		} {
 			caller := tc.caller
 			g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
@@ -674,5 +672,26 @@ func TestNoNonHumanCallerCanWriteProjectConfigThroughAnyRoute(t *testing.T) {
 				t.Errorf("mode %v: the person was refused %s %s (%d)", mode, rt.method, rt.path, got)
 			}
 		}
+	}
+}
+
+// GET /mux is OwnProof: the single-use ticket (minted by the class-H POST /terminal-tickets and
+// redeemed by the upgrade handler) is its credential, so the guard decides nothing for any caller;
+// pinning it to H would refuse the app's own terminals, which cannot sign a WebSocket upgrade.
+func TestTheTerminalUpgradeIsLeftToItsOwnTicket(t *testing.T) {
+	for _, mode := range []RouteClassMode{RouteClassObserve, RouteClassEnforce} {
+		for name, c := range map[string]identity.Caller{"person": human, "anonymous": anonymous, "agent": worker, "bridged": bridgedWorker} {
+			caller := c
+			g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
+			if got := call(g.router, "GET", "/mux", nil); got != http.StatusNoContent {
+				t.Errorf("mode %v: %s on GET /mux = %d, want the guard to leave it to the ticket check", mode, name, got)
+			}
+		}
+	}
+	if e, ok := routeclass.Lookup("GET", "/mux"); !ok || e.Class != routeclass.OwnProof {
+		t.Fatalf("GET /mux is %+v, want class OwnProof", e)
+	}
+	if e, ok := routeclass.Lookup("POST", "/api/v1/terminal-tickets"); ok && e.Class != routeclass.H {
+		t.Fatalf("POST /terminal-tickets is %q, want H: only the person may mint a ticket", e.Class)
 	}
 }
