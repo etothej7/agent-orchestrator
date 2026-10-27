@@ -18,7 +18,7 @@ import { getApiBaseUrl } from "../lib/api-client";
 import { consumeFreshTerminalHandle } from "../lib/fresh-terminal-handles";
 import { captureRendererEvent } from "../lib/telemetry";
 import { LOCAL_ECHO_ENABLED, withLineBufferedLocalInput } from "../lib/terminal-local-echo";
-import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
+import { createDaemonTerminalMux, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKeyForHost } from "./useWorkspaceQuery";
 import { recordDirectWorkerInteraction } from "../lib/session-management-telemetry";
@@ -190,7 +190,7 @@ const REPLAY_FIRST_BYTE_MS = 250;
 
 function defaultCreateMux(): TerminalMux {
 	// Resolved per connect, not per hook: a daemon restart can change the port.
-	return createTerminalMux(muxUrlFromApiBase(getApiBaseUrl()));
+	return createDaemonTerminalMux(getApiBaseUrl());
 }
 
 export function useTerminalSession(session: WorkspaceSession | undefined, options: UseTerminalSessionOptions) {

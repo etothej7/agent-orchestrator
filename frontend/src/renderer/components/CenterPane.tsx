@@ -22,7 +22,7 @@ import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSess
 import { useTruncatedText } from "../hooks/useTruncatedText";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
 import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../lib/terminal-font-size";
-import { createTerminalMux, muxUrlFromApiBase } from "../lib/terminal-mux";
+import { createDaemonTerminalMux } from "../lib/terminal-mux";
 import { getAgentActivityView } from "../lib/session-presentation";
 import { agentLabel } from "../lib/agent-options";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
@@ -174,7 +174,7 @@ export function CenterPane({
 	);
 	const { baseUrl: remoteBase } = useHostConnection(hostId);
 	const remoteCreateMux = useMemo(
-		() => remoteBase ? () => createTerminalMux(muxUrlFromApiBase(remoteBase)) : undefined,
+		() => remoteBase ? () => createDaemonTerminalMux(remoteBase) : undefined,
 		[remoteBase],
 	);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);

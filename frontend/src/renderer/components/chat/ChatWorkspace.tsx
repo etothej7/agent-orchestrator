@@ -96,7 +96,7 @@ import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../../lib/terminal-font-size";
-import { createTerminalMux, muxUrlFromApiBase } from "../../lib/terminal-mux";
+import { createDaemonTerminalMux } from "../../lib/terminal-mux";
 import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
@@ -781,7 +781,7 @@ function ChatWorkspaceContent({
 	const uiSessionId = draftScope.sessionId;
 	const activeRemoteHostId = remoteHostId ?? session?.hostId;
 	const remoteCreateMux = useMemo(
-		() => assetBaseUrl ? () => createTerminalMux(muxUrlFromApiBase(assetBaseUrl)) : undefined,
+		() => assetBaseUrl ? () => createDaemonTerminalMux(assetBaseUrl) : undefined,
 		[assetBaseUrl],
 	);
 	const turn = activeTurn(snapshot);
