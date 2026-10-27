@@ -44,6 +44,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
@@ -1009,6 +1010,7 @@ func Run(buildVersion string) error {
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		UICapability:       uiCapabilityVerifier,
+		SessionIdentity:    identity.NewResolver(store, store),
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
 		ArtifactVersions:   lcStack.ArtifactVersions,

@@ -56,6 +56,8 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.Use(recoverTelemetry(log, deps.Telemetry))
 	// Marks (never refuses) requests carrying a valid human-UI capability.
 	r.Use(humanCapabilityMiddleware(deps.UICapability, nil))
+	// Resolves the caller (human, a session, or nobody) for the handlers; refuses nothing.
+	r.Use(callerIdentityMiddleware(deps.SessionIdentity, log))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))

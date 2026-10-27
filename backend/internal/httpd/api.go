@@ -15,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/presence"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
@@ -75,7 +76,10 @@ type APIDeps struct {
 	// human-authored writes. Nil marks no request as human (a daemon the app did not
 	// start, so nothing human-only can be done through it).
 	UICapability *uicapability.Verifier
-	SystemChecks controllers.SystemChecker
+	// SessionIdentity resolves a session's identity proof (X-AO-Session-Proof) into the
+	// session that holds it. Nil identifies no agent (embedders and tests without identity).
+	SessionIdentity *identity.Resolver
+	SystemChecks    controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.
