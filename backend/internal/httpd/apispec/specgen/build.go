@@ -78,6 +78,8 @@ func Build() ([]byte, error) {
 			"Durable dashboard notifications"),
 		*(&openapi31.Tag{Name: "reports"}).WithDescription(
 			"Durable worker reports"),
+		*(&openapi31.Tag{Name: "terminals"}).WithDescription(
+			"Terminal attachment tickets"),
 		*(&openapi31.Tag{Name: "human-requests"}).WithDescription(
 			"Human-only actions an agent or terminal asked for and the person confirms in the app"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
@@ -761,6 +763,7 @@ func operations() []operation {
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
 	ops = append(ops, humanRequestOperations()...)
+	ops = append(ops, terminalTicketOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -885,6 +888,21 @@ func reportOperations() []operation {
 			{http.StatusCreated, controllers.CreateReportResponse{}},
 			{http.StatusBadRequest, envelope.APIError{}},
 			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
+}
+
+// terminalTicketOperations declares the ticket the app asks for before attaching a terminal WebSocket.
+func terminalTicketOperations() []operation {
+	return []operation{{
+		method: http.MethodPost, path: "/api/v1/terminal-tickets", id: "issueTerminalTicket", tag: "terminals",
+		summary: "Get a single-use ticket to attach a terminal on /mux (requires the app's capability)",
+		resps: []respUnit{
+			{http.StatusCreated, controllers.TerminalTicketResponse{}},
+			{http.StatusForbidden, envelope.APIError{}},
+			{http.StatusTooManyRequests, envelope.APIError{}},
 			{http.StatusInternalServerError, envelope.APIError{}},
 			{http.StatusNotImplemented, envelope.APIError{}},
 		},

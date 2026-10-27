@@ -22,6 +22,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
+	"github.com/aoagents/agent-orchestrator/backend/internal/terminalticket"
 )
 
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
@@ -48,6 +49,11 @@ type ControlDeps struct {
 func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager, deps APIDeps, control ControlDeps) chi.Router {
 	log = loggerOrDefault(log)
 	deps = normalizeAPIDeps(deps, log)
+	// A daemon the app started (it holds the human-capability key) requires a ticket to attach a terminal; one it
+	// did not start keeps /mux as it was, since nothing there can be tied to the person.
+	if deps.TerminalTickets == nil && deps.UICapability.Enabled() {
+		deps.TerminalTickets = terminalticket.New(nil)
+	}
 	r := chi.NewRouter()
 	api := newAPIWithLogger(cfg, deps, log)
 
@@ -69,7 +75,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
 	mountHealth(r, cfg)
-	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins)
+	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins, deps.TerminalTickets)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
 	mountTelemetryIdentity(r, deps.TelemetryIdentity)

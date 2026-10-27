@@ -13104,6 +13104,44 @@ paths:
         can adopt it
       tags:
       - identity
+  /api/v1/terminal-tickets:
+    post:
+      operationId: issueTerminalTicket
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersTerminalTicketResponse'
+          description: Created
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get a single-use ticket to attach a terminal on /mux (requires the
+        app's capability)
+      tags:
+      - terminals
   /api/v1/usage/memory/pressure:
     get:
       operationId: getMemoryPressure
@@ -16364,6 +16402,18 @@ components:
           type: boolean
       required:
       - enabled
+      type: object
+    ControllersTerminalTicketResponse:
+      properties:
+        expiresInSeconds:
+          type: integer
+        ticket:
+          description: Single-use ticket; offer it on the /mux WebSocket upgrade as
+            the subprotocol ao.ticket.<ticket>.
+          type: string
+      required:
+      - ticket
+      - expiresInSeconds
       type: object
     ControllersUpdateCloudOfferingRequest:
       properties:
@@ -23430,6 +23480,8 @@ tags:
   name: notifications
 - description: Durable worker reports
   name: reports
+- description: Terminal attachment tickets
+  name: terminals
 - description: Human-only actions an agent or terminal asked for and the person confirms
     in the app
   name: human-requests

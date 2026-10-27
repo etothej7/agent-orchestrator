@@ -132,6 +132,10 @@ func (v *Verifier) VerifyRequest(header, method, path string, now time.Time) err
 	return v.Verify(header, PurposeHumanWrite, RequestSubject(method, path), now)
 }
 
+// Enabled reports whether this verifier can verify anything: false for nil and for one without a key (a daemon the
+// app did not start), where nothing is ever human and nothing human-gated can be enforced.
+func (v *Verifier) Enabled() bool { return v != nil && len(v.secret) > 0 }
+
 // Probe answers a possession probe for nonce. ok is false for a verifier without a key (a daemon the app
 // did not start, which therefore must never be signed for) or a nonce that is not well formed.
 func (v *Verifier) Probe(nonce string) (proof string, ok bool) {
