@@ -100,6 +100,8 @@ type Service struct {
 	store      Store
 	prsMu      sync.RWMutex
 	prs        PRMerger
+	pcwMu      sync.RWMutex
+	pcw        ProjectConfigWriter
 	autoResume AutoResume
 	chat       Chat
 	messenger  ports.AgentMessenger

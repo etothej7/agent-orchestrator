@@ -48,7 +48,8 @@ type projectKindHandler interface {
 // More (protected project-config fields, removing a project) land here; the plumbing is also exercised by a
 // stand-in kind registered in the tests.
 var projectKinds = map[domain.HumanRequestKind]projectKindHandler{
-	domain.HumanRequestPRMerge: prMerge{},
+	domain.HumanRequestPRMerge:       prMerge{},
+	domain.HumanRequestProjectConfig: projectConfig{},
 }
 
 // KnownKinds lists the kinds a requester may file.
