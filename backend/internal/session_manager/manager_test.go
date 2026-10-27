@@ -81,6 +81,8 @@ type fakeStore struct {
 	intentErr        error
 	interrupted      map[domain.SessionID][]domain.InterruptedTurn
 	stories          []domain.Story
+	storiesErr       error
+	storyReads       int
 	coordination     domain.CoordinationConfig
 	coordinationErr  error
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
@@ -164,7 +166,16 @@ func (s *fakeStore) DeleteResumeIntent(_ context.Context, id domain.SessionID) e
 }
 
 // ListStories is the optional story reader part of the store.
-func (s *fakeStore) ListStories(context.Context) ([]domain.Story, error) { return s.stories, nil }
+func (s *fakeStore) ListStories(ctx context.Context) ([]domain.Story, error) {
+	s.storyReads++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.storiesErr != nil {
+		return nil, s.storiesErr
+	}
+	return s.stories, nil
+}
 
 // GetCoordination is the optional coordination reader part of the store.
 func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {

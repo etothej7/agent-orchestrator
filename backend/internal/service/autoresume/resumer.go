@@ -91,6 +91,9 @@ type Config struct {
 	// sending; a later one would tell an agent that may be idle or finished to
 	// "continue where you left off".
 	ContinueExpiry time.Duration
+	// ContinueSendAttempts and ContinueSendDelay bound the retries of one continue send.
+	ContinueSendAttempts int
+	ContinueSendDelay    time.Duration
 	// WaitStartupChecks blocks until the boot health pass and its background reattach
 	// retries are done: a late retry can capture an intent minutes after boot. Nil
 	// means there is nothing to wait for.
@@ -129,6 +132,8 @@ func (c Config) withDefaults() Config {
 	setDuration(&c.ResumeWindow, 30*time.Minute)
 	setInt(&c.ProbeConcurrency, 3)
 	setDuration(&c.ContinueExpiry, 15*time.Minute)
+	setInt(&c.ContinueSendAttempts, 3)
+	setDuration(&c.ContinueSendDelay, 5*time.Second)
 	setDuration(&c.WriteTimeout, 10*time.Second)
 	if c.Now == nil {
 		c.Now = func() time.Time { return time.Now().UTC() }
@@ -559,12 +564,14 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 	now := r.cfg.Now()
 	if err == nil {
 		intent.RecentResumes = append(slices.Clone(recent), now)
+		intent.ResumedAt = &now
 		r.settle(ctx, intent, domain.ResumeResumed, "")
 		return
 	}
 	switch sessionmanager.ClassifyResumeFailure(err) {
 	case sessionmanager.ResumeFailureAlreadyRunning:
 		intent.RecentResumes = recent
+		intent.ResumedAt = &now
 		r.settle(ctx, intent, domain.ResumeResumed, "")
 	case sessionmanager.ResumeFailureRefused:
 		r.settle(ctx, intent, domain.ResumeAbandoned, "refused")
@@ -606,7 +613,11 @@ func (r *Resumer) needsContinue(intent domain.ResumeIntent) bool {
 	if intent.State != domain.ResumeResumed || intent.ContinueSentAt != nil {
 		return false
 	}
-	if r.cfg.Now().Sub(intent.CapturedAt) > r.cfg.ContinueExpiry {
+	since := intent.CapturedAt
+	if intent.ResumedAt != nil {
+		since = *intent.ResumedAt
+	}
+	if r.cfg.Now().Sub(since) > r.cfg.ContinueExpiry {
 		return false // too old: the agent may be idle or finished by now
 	}
 	return intent.PriorActivity == domain.ActivityActive ||
@@ -638,7 +649,7 @@ func (r *Resumer) deliverContinues(ctx context.Context) error {
 			if !r.chat.HasLiveChatController(intent.SessionID) || !r.store.AutoResumeAllowed(ctx, intent.SessionID) {
 				continue
 			}
-			if err := r.continuer.SendContinue(ctx, intent.SessionID, intent.BootID); err != nil {
+			if err := r.sendContinue(ctx, intent); err != nil {
 				r.log.Warn("auto-resume: continue turn not sent", "sessionID", intent.SessionID, "error", err)
 				continue
 			}
@@ -648,4 +659,22 @@ func (r *Resumer) deliverContinues(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// sendContinue sends the keyed continue turn, retrying a transient failure a couple of
+// times: the controller has only just come up, and a lost send would not be retried
+// until a later boot, by which time it has expired. The key makes a repeat harmless.
+func (r *Resumer) sendContinue(ctx context.Context, intent domain.ResumeIntent) error {
+	var err error
+	for attempt := 0; attempt < r.cfg.ContinueSendAttempts; attempt++ {
+		if attempt > 0 {
+			if sleepErr := r.cfg.Sleep(ctx, r.cfg.ContinueSendDelay); sleepErr != nil {
+				return errors.Join(err, sleepErr)
+			}
+		}
+		if err = r.continuer.SendContinue(ctx, intent.SessionID, intent.BootID); err == nil {
+			return nil
+		}
+	}
+	return err
 }

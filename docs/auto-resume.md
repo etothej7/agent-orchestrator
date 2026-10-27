@@ -58,13 +58,15 @@ Chat resume uses the provider's saved session, so what is recovered depends on t
 | --- | --- | --- | --- |
 | ACP agent with `loadSession` (`claude-agent-acp` 0.70) | `session/load` | full replay imported | yes |
 | ACP agent with `session/resume` only | `session/resume` | none (model context only) | yes |
-| Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes; a thread killed mid-turn may read `inProgress` until it settles (up to 45 s), then the session needs a manual resume |
+| Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes in principle; **unverified against a real killed Codex thread**: one killed mid-turn may read `inProgress` until it settles (up to 45 s), which is retried twice before the notice |
 | Provider has no saved session | `ErrChatResumeFailed` (an ACP "resource not found" included) | n/a | no: two bounded retries (about 30 s and 1 min, because it cannot be told from a slow start), then one notice, never a fresh start |
 
-The adapter's history probe (claude, codex, copilot, qwen, cline, kilocode, mimocode, omp,
-opencode (v1) and opencode-v2) only decides whether an idle session whose conversation is
-reported gone is reported to you instead of parked. Working sessions are always resumed
-(never fresh) whatever the probe says.
+The adapter's history probe (agy, claude, cline, codex, copilot, kilocode, kimi, mimocode, omp,
+opencode (v1), opencode-v2, qwen) only decides whether an idle session whose conversation is
+reported gone is reported to you instead of parked. Harnesses without a probe (gemini, cursor,
+pi, ...) are parked like the rest: their wake is never-fresh, so a conversation that turns out to
+be gone fails the wake rather than starting over. Working sessions are always resumed (never
+fresh) whatever the probe says.
 
 Terminal (TUI) sessions are not auto-resumed.
 
