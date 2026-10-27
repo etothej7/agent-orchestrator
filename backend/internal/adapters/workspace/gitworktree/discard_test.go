@@ -443,7 +443,13 @@ func TestForceRemovalDoesNotPromiseDeferredCleanup(t *testing.T) {
 			shrinkRemoveAllRetry(t, 2)
 			wedged := errors.New("sharing violation")
 			stubRemoveAll(t, func(string) error { return wedged })
-			ws.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+			// The path is a registered, clean worktree as far as git is concerned.
+			ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if strings.Contains(strings.Join(args, " "), "worktree list") {
+					return []byte("worktree " + path + "\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/feature/one\n\n"), nil
+				}
+				return nil, nil
+			}
 
 			err = tt.destroy(ws, repo, path)
 			if !errors.Is(err, wedged) {
@@ -519,8 +525,12 @@ func TestForceDestroyKeepsTheWorktreeWhenPruneFails(t *testing.T) {
 		t.Fatalf("seed path: %v", err)
 	}
 	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if strings.Contains(strings.Join(args, " "), "worktree prune") {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "worktree prune") {
 			return nil, errors.New("prune exploded")
+		}
+		if strings.Contains(joined, "worktree list") {
+			return []byte("worktree " + path + "\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/feature/one\n\n"), nil
 		}
 		return nil, nil
 	}

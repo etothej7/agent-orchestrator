@@ -1,0 +1,276 @@
+package integration
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+)
+
+// Worktree safety against real git: a replacement or shutdown removal never
+// loses uncommitted work or a git-ignored secret, kill/teardown/cleanup refuse a
+// dirty worktree, and Restore reuses a worktree that is still there.
+
+type safetyHarness struct {
+	t          *testing.T
+	git        string
+	repo       string
+	backupRoot string
+	manager    *sessionmanager.Manager
+	store      *sqlite.Store
+}
+
+func newSafetyHarness(t *testing.T) *safetyHarness {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	tmp := t.TempDir()
+	repo := seedOriginClone(t, git, tmp)
+	backupRoot := filepath.Join(tmp, "backups")
+	workspace, err := gitworktree.New(gitworktree.Options{
+		Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), BackupRoot: backupRoot,
+		RepoResolver: gitworktree.StaticRepoResolver{"mer": repo},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{
+		ID: "mer", Path: repo, RegisteredAt: time.Now(),
+		Config: domain.ProjectConfig{
+			Worker:       domain.RoleOverride{Harness: domain.HarnessClaudeCode},
+			Orchestrator: domain.RoleOverride{Harness: domain.HarnessClaudeCode},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messenger := &captureMessenger{}
+	lcm := lifecycle.New(store, messenger)
+	manager := sessionmanager.New(sessionmanager.Deps{
+		Runtime: &stubRuntime{}, Agents: stubAgents{}, Workspace: workspace, Store: store,
+		Messenger: messenger, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/usr/bin/true", nil },
+	})
+	lcm.SetCompletionTerminator(manager)
+	return &safetyHarness{t: t, git: git, repo: repo, backupRoot: backupRoot, manager: manager, store: store}
+}
+
+func (h *safetyHarness) spawn() (domain.SessionID, string) {
+	h.t.Helper()
+	sess, _, _, err := h.manager.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "do it"})
+	if err != nil {
+		h.t.Fatalf("spawn: %v", err)
+	}
+	rec, _, err := h.store.GetSession(context.Background(), sess.ID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return sess.ID, rec.Metadata.WorkspacePath
+}
+
+func (h *safetyHarness) dirty(worktree string) {
+	h.t.Helper()
+	for name, content := range map[string]string{
+		"README.md":                 "edited by the agent\n",
+		"agent-notes.md":            "untracked work\n",
+		".gitignore":                ".env\nnode_modules/\n",
+		".env":                      "TOKEN=dummy-secret\n",
+		"node_modules/pkg/index.js": "x\n",
+	} {
+		full := filepath.Join(worktree, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			h.t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+func (h *safetyHarness) gitOut(args ...string) string {
+	h.t.Helper()
+	cmd := exec.Command(h.git, append([]string{"-C", h.repo}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		h.t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestRetireForReplacementPreservesADirtyWorktreeBeforeRemovingIt(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	h.dirty(worktree)
+
+	if err := h.manager.RetireForReplacement(ctx, id); err != nil {
+		t.Fatalf("RetireForReplacement: %v", err)
+	}
+	rec, _, _ := h.store.GetSession(ctx, id)
+	if !rec.IsTerminated {
+		t.Fatal("retired session must be terminated")
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree still on disk after a verified backup: %v", err)
+	}
+	// The uncommitted work is in a verified backup ref (and the earlier capture ref).
+	refs := strings.Fields(h.gitOut("for-each-ref", "--format=%(refname)", "refs/ao-backup/"))
+	if len(refs) == 0 {
+		t.Fatal("no refs/ao-backup ref after retiring a dirty worktree")
+	}
+	files := h.gitOut("ls-tree", "-r", "--name-only", refs[0])
+	for _, want := range []string{"README.md", "agent-notes.md"} {
+		if !strings.Contains(files, want) {
+			t.Fatalf("%s missing from the backup (%s)", want, files)
+		}
+	}
+	for _, line := range strings.Split(files, "\n") {
+		if line == ".env" || strings.HasPrefix(line, "node_modules/") {
+			t.Fatalf("git-ignored %s was written into a git object", line)
+		}
+	}
+	// The ignored secret went to the private archive, node_modules did not.
+	var archived string
+	_ = filepath.WalkDir(h.backupRoot, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == ".env" {
+			archived = path
+		}
+		return nil
+	})
+	if archived == "" {
+		t.Fatal("the ignored .env was not archived before removal")
+	}
+	if info, _ := os.Stat(archived); info.Mode().Perm() != 0o600 {
+		t.Fatalf("archived .env mode = %v, want 0600", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(archived); string(got) != "TOKEN=dummy-secret\n" {
+		t.Fatalf("archived .env = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(archived), "node_modules")); err == nil {
+		t.Fatal("node_modules was archived")
+	}
+}
+
+func TestKillAndCleanupRefuseADirtyWorktreeAndLeaveItOnDisk(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	h.dirty(worktree)
+
+	freed, err := h.manager.Kill(ctx, id)
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if freed {
+		t.Fatal("a dirty worktree must not be freed by Kill")
+	}
+	rec, _, _ := h.store.GetSession(ctx, id)
+	if !rec.IsTerminated {
+		t.Fatal("Kill must still terminate the session")
+	}
+	for name, want := range map[string]string{"README.md": "edited by the agent\n", "agent-notes.md": "untracked work\n", ".env": "TOKEN=dummy-secret\n"} {
+		if got, err := os.ReadFile(filepath.Join(worktree, name)); err != nil || string(got) != want {
+			t.Fatalf("%s after a refused Kill = %q, %v", name, got, err)
+		}
+	}
+	// Project teardown is Kill for every live session plus Cleanup: the dirty worktree is skipped, never forced.
+	res, err := h.manager.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != id {
+		t.Fatalf("cleanup skipped = %+v, want the dirty session", res.Skipped)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "README.md")); err != nil {
+		t.Fatalf("Cleanup removed a dirty worktree: %v", err)
+	}
+	if refs := h.gitOut("for-each-ref", "refs/ao-backup/"); refs != "" {
+		t.Fatalf("a refused removal must not create backups: %s", refs)
+	}
+}
+
+func TestKillRemovesACleanWorktree(t *testing.T) {
+	h := newSafetyHarness(t)
+	id, worktree := h.spawn()
+	freed, err := h.manager.Kill(context.Background(), id)
+	if err != nil || !freed {
+		t.Fatalf("Kill clean worktree freed=%v err=%v", freed, err)
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean worktree still on disk: %v", err)
+	}
+}
+
+// Terminate then Restore: a worktree that survived the termination (dirty, so
+// Kill left it) is reused as it is; one that is genuinely gone is recreated.
+func TestRestoreReusesTheWorktreeKillLeftBehind(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	h.dirty(worktree)
+	headBefore := strings.TrimSpace(runOut(t, h.git, worktree, "rev-parse", "HEAD"))
+	if _, err := h.manager.Kill(ctx, id); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if _, err := h.manager.RestoreWithMode(ctx, id); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	rec, _, _ := h.store.GetSession(ctx, id)
+	if rec.Metadata.WorkspacePath != worktree {
+		t.Fatalf("restore moved the worktree: %q != %q", rec.Metadata.WorkspacePath, worktree)
+	}
+	if got := strings.TrimSpace(runOut(t, h.git, worktree, "rev-parse", "HEAD")); got != headBefore {
+		t.Fatalf("HEAD changed on restore: %s != %s", got, headBefore)
+	}
+	for name, want := range map[string]string{"README.md": "edited by the agent\n", "agent-notes.md": "untracked work\n", ".env": "TOKEN=dummy-secret\n"} {
+		if got, err := os.ReadFile(filepath.Join(worktree, name)); err != nil || string(got) != want {
+			t.Fatalf("%s after Restore = %q, %v (a reused worktree keeps its contents)", name, got, err)
+		}
+	}
+}
+
+func TestRestoreRecreatesAWorktreeThatIsGenuinelyMissing(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	if _, err := h.manager.Kill(ctx, id); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean Kill should have removed the worktree: %v", err)
+	}
+	if _, err := h.manager.RestoreWithMode(ctx, id); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "README.md")); err != nil {
+		t.Fatalf("worktree was not recreated: %v", err)
+	}
+}
+
+func runOut(t *testing.T, git, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(git, append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}

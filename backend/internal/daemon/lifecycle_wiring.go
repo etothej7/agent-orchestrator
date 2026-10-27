@@ -291,6 +291,9 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
 		ManagedRoot: filepath.Join(cfg.DataDir, "worktrees"),
+		// Git-ignored secret files (.env*) are archived here, privately, before a
+		// forced worktree removal.
+		BackupRoot: filepath.Join(cfg.DataDir, "backups"),
 		// Resolve each project's source repo from the projects table, so a
 		// session spawned for a registered project materialises its worktree off
 		// that repo. Unregistered projects fail loudly.
