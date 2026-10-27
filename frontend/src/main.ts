@@ -165,6 +165,7 @@ import { createBrowserCloseDiagnostics } from "./main/browser-close-diagnostics"
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
 import { createAwakeDownloadBridge } from "./main/awake-download-bridge";
+import { createDaemonSignedFetch } from "./main/daemon-signed-fetch";
 import { createBrowserDownloadManager } from "./main/browser-download-manager";
 import { registerChatImageIpc } from "./main/chat-image-ipc";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
@@ -294,7 +295,7 @@ const ANALYTICS_OPT_OUT_CHANGED_CHANNEL = "telemetry:analyticsOptOutChanged";
 const telemetryIdentity = new TelemetryIdentityController(
 	desktopDataDir,
 	() => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null),
-	(url, init) => globalThis.fetch(url, init),
+	(url, init) => daemonSignedFetch(String(url), init),
 	(optedOut) => {
 		for (const shellContents of trustedShellWebContents.values()) if (!shellContents.isDestroyed()) shellContents.send(ANALYTICS_OPT_OUT_CHANGED_CHANNEL, optedOut);
 	},
@@ -359,7 +360,7 @@ let daemonStartEpoch = 0;
 let daemonStatus: DaemonStatus = { state: "stopped" };
 const awakeDownloads = createAwakeDownloadBridge({
  baseURL: () => daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null,
- request: (url, init) => globalThis.fetch(url, init),
+ request: (url, init) => daemonSignedFetch(url, init),
 });
 app.once("will-quit", () => awakeDownloads.dispose());
 
@@ -684,14 +685,14 @@ function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state === "ready" && nextStatus.port && daemonIdentity && sideClaimedDaemonPID !== daemonIdentity) {
 		sideClaimedDaemonPID = daemonIdentity;
 		const sideBase = `http://127.0.0.1:${nextStatus.port}/api/v1/side-chats/launch`;
-		void fetch(`${sideBase}/claim`, {
+		void daemonSignedFetch(`${sideBase}/claim`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ appRunId }),
 		}).then(async (response) => {
 			if (!response.ok) throw new Error(`side launch claim failed: ${response.status}`);
 			if (sideLaunchState?.appRunId === appRunId && (sideLaunchState.sides.length > 0 || Object.keys(sideLaunchState.numbers ?? {}).length > 0)) {
-				const restored = await fetch(`${sideBase}/state`, {
+				const restored = await daemonSignedFetch(`${sideBase}/state`, {
 					method: "POST", headers: { "content-type": "application/json" },
 					body: JSON.stringify(sideLaunchState),
 				});
@@ -944,13 +945,7 @@ async function createWindowInternal(): Promise<void> {
 		session: shellWebContents.session,
 		key: uiCapabilityKey,
 		shellWebContents: getShellWebContents,
-		daemonOrigin: () => {
-			// Only a daemon that this run spawned AND that proved it holds this run's key is signed for.
-			const origin = ownDaemonOrigin(daemonStatus, spawnedDaemonPid);
-			if (!origin) return undefined;
-			daemonKeyCheck.ensure(origin, daemonStatus.pid);
-			return daemonKeyCheck.isVerified(origin, daemonStatus.pid) ? origin : undefined;
-		},
+		daemonOrigin: verifiedDaemonOrigin,
 		shellPageOrigin: () => originOf(rendererUrl()) ?? "",
 	});
 
@@ -1469,6 +1464,16 @@ const uiCapabilityKey = newHumanCapabilityKey();
 // attached to never received the key.
 let spawnedDaemonPid: number | undefined;
 const daemonKeyCheck = createKeyPossessionCheck({ key: uiCapabilityKey });
+// Only a daemon that this run spawned AND that proved it holds this run's key is ever signed for: the shell
+// window's writes (installHumanCapabilityHeaders) and main's own (daemonSignedFetch) use this same answer.
+const verifiedDaemonOrigin = (): string | undefined => {
+	const origin = ownDaemonOrigin(daemonStatus, spawnedDaemonPid);
+	if (!origin) return undefined;
+	daemonKeyCheck.ensure(origin, daemonStatus.pid);
+	return daemonKeyCheck.isVerified(origin, daemonStatus.pid) ? origin : undefined;
+};
+/** Every write main makes to the daemon goes through this, so it carries the person's capability (see daemon-signed-fetch.ts). */
+const daemonSignedFetch = createDaemonSignedFetch({ key: uiCapabilityKey, daemonOrigin: verifiedDaemonOrigin });
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -1826,7 +1831,8 @@ async function inspectExistingDaemon(
 
 async function gracefullyReplaceDaemonForBrowser(status: DaemonStatus): Promise<void> {
 	if (!status.port) throw new Error("the running daemon did not report a port");
-	const response = await fetch(`http://127.0.0.1:${status.port}/shutdown`, { method: "POST" });
+	// A daemon this app only found running is not its own: nothing is signed for it and nothing waits for it.
+	const response = await daemonSignedFetch(`http://127.0.0.1:${status.port}/shutdown`, { method: "POST" }, 0);
 	if (!response.ok) throw new Error(`daemon shutdown returned HTTP ${response.status}`);
 
 	const deadline = Date.now() + 8_000;
@@ -3618,10 +3624,10 @@ app.on("before-quit", (event) => {
 			const retireSides = async () => {
 				if (daemonStatus.state !== "ready" || !daemonStatus.port) return;
 				try {
-					const response = await fetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/retire`, {
+					const response = await daemonSignedFetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/retire`, {
 						method: "POST", headers: { "content-type": "application/json" },
 						body: JSON.stringify({ appRunId }), signal: AbortSignal.timeout(3000),
-					});
+					}, 1500);
 					if (!response.ok) console.warn("AO: side chat cleanup on quit failed", response.status);
 				} catch (error) { console.warn("AO: side chat cleanup on quit failed", error); }
 				sideLaunchState = undefined;
