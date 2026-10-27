@@ -23,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 )
 
 func TestMain(m *testing.M) {
@@ -156,6 +157,62 @@ func TestLaunchesOpenCodeACPWithTheBuiltInModeAdvertisedAtStartup(t *testing.T) 
 	}
 }
 
+// startContained runs driver.Start and guarantees that nothing it launched
+// outlives the test. Start launches a detached persistent chat-host that
+// reparents to init and keeps its provider alive until it is terminated, so a
+// test that expects Start to fail (or fails first) must still reap it: a host
+// left behind runs, with its OpenCode child, until the machine reboots.
+func startContained(t *testing.T, driver ports.ChatDriver, cfg ports.ChatStartConfig) error {
+	t.Helper()
+	conversation, err := driver.Start(context.Background(), cfg)
+	t.Cleanup(func() { reapStartedHost(t, conversation, cfg) })
+	return err
+}
+
+func reapStartedHost(t *testing.T, conversation ports.ChatConversation, cfg ports.ChatStartConfig) {
+	t.Helper()
+	// Read the pid first: terminating removes the descriptor that publishes it,
+	// and the host may still be exiting when Terminate returns.
+	pid, found := persistenthost.HostPID(cfg.DataDir, string(cfg.SessionID))
+	if terminator, ok := conversation.(ports.ChatProviderTerminator); ok {
+		_ = terminator.Terminate()
+	}
+	if !found {
+		return
+	}
+	if _, stillPublished := persistenthost.HostPID(cfg.DataDir, string(cfg.SessionID)); stillPublished {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = persistenthost.Shutdown(ctx, cfg.DataDir, string(cfg.SessionID))
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for processalive.Alive(pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processalive.Alive(pid) {
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+		}
+		t.Errorf("chat-host %d survived Terminate and Shutdown and had to be killed", pid)
+	}
+}
+
+// outsideFixtureOpenCode returns an OpenCode the resolver can find besides the
+// fixture on PATH (Homebrew, npm and similar install locations are probed too).
+func outsideFixtureOpenCode(t *testing.T, fixture string) string {
+	t.Helper()
+	candidates, err := opencode.BinaryCandidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if filepath.Clean(candidate) != filepath.Clean(fixture) {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func TestWrongOpenCodeMajorIsRejectedBeforeACPProcessLaunch(t *testing.T) {
 	for _, test := range []struct {
 		name, version, want string
@@ -165,10 +222,17 @@ func TestWrongOpenCodeMajorIsRejectedBeforeACPProcessLaunch(t *testing.T) {
 		{name: "v1 driver with v2 binary", version: "2.0.0", want: "requires OpenCode 1", driver: func() ports.ChatDriver { return opencodeacp.New(opencode.New(), nil) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, calls := writeOpenCodeACPExecutable(t, test.version)
+			binary, calls := writeOpenCodeACPExecutable(t, test.version)
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("XDG_DATA_HOME", t.TempDir())
-			_, err := test.driver().Start(context.Background(), ports.ChatStartConfig{
+			if other := outsideFixtureOpenCode(t, binary); other != "" {
+				// The resolver tries every install location in order, so a real
+				// OpenCode of the wanted major would be launched instead of being
+				// rejected. This test only controls PATH, so it cannot assert the
+				// rejection on this machine.
+				t.Skipf("OpenCode installed outside the fixture (%s) would satisfy the resolver", other)
+			}
+			err := startContained(t, test.driver(), ports.ChatStartConfig{
 				SessionID: "wrong-major", DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
 			})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -180,6 +244,36 @@ func TestWrongOpenCodeMajorIsRejectedBeforeACPProcessLaunch(t *testing.T) {
 				t.Fatal(readErr)
 			}
 		})
+	}
+}
+
+// Regression: the wrong-major test used to leave a detached chat-host and its
+// OpenCode child running forever whenever Start unexpectedly succeeded (a real
+// OpenCode on the machine satisfied the resolver). startContained must reap
+// whatever Start launched, including on that path.
+func TestStartContainedLeavesNoChatHostBehind(t *testing.T) {
+	dataDir := t.TempDir()
+	const session = "contained-start"
+	var hostPID int
+	t.Run("start succeeds and is contained", func(t *testing.T) {
+		writeOpenCodeACPExecutable(t, "2.0.0")
+		cfg := ports.ChatStartConfig{SessionID: session, DataDir: dataDir, WorkspacePath: t.TempDir()}
+		if err := startContained(t, New(opencodev2.New(), nil), cfg); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		pid, found := persistenthost.HostPID(dataDir, session)
+		if !found || !processalive.Alive(pid) {
+			t.Fatalf("expected a live chat-host after a successful Start (pid=%d found=%v)", pid, found)
+		}
+		hostPID = pid
+	})
+	// The subtest's cleanup has run by now.
+	if processalive.Alive(hostPID) {
+		_ = persistenthost.Shutdown(context.Background(), dataDir, session)
+		t.Fatalf("chat-host %d survived the test that started it", hostPID)
+	}
+	if _, found := persistenthost.HostPID(dataDir, session); found {
+		t.Fatal("chat-host descriptor still published after cleanup")
 	}
 }
 
