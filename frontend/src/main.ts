@@ -129,7 +129,7 @@ import {
 	resolveWindowsShellProbe,
 	type ShellRunner,
 } from "./shared/shell-env";
-import { DEFAULT_TERMINAL_SHELL, type TerminalShellPreference } from "./shared/ui-locale";
+import { DEFAULT_LOCALE, DEFAULT_TERMINAL_SHELL, type AppLocale, type TerminalShellPreference } from "./shared/ui-locale";
 import { bundledTmuxBinaryPath, stableBundledTmuxBinaryPath } from "./shared/bundled-tmux";
 import {
 	handleCloudDeepLink,
@@ -363,6 +363,8 @@ app.once("will-quit", () => awakeDownloads.dispose());
 let daemonAttachmentGeneration = 0;
 let daemonOutput = "";
 let browserViewHost: BrowserViewHost | null = null;
+/** The UI locale, for the native menu and dialogs that main owns. Kept current by uiSettings:set. */
+let uiLocale: AppLocale = DEFAULT_LOCALE;
 let browserProfileIpc: BrowserProfileIpc | null = null;
 let browserProfileImporter: BrowserProfileImportService | null = null;
 let windowComposition: WindowComposition | null = null;
@@ -384,6 +386,7 @@ const desktopQuit = createDesktopQuitController({
 				const response = await fetch(`http://127.0.0.1:${daemonStatus.port}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
 				return response.ok ? ((await response.json()) as unknown) : undefined;
 			},
+			locale: () => uiLocale,
 			showDialog: async (content) => {
 				const options = { type: "warning" as const, message: content.title, detail: content.body, buttons: content.buttons, defaultId: content.defaultId, cancelId: content.cancelId, noLink: true };
 				const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
@@ -780,6 +783,25 @@ async function disposeAllBrowserViewHosts(): Promise<void> {
 	}
 }
 
+/** The app menu in the current UI locale; reinstalled when the locale changes. */
+function installMacAppMenu(): void {
+	Menu.setApplicationMenu(
+		Menu.buildFromTemplate(
+			buildMacAppMenuTemplate(() => {
+				const fallback = () => getShellWebContents()?.toggleDevTools();
+				const host = browserViewHost;
+				if (!host) {
+					fallback();
+					return;
+				}
+				void host.toggleDevToolsForLastFocused().then((state) => {
+					if (!state) fallback();
+				}).catch(fallback);
+			}, { appName: app.name, onQuit: () => desktopQuit.requestUserQuit(), locale: uiLocale }),
+		),
+	);
+}
+
 async function createWindowInternal(): Promise<void> {
 	await disposeAllBrowserViewHosts();
 	const agentBrowserRuntime = new AgentBrowserRuntime({
@@ -871,21 +893,7 @@ async function createWindowInternal(): Promise<void> {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
 		mainWindow.setMenuBarVisibility(false);
 	} else if (process.platform === "darwin") {
-		Menu.setApplicationMenu(
-			Menu.buildFromTemplate(
-				buildMacAppMenuTemplate(() => {
-					const fallback = () => getShellWebContents()?.toggleDevTools();
-					const host = browserViewHost;
-					if (!host) {
-						fallback();
-						return;
-					}
-					void host.toggleDevToolsForLastFocused().then((state) => {
-						if (!state) fallback();
-					}).catch(fallback);
-				}, { appName: app.name, onQuit: () => desktopQuit.requestUserQuit() }),
-			),
-		);
+		installMacAppMenu();
 	} else if (process.platform === "linux") {
 		Menu.setApplicationMenu(buildLinuxAppMenu());
 		mainWindow.setMenuBarVisibility(false);
@@ -2950,6 +2958,10 @@ ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 		const runFile = runFilePath();
 	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
 	trayController?.setLocale(result.locale);
+	if (result.locale !== uiLocale) {
+		uiLocale = result.locale;
+		if (process.platform === "darwin" && mainWindow) installMacAppMenu();
+	}
 	soundNotificationsEnabled = result.soundNotificationsEnabled;
 	terminalShellPreference = result.terminalShell;
 	shellEnvPromise = null;
@@ -3490,6 +3502,7 @@ app.whenReady().then(async () => {
 		: { ...DEFAULT_UI_SETTINGS };
 	soundNotificationsEnabled = initialUiSettings.soundNotificationsEnabled;
 	terminalShellPreference = initialUiSettings.terminalShell;
+	uiLocale = initialUiSettings.locale;
 	if (browserQuitRequested) return;
 	if (isTrayEnabled(process.platform)) {
 		trayController = createTrayController({

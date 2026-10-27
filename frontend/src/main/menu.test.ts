@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { APP_LOCALES, type AppLocale } from "../shared/ui-locale";
 import {
 	buildLinuxAppMenuTemplate,
 	buildMacAppMenuTemplate,
@@ -130,6 +131,20 @@ describe("the macOS app menu's Quit", () => {
 		expect(quit?.role).toBeUndefined();
 		quit?.click?.();
 		expect(onQuit).toHaveBeenCalledTimes(1);
+	});
+
+	it("labels the item in each UI locale, with the app name in the locale's own word order", () => {
+		const labelFor = (locale: AppLocale) =>
+			items(buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit: vi.fn(), locale })).find((item) => item.accelerator === "Command+Q")?.label;
+		expect(labelFor("en")).toBe("Quit Agent Orchestrator");
+		expect(labelFor("de")).toBe("Agent Orchestrator beenden");
+		expect(labelFor("es")).toBe("Salir de Agent Orchestrator");
+		expect(labelFor("fr")).toBe("Quitter Agent Orchestrator");
+		expect(labelFor("ja")).toBe("Agent Orchestratorを終了");
+		expect(labelFor("ko")).toBe("Agent Orchestrator 종료");
+		expect(labelFor("pt-BR")).toBe("Encerrar Agent Orchestrator");
+		expect(labelFor("zh-CN")).toBe("退出Agent Orchestrator");
+		for (const locale of APP_LOCALES) expect(labelFor(locale)).toContain("Agent Orchestrator");
 	});
 
 	it("has no role: quit anywhere, and keeps the standard app-menu items", () => {

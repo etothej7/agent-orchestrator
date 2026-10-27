@@ -1,4 +1,6 @@
 import type { MenuItemConstructorOptions } from "electron";
+import { DEFAULT_LOCALE, type AppLocale } from "../shared/ui-locale";
+import { mainMessage } from "./main-messages";
 
 // Electron's built-in toggleDevTools role assumes the focused surface belongs
 // to a BrowserWindow. AO uses BaseWindow with WebContentsView children, so the
@@ -16,7 +18,7 @@ import type { MenuItemConstructorOptions } from "electron";
  */
 export function buildMacAppMenuTemplate(
 	onToggleDevTools: () => void,
-	quit?: { appName: string; onQuit: () => void },
+	quit?: { appName: string; onQuit: () => void; locale?: AppLocale },
 ): MenuItemConstructorOptions[] {
 	const appMenu: MenuItemConstructorOptions = quit
 		? {
@@ -30,7 +32,7 @@ export function buildMacAppMenuTemplate(
 				{ role: "hideOthers" },
 				{ role: "unhide" },
 				{ type: "separator" },
-				{ label: `Quit ${quit.appName}`, accelerator: "Command+Q", click: quit.onQuit },
+				{ label: mainMessage(quit.locale ?? DEFAULT_LOCALE, "menu.quit", { appName: quit.appName }), accelerator: "Command+Q", click: quit.onQuit },
 			],
 		}
 		: { role: "appMenu" };

@@ -1,5 +1,7 @@
-import { shouldShowAgentsDialog, AGENTS_DIALOG_BODY, AGENTS_DIALOG_TITLE, type AgentsStateForQuit } from "./quit-agents-dialog";
-import { shouldShowSleepDialog, SLEEP_DIALOG_BODY, SLEEP_DIALOG_TITLE, type AwakeStateForQuit } from "./quit-sleep-dialog";
+import { DEFAULT_LOCALE, type AppLocale } from "../shared/ui-locale";
+import { mainMessage } from "./main-messages";
+import { shouldShowAgentsDialog, type AgentsStateForQuit } from "./quit-agents-dialog";
+import { shouldShowSleepDialog, type AwakeStateForQuit } from "./quit-sleep-dialog";
 
 export const KEEP_RUNNING_LABEL = "Keep Running";
 export const QUIT_ANYWAY_LABEL = "Quit Anyway";
@@ -17,12 +19,19 @@ export interface QuitDialogContent {
 	cancelId: 0;
 }
 
-const buttons: [string, string] = [KEEP_RUNNING_LABEL, QUIT_ANYWAY_LABEL];
-
-export function quitDialogContent(kind: QuitDialogKind): QuitDialogContent {
-	return kind === "sleep"
-		? { title: SLEEP_DIALOG_TITLE, body: SLEEP_DIALOG_BODY, buttons, defaultId: 0, cancelId: 0 }
-		: { title: AGENTS_DIALOG_TITLE, body: AGENTS_DIALOG_BODY, buttons, defaultId: 0, cancelId: 0 };
+/**
+ * The dialog's text in the UI locale. The English strings (Ed's wording, kept verbatim in the
+ * *_DIALOG_* constants and the two button labels above) live in the catalog and are pinned to those
+ * constants by quit-confirmation.test.ts.
+ */
+export function quitDialogContent(kind: QuitDialogKind, locale: AppLocale = DEFAULT_LOCALE): QuitDialogContent {
+	return {
+		title: mainMessage(locale, `quit.${kind}.title`),
+		body: mainMessage(locale, `quit.${kind}.body`),
+		buttons: [mainMessage(locale, "quit.keepRunning"), mainMessage(locale, "quit.quitAnyway")],
+		defaultId: 0,
+		cancelId: 0,
+	};
 }
 
 export interface QuitConfirmationDeps {
@@ -30,6 +39,8 @@ export interface QuitConfirmationDeps {
 	fetchDaemon(path: string, timeoutMs: number): Promise<unknown | undefined>;
 	/** Shows the dialog; resolves to the chosen button index. */
 	showDialog(content: QuitDialogContent): Promise<number>;
+	/** The UI locale the dialog is shown in; English when absent. */
+	locale?(): AppLocale;
 }
 
 /**
@@ -54,5 +65,5 @@ export async function chooseQuitDialog(deps: Pick<QuitConfirmationDeps, "fetchDa
 export async function confirmFullQuit(deps: QuitConfirmationDeps): Promise<boolean> {
 	const kind = await chooseQuitDialog(deps);
 	if (!kind) return true;
-	return (await deps.showDialog(quitDialogContent(kind))) === 1;
+	return (await deps.showDialog(quitDialogContent(kind, deps.locale?.()))) === 1;
 }
