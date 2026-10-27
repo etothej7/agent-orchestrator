@@ -448,6 +448,7 @@ class Cycle(A.Harness):
         self.gates = {}
         self.detail = {'cycle': name, 'order': self.spec['order'], 'roles': list(self.spec['roles'])}
         self.wake = {}
+        self.wake_at = float('inf')
         self.starts = 0
         self.install_shim()
 
@@ -839,6 +840,7 @@ class Cycle(A.Harness):
             self.simulated_resumer()
         self.observe_resume(restart_at)
         after = self.read_snapshot(with_fingerprints=True)
+        self.wake_at = time.time()  # parking is judged on samples before this: a woken manager legitimately has a host
         self.probe_wake(after)
         self.sample()
         final = self.read_snapshot(with_fingerprints=True)
@@ -885,7 +887,8 @@ class Cycle(A.Harness):
             gates['stage_barrier_order'] = stage_order_gate(self.timeline, stages)
             gates['stage_barrier_by_intent_state'] = intent_barrier_gate(self.timeline, stages)
         if parked:
-            gates['idle_sessions_hibernated'] = hibernate_gate(self.timeline, pre_wake, parked)
+            before_wake = [item for item in self.timeline if item['t'] < self.wake_at]
+            gates['idle_sessions_hibernated'] = hibernate_gate(before_wake, pre_wake, parked)
             gates['idle_sessions_hibernated']['intentStates'] = {sid: intents.get(sid) for sid in parked}
             gates['hibernated_sessions_wake_on_message'] = wake_gate(self.wake)
         if excluded:
