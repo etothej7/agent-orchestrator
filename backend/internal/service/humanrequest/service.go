@@ -34,6 +34,9 @@ const (
 	MaxOpenPerRequester = 5
 	// MaxFiledPerMinute caps how fast one requester may file.
 	MaxFiledPerMinute = 10
+	// MaxOpenTotal caps open requests across every requester. Requesters are only claimed identities until
+	// per-session proofs exist, so rotating a claimed id must not be a way around the per-requester caps.
+	MaxOpenTotal = 25
 	// approvedStaleAfter is how long a claimed approval may sit before the sweep fails it: the daemon
 	// stopped between claiming the request and applying it.
 	approvedStaleAfter = 2 * time.Minute
@@ -46,6 +49,8 @@ type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	InsertHumanRequest(ctx context.Context, req domain.HumanRequest) (domain.HumanRequest, bool, error)
 	GetHumanRequest(ctx context.Context, id string) (domain.HumanRequest, bool, error)
+	FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, session domain.SessionID, payloadHash string) (domain.HumanRequest, bool, error)
+	CountAllPendingHumanRequests(ctx context.Context) (int, error)
 	ListHumanRequests(ctx context.Context, state domain.HumanRequestState, limit int) ([]domain.HumanRequest, error)
 	CountPendingHumanRequests(ctx context.Context, requester domain.HumanRequestRequester) (int, error)
 	CountHumanRequestsFiledSince(ctx context.Context, requester domain.HumanRequestRequester, since time.Time) (int, error)
@@ -182,20 +187,20 @@ func (s *Service) checkLimits(ctx context.Context, req domain.HumanRequest, now 
 	if err != nil {
 		return err
 	}
-	if open < MaxOpenPerRequester && recent < MaxFiledPerMinute {
-		return nil
-	}
-	pending, err := s.store.ListHumanRequests(ctx, domain.HumanRequestPending, listLimit)
+	total, err := s.store.CountAllPendingHumanRequests(ctx)
 	if err != nil {
 		return err
 	}
-	for _, existing := range pending {
-		if existing.Kind == req.Kind && existing.SessionID == req.SessionID && existing.PayloadHash == req.PayloadHash {
-			return nil
-		}
+	if open < MaxOpenPerRequester && recent < MaxFiledPerMinute && total < MaxOpenTotal {
+		return nil
 	}
-	s.log.WarnContext(ctx, "human request refused: too many", "requester", requesterLabel(req.Requester), "open", open, "lastMinute", recent)
-	return apierr.TooManyRequests("HUMAN_REQUEST_LIMIT", fmt.Sprintf("you already have %d requests waiting for the person; wait for them to be decided before filing more", open))
+	if _, found, err := s.store.FindOpenHumanRequest(ctx, req.Kind, req.SessionID, req.PayloadHash); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	s.log.WarnContext(ctx, "human request refused: too many", "requester", requesterLabel(req.Requester), "open", open, "lastMinute", recent, "openTotal", total)
+	return apierr.TooManyRequests("HUMAN_REQUEST_LIMIT", fmt.Sprintf("too many requests are already waiting for the person (%d from you, %d in all); wait for them to be decided before filing more", open, total))
 }
 
 // List returns the requests the person should see: the open ones by default, or the most recent

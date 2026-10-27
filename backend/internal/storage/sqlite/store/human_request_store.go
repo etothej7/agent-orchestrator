@@ -164,3 +164,22 @@ func (s *Store) ExpireHumanRequests(ctx context.Context, now, staleBefore time.T
 	}
 	return humanRequestsFromRows(rows)
 }
+
+// FindOpenHumanRequest returns the open request with this kind, target and payload hash, if there is one.
+func (s *Store) FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, session domain.SessionID, payloadHash string) (domain.HumanRequest, bool, error) {
+	row, err := s.qr.GetOpenHumanRequest(ctx, gen.GetOpenHumanRequestParams{Kind: string(kind), SessionID: string(session), PayloadHash: payloadHash})
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.HumanRequest{}, false, nil
+	}
+	if err != nil {
+		return domain.HumanRequest{}, false, fmt.Errorf("find the open human request: %w", err)
+	}
+	req, err := humanRequestFromRow(row)
+	return req, err == nil, err
+}
+
+// CountAllPendingHumanRequests is how many open requests there are, whoever filed them.
+func (s *Store) CountAllPendingHumanRequests(ctx context.Context) (int, error) {
+	n, err := s.qr.CountAllPendingHumanRequests(ctx)
+	return int(n), err
+}

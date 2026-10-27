@@ -3623,7 +3623,7 @@
 	"humanRequest.kind.auto_resume_lift": "Allow automatic resume",
 	"humanRequest.kind.conversation_settings": "Change model or settings",
 	"humanRequest.kind.provider_switch": "Switch agent",
-	"humanRequest.requestedBy": "Requested by {{requester}}",
+	"humanRequest.requestedBy": "Claims to be {{requester}} (not verified)",
 	"humanRequest.requestedByTerminal": "Requested from a terminal, not identified",
 	"humanRequest.field.model": "Model",
 	"humanRequest.field.reasoningEffort": "Reasoning effort",

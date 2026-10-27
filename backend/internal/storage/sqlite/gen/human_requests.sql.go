@@ -30,6 +30,17 @@ func (q *Queries) ClaimHumanRequest(ctx context.Context, arg ClaimHumanRequestPa
 	return result.RowsAffected()
 }
 
+const countAllPendingHumanRequests = `-- name: CountAllPendingHumanRequests :one
+SELECT COUNT(*) FROM human_requests WHERE state = 'pending'
+`
+
+func (q *Queries) CountAllPendingHumanRequests(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAllPendingHumanRequests)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countHumanRequestsFiledSince = `-- name: CountHumanRequestsFiledSince :one
 SELECT COUNT(*) FROM human_requests WHERE requester_kind = ? AND requester_session_id = ? AND created_at >= ?
 `

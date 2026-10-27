@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -56,12 +58,57 @@ func isStale(err error) bool {
 	return errors.As(err, &stale)
 }
 
+// maxNameRunes bounds how much of a session's display name the card shows.
+const maxNameRunes = 40
+
+// sessionLabel names the target of a request: the id first, which nobody can rename, then the display name
+// as a quoted label. A display name is agent-writable (any agent may rename its own session or title a
+// delegation), so it is cleaned of control, line-break and direction-override characters, collapsed to one
+// line, bounded, and presented as "named ...", never as a sentence the person might take for the daemon's.
 func sessionLabel(rec domain.SessionRecord) string {
-	if name := strings.TrimSpace(rec.DisplayName); name != "" {
-		return fmt.Sprintf("%s (%s)", name, rec.ID)
+	name := cleanLabel(rec.DisplayName, maxNameRunes)
+	if name == "" {
+		return string(rec.ID)
 	}
-	return string(rec.ID)
+	return fmt.Sprintf("%s (named %q)", rec.ID, name)
 }
+
+func cleanLabel(raw string, limit int) string {
+	var b strings.Builder
+	space := false
+	count := 0
+	for _, r := range raw {
+		switch {
+		case unicode.IsSpace(r), unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r):
+			space = b.Len() > 0
+			continue
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r), unicode.Is(unicode.Cs, r), r == unicode.ReplacementChar:
+			continue
+		case r == '"':
+			r = '\''
+		case r == '\\':
+			r = '/'
+		}
+		if space {
+			b.WriteRune(' ')
+			count++
+			space = false
+		}
+		if count >= limit {
+			b.WriteString("…")
+			return b.String()
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return b.String()
+}
+
+// tokenPattern is the whole vocabulary of a model or effort the person is shown that no catalog vouches for:
+// the shape of a real model id, nothing a requester could use to write a sentence.
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,64}$`)
+
+func validToken(value string) bool { return tokenPattern.MatchString(value) }
 
 // decodeStrict reads a payload into out, refusing unknown fields and trailing data.
 func decodeStrict(raw json.RawMessage, out any) error {
@@ -196,8 +243,8 @@ func (conversationSettings) prepare(ctx context.Context, s *Service, target doma
 	}
 	if p.ReasoningEffort != nil {
 		effort := strings.TrimSpace(*p.ReasoningEffort)
-		if effort == "" {
-			return prepared{}, apierr.Invalid("HUMAN_REQUEST_UNKNOWN_EFFORT", "name the reasoning effort", nil)
+		if !validToken(effort) {
+			return prepared{}, apierr.Invalid("HUMAN_REQUEST_UNKNOWN_EFFORT", "name the reasoning effort as the model lists it (letters, digits and . _ : / -, at most 64)", nil)
 		}
 		p.ReasoningEffort = &effort
 		next.ReasoningEffort = effort
@@ -320,12 +367,18 @@ func (providerSwitch) prepare(_ context.Context, s *Service, target domain.Sessi
 	var extras []string
 	if p.Model != nil {
 		model := strings.TrimSpace(*p.Model)
+		if !validToken(model) {
+			return prepared{}, apierr.Invalid("HUMAN_REQUEST_UNKNOWN_MODEL", "name the model by its id (letters, digits and . _ : / -, at most 64)", nil)
+		}
 		p.Model = &model
 		changes = append(changes, domain.HumanRequestChange{Field: "model", From: "", To: model})
 		extras = append(extras, "model "+model)
 	}
 	if p.Effort != nil {
 		effort := strings.TrimSpace(*p.Effort)
+		if !validToken(effort) {
+			return prepared{}, apierr.Invalid("HUMAN_REQUEST_UNKNOWN_EFFORT", "name the reasoning effort by its id (letters, digits and . _ : / -, at most 64)", nil)
+		}
 		p.Effort = &effort
 		changes = append(changes, domain.HumanRequestChange{Field: "reasoningEffort", From: "", To: effort})
 		extras = append(extras, "reasoning effort "+effort)

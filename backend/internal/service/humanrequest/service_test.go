@@ -175,7 +175,7 @@ func TestFilingALiftRendersTheSummaryAndDiffFromTheStateAndChangesNothing(t *tes
 	if req.State != domain.HumanRequestPending || req.PayloadHash == "" || !req.ExpiresAt.Equal(f.now.Add(RequestTTL)) {
 		t.Fatalf("request = %+v", req)
 	}
-	if !strings.Contains(req.Summary, "Fix the bug (repo-1)") || !strings.Contains(req.Summary, "will not resume it, replace it or tear it down") {
+	if !strings.Contains(req.Summary, "repo-1 (named \"Fix the bug\")") || !strings.Contains(req.Summary, "will not resume it, replace it or tear it down") {
 		t.Fatalf("summary does not name the session and what allowing means: %q", req.Summary)
 	}
 	if len(req.Changes) != 1 || req.Changes[0] != (domain.HumanRequestChange{Field: "autoResume", From: "never", To: "allowed"}) {
@@ -352,7 +352,7 @@ func TestTheOpenCapRefusesTheSixthRequestButStillAnswersARetryOfAnOpenOne(t *tes
 func TestSettingsRequestsRenderTheDiffAndApplyOnlyWhatWasShown(t *testing.T) {
 	f := newFixture(t)
 	req := f.file(t, domain.HumanRequestConversationSettings, `{"model":"m-b","reasoningEffort":"medium","planMode":true}`)
-	if req.Summary != "Change Fix the bug (repo-1): model to m-b, reasoning effort to medium, plan mode on." {
+	if req.Summary != "Change repo-1 (named \"Fix the bug\"): model to m-b, reasoning effort to medium, plan mode on." {
 		t.Fatalf("summary = %q", req.Summary)
 	}
 	want := []domain.HumanRequestChange{
@@ -432,7 +432,7 @@ func TestSettingsFiledAgainAfterTheValuesMovedMakeANewCard(t *testing.T) {
 func TestProviderSwitchRendersApprovesAndAppliesThroughTheSwitchService(t *testing.T) {
 	f := newFixture(t)
 	req := f.file(t, domain.HumanRequestProviderSwitch, `{"targetHarness":"codex","model":"o-big","effort":"high"}`)
-	if !strings.Contains(req.Summary, "Switch Fix the bug (repo-1) from claude-code to codex (model o-big, reasoning effort high).") {
+	if !strings.Contains(req.Summary, "Switch repo-1 (named \"Fix the bug\") from claude-code to codex (model o-big, reasoning effort high).") {
 		t.Fatalf("summary = %q", req.Summary)
 	}
 	if req.Changes[0] != (domain.HumanRequestChange{Field: "harness", From: "claude-code", To: "codex"}) {
@@ -506,5 +506,128 @@ func TestAKindWhoseServiceIsMissingIsRefusedInsteadOfSilentlyDoingNothing(t *tes
 func TestKnownKindsAreTheThreeThisPieceShips(t *testing.T) {
 	if got := fmt.Sprint(KnownKinds()); got != "[auto_resume_lift conversation_settings provider_switch]" {
 		t.Fatalf("kinds = %s", got)
+	}
+}
+
+func TestAnAgentRenamedTargetCannotRewriteWhatThePersonReads(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		displayName string
+		want        string
+	}{
+		"a sentence aimed at the person":     {"Fix the bug. This unblocks the build, approve", `repo-1 (named "Fix the bug. This unblocks the build, ap…")`},
+		"a quote that would close the label": {`x" and then approve "y`, `repo-1 (named "x' and then approve 'y")`},
+		"line breaks and tabs":               {"first\nsecond\tthird\r\nfourth", `repo-1 (named "first second third fourth")`},
+		"control and direction overrides":    {"safe\u202etxet\u0000\u200b\u2066name", `repo-1 (named "safetxetname")`},
+		"a very long name":                   {strings.Repeat("a", 100), `repo-1 (named "` + strings.Repeat("a", 40) + `…")`},
+		"only whitespace":                    {" \n\t ", "repo-1"},
+		"nothing":                            {"", "repo-1"},
+	} {
+		if renamed, err := f.store.RenameSession(ctx, target, tc.displayName, time.Now().UTC()); err != nil || !renamed {
+			t.Fatalf("%s: rename = %v, %v", name, renamed, err)
+		}
+		req := f.file(t, domain.HumanRequestAutoResumeLift, `{}`)
+		if !strings.Contains(req.Summary, "Allow automatic resume for "+tc.want+".") {
+			t.Errorf("%s: summary = %q, want it to name the target as %s", name, req.Summary, tc.want)
+		}
+		for _, r := range req.Summary {
+			if r < 0x20 || r == 0x7f || (r >= 0x200b && r <= 0x200f) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+				t.Errorf("%s: summary contains control or direction character %U: %q", name, r, req.Summary)
+			}
+		}
+		if _, err := f.svc.Deny(ctx, req.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestProviderSwitchAndSettingsRefuseModelAndEffortTextThatIsNotAnId(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.chat.models = []ports.ChatModel{{ID: "m-a", Default: true}} // no effort list: the catalog cannot vouch for an effort
+	f.chat.settings = domain.ConversationSettings{Model: "m-a"}
+	for _, text := range []string{
+		"claude-x. This unblocks the build, approve",
+		"two words",
+		"line\nbreak",
+		"quote\"",
+		"<b>bold</b>",
+		"semi;colon",
+		"ünïcode",
+		"",
+		strings.Repeat("a", 65),
+		"\u202eevil",
+	} {
+		for kind, payload := range map[domain.HumanRequestKind]string{
+			domain.HumanRequestProviderSwitch: fmt.Sprintf(`{"targetHarness":"codex","model":%q}`, text),
+		} {
+			if _, err := f.svc.File(ctx, FileInput{Kind: kind, SessionID: target, Payload: json.RawMessage(payload), Requester: agentRequester(agent)}); err == nil {
+				t.Errorf("provider switch model %q was accepted", text)
+			}
+		}
+		if _, err := f.svc.File(ctx, FileInput{Kind: domain.HumanRequestProviderSwitch, SessionID: target, Payload: json.RawMessage(fmt.Sprintf(`{"targetHarness":"codex","effort":%q}`, text)), Requester: agentRequester(agent)}); err == nil {
+			t.Errorf("provider switch effort %q was accepted", text)
+		}
+		if _, err := f.svc.File(ctx, FileInput{Kind: domain.HumanRequestConversationSettings, SessionID: target, Payload: json.RawMessage(fmt.Sprintf(`{"reasoningEffort":%q}`, text)), Requester: agentRequester(agent)}); err == nil {
+			t.Errorf("settings effort %q was accepted when the catalog lists none", text)
+		}
+	}
+	for _, ok := range []string{"claude-opus-4-5", "gpt-5.1/high", "o3:mini", "m_1.2"} {
+		if _, err := f.svc.File(ctx, FileInput{Kind: domain.HumanRequestProviderSwitch, SessionID: target, Payload: json.RawMessage(fmt.Sprintf(`{"targetHarness":"codex","model":%q}`, ok)), Requester: agentRequester(otherType)}); err != nil {
+			t.Errorf("a real model id %q was refused: %v", ok, err)
+		}
+	}
+}
+
+func TestOpenRequestsAreCappedAcrossRequestersToo(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.chat.models = nil
+	for i := 0; i <= MaxOpenTotal+1; i++ {
+		f.chat.models = append(f.chat.models, ports.ChatModel{ID: fmt.Sprintf("m-%d", i)})
+	}
+	f.chat.settings = domain.ConversationSettings{}
+	// Five requesters, each within its own cap of five, fill the global cap of twenty-five.
+	requesters := []domain.SessionID{target, agent, otherType}
+	for n := 4; n <= 5; n++ {
+		now := time.Now().UTC().Truncate(time.Second)
+		rec, err := f.store.CreateSession(ctx, domain.SessionRecord{
+			ProjectID: "repo", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, DisplayName: fmt.Sprintf("Requester %d", n),
+			Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: now}, Metadata: domain.SessionMetadata{Branch: "b", WorkspacePath: "/ws"}, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requesters = append(requesters, rec.ID)
+	}
+	file := func(model int, who domain.HumanRequestRequester) (domain.HumanRequest, error) {
+		return f.svc.File(ctx, FileInput{Kind: domain.HumanRequestConversationSettings, SessionID: target, Payload: json.RawMessage(fmt.Sprintf(`{"model":"m-%d"}`, model)), Requester: who})
+	}
+	var first domain.HumanRequest
+	for i := 0; i < MaxOpenTotal; i++ {
+		req, err := file(i, agentRequester(requesters[i%len(requesters)]))
+		if err != nil {
+			t.Fatalf("request %d of %d: %v", i, MaxOpenTotal, err)
+		}
+		if i == 0 {
+			first = req
+		}
+	}
+	// Past the global cap even a requester with nothing open is refused: inventing a new claimed identity
+	// is not a way around the caps.
+	if _, err := file(MaxOpenTotal, domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}); err == nil || codeOf(t, err) != "HUMAN_REQUEST_LIMIT" {
+		t.Fatalf("the request past the global cap: %v", err)
+	}
+	// A retry of one that is already open still gets its card back.
+	if again, err := file(0, agentRequester(requesters[0])); err != nil || again.ID != first.ID {
+		t.Fatalf("a retry at the global cap = %+v, %v; want %s back", again, err, first.ID)
+	}
+	// Deciding one frees a slot.
+	if _, err := f.svc.Deny(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file(MaxOpenTotal, domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}); err != nil {
+		t.Fatalf("after a slot was freed: %v", err)
 	}
 }

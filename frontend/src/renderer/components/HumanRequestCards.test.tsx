@@ -66,7 +66,7 @@ describe("HumanRequestCards", () => {
 		expect(within(section).getByText("2 requests need your approval")).toBeInTheDocument();
 		const first = section.querySelector('[data-request-id="hr-1"]') as HTMLElement;
 		expect(within(first).getByText("Change model or settings")).toBeInTheDocument();
-		expect(within(first).getByText("Requested by repo-2")).toBeInTheDocument();
+		expect(within(first).getByText("Claims to be repo-2 (not verified)")).toBeInTheDocument();
 		expect(within(first).getByText("Change Fix the bug (repo-1): model to m-b, reasoning effort to medium.")).toBeInTheDocument();
 		expect(within(first).getByText("Model")).toBeInTheDocument();
 		expect(within(first).getByText("m-a → m-b")).toBeInTheDocument();

@@ -44,8 +44,14 @@ func TestNoProductionCodeHandsAChildProcessTheDaemonsStdinOrExtraDescriptors(t *
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.SelectorExpr:
-				if n.Sel.Name == "ExtraFiles" || n.Sel.Name == "ForkExec" {
+				switch n.Sel.Name {
+				case "ExtraFiles", "ForkExec":
 					offences = append(offences, path+": uses "+n.Sel.Name)
+				case "StartProcess", "ProcAttr":
+					// The CLI launches the daemon; the daemon is not its child, so it is not a way into one.
+					if !strings.Contains(filepath.ToSlash(path), "/internal/cli/") {
+						offences = append(offences, path+": uses "+n.Sel.Name)
+					}
 				}
 			case *ast.KeyValueExpr:
 				if key, ok := n.Key.(*ast.Ident); ok && key.Name == "ExtraFiles" {

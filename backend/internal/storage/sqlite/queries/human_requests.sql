@@ -49,3 +49,6 @@ SET state = CASE WHEN state = 'pending' THEN 'expired' ELSE 'failed' END,
 WHERE (state = 'pending' AND expires_at <= sqlc.arg(now))
    OR (state = 'approved' AND decided_at <= sqlc.arg(stale_before))
 RETURNING id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at;
+
+-- name: CountAllPendingHumanRequests :one
+SELECT COUNT(*) FROM human_requests WHERE state = 'pending';
