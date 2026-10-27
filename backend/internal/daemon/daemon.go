@@ -1150,6 +1150,11 @@ func Run(buildVersion string) error {
 	// port Start actually bound. Routed through bs, not lan directly, so the
 	// proxy never gets pinned to a dead port after an ephemeral fallback.
 	// Best-effort: never blocks boot.
+	// One-time, before the restore so the proxy is applied in the same pass.
+	switch out := bs.MigrateSecurePairingV1(); out {
+	case controllers.SecurePairingMigrationEnabled, controllers.SecurePairingMigrationForeignServe, controllers.SecurePairingMigrationFailed:
+		log.Info("secure pairing migration", "outcome", string(out))
+	}
 	if err := restoreMobileOnBoot(mobilebridge.Path(cfg.DataDir), bs); err != nil {
 		log.Warn("restore mobile bridge on boot failed", "err", err)
 	}
