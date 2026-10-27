@@ -936,6 +936,12 @@ type SetSessionAutoResumeRequest struct {
 	// Empty is the human, who may set either value; the main coordinator may only
 	// set never; any other session is refused.
 	SenderSessionID domain.SessionID `json:"senderSessionId,omitempty"`
+	// ConfirmedInApp must be true to set allowed (lift a never protection). Only the AO
+	// app sets it, after the person confirmed in the app's own dialog; the CLI never does,
+	// so no command can lift a protection and a request to allow without it is refused
+	// (403 AUTO_RESUME_LIFT_REQUIRES_APP). It is a cooperative marker, not authentication:
+	// the daemon has no caller identity yet.
+	ConfirmedInApp bool `json:"confirmedInApp,omitempty"`
 }
 
 // SessionAutoResumeResponse reports the policy now in force.

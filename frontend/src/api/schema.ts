@@ -2330,7 +2330,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Read a session's auto-resume policy */
+        get: operations["getSessionAutoResume"];
         /** Set whether AO may resume, replace or tear down a session on its own */
         put: operations["setSessionAutoResume"];
         post?: never;
@@ -5439,6 +5440,7 @@ export interface components {
             enabled: boolean;
         };
         ControllersSetSessionAutoResumeRequest: {
+            confirmedInApp?: boolean;
             /**
              * @description allowed lets AO resume the session after a reboot; never protects it from automatic resume, replacement and teardown.
              * @enum {string}
@@ -16194,6 +16196,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SetSessionAutoInjectReviewResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionAutoResume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersSessionAutoResumeResponse"];
                 };
             };
             /** @description Not Found */

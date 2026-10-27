@@ -159,7 +159,7 @@ func TestCleanupSkipsAProtectedTerminatedSessionUntilItIsUnlocked(t *testing.T) 
 	if err != nil || len(result.Cleaned) != 0 || len(result.Skipped) != 1 {
 		t.Fatalf("Cleanup = %+v err %v, want the protected session skipped", result, err)
 	}
-	if reason := result.Skipped[0].Reason; !strings.Contains(reason, "protected") || !strings.Contains(reason, "set-auto-resume "+string(rec.ID)+" allowed") {
+	if reason := result.Skipped[0].Reason; !strings.Contains(reason, "protected") || !strings.Contains(reason, "AO app") {
 		t.Fatalf("skip reason %q must say it is protected and how to unlock it", reason)
 	}
 	if ws.destroyed != 0 {

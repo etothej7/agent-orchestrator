@@ -43,8 +43,8 @@ history probe).
   conversation or fails; it never starts a new one and never re-runs the saved prompt.
 - **`never` means protected.** `ao session set-auto-resume <id> never` (the human, or the
   main coordinator) stops auto-resume, refuses replacement and project teardown for that
-  session, and makes a kill keep its worktree. Only the human can set it back to
-  `allowed`: from a shell inside AO (which inherits an agent's `AO_SESSION_ID`) run `ao session set-auto-resume <id> allowed --human`, or the request is attributed to that agent and refused (403). The sender is attribution, not authentication; every change is logged with who asked and the old and new value, and setting `never` drops a pending resume intent. The seed protects `optimus_db-1` and `optimus_rails_app-1`. An unreadable
+  session, and makes a kill keep its worktree. Only the person can set it back to
+  `allowed`, and only in the AO app: the session's `...` menu, **Allow automatic resume**, which asks for confirmation. No command can lift a protection: `ao session set-auto-resume <id> allowed` is refused by the CLI (there is no `--human` flag any more), and the daemon refuses a request to allow that the app did not confirm (403 `AUTO_RESUME_LIFT_REQUIRES_APP`). This is cooperative, not authentication: the daemon has no caller identity yet, so a process that deliberately forges the app's confirmation field is not stopped (the standing instructions forbid agents from posing as the human, and the caller-identity work planned for ed.8 closes this). Every change is logged with who asked and the old and new value, and setting `never` drops a pending resume intent. The seed protects `optimus_db-1` and `optimus_rails_app-1`. An unreadable
   policy reads as `never`.
 - The resumer can only call a strict resume, the history probe and the park write on the
   session manager (a reflection test pins this). It cannot kill, clean up, replace or tear

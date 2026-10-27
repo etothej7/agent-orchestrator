@@ -12,8 +12,7 @@ import (
 
 // ErrSessionProtected means the session's auto-resume policy is never (or could not
 // be read), so AO must not replace it, tear it down or remove its worktree on its
-// own. Ed lifts the protection explicitly with `ao session set-auto-resume <id>
-// allowed`.
+// own. Ed lifts the protection explicitly, in the AO app (the session's ... menu).
 var ErrSessionProtected = errors.New("session is protected: its auto-resume policy is never")
 
 // ErrStoppedOnPurpose means a person stopped the agent (or an account or update move

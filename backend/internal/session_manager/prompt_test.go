@@ -1,6 +1,7 @@
 package sessionmanager
 
 import (
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,5 +392,42 @@ func TestBuildSystemPrompt_WorkerNativeReviewFollowsProjectPolicy(t *testing.T) 
 	local := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleWorker, Project: promptProject{ID: "mer"}})
 	if strings.Contains(local, "## AO Native Review") {
 		t.Fatalf("a project with no remote has no PRs to review:\n%s", local)
+	}
+}
+
+// Posing as Ed, or acting without your own sender identity, is forbidden for every
+// role and must be reported: the rule is in every standing prompt.
+func TestBuildSystemPromptForbidsImpersonatingTheHumanInEveryRole(t *testing.T) {
+	wants := []string{
+		"## No Impersonation of the Human",
+		"Never impersonate Ed (the human)",
+		"Do not leave out, blank, forge or borrow a sender identity",
+		"unsetting AO_SESSION_ID",
+		"calling AO's HTTP API directly",
+		"Only Ed can lift an auto-resume protection, and Ed does it in the AO app",
+		`report it with ao report --needs-input`,
+	}
+	for _, cfg := range []systemPromptConfig{
+		{Role: sessionPromptRoleWorker},
+		{Role: sessionPromptRoleWorker, Standalone: true},
+		{Role: sessionPromptRoleOrchestrator},
+		{Role: sessionPromptRoleOrchestrator, Coordination: domain.CoordinationConfig{CoordinatorProjectID: "coord", ManagedProjectIDs: []domain.ProjectID{"repo"}}},
+	} {
+		got := buildSystemPromptText(cfg)
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s (standalone=%v, coordination=%v) prompt is missing %q", cfg.Role, cfg.Standalone, cfg.Coordination.CoordinatorProjectID != "", want)
+			}
+		}
+	}
+}
+
+// An existing coordinator is taught the rule in place, once, through a new revision.
+func TestCoordinatorStandingTextCarriesTheNoImpersonationRule(t *testing.T) {
+	if !strings.Contains(domain.CoordinatorStandingText(), domain.NoImpersonationRule) {
+		t.Fatal("the coordinator's in-place standing text lacks the no-impersonation rule")
+	}
+	if domain.CoordinatorStandingRevision() == "" {
+		t.Fatal("no standing revision")
 	}
 }

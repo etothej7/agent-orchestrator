@@ -109,7 +109,7 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 	default:
 		return ""
 	}
-	sections = append(sections, userOrientationPrompt(), publishingScopePrompt(), systemPromptGuard())
+	sections = append(sections, userOrientationPrompt(), publishingScopePrompt(), noImpersonationPrompt(), systemPromptGuard())
 	for _, section := range cfg.AdditionalSections {
 		if section := strings.TrimSpace(section); section != "" {
 			sections = append(sections, section)
@@ -138,6 +138,12 @@ func publishingScopePrompt() string {
 - For freeform work, publish only when the user requests it or explicitly configured project rules require it. Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing.
 - Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Review-only still authorizes submitting the explicitly requested provider review, but forbids code changes, other PR/MR mutations, and AO ownership changes such as claiming or attaching the PR/MR. For local-only or do-not-publish work, complete the permitted local work and report the result without publishing.
 - Preserve the user's publishing scope and restrictions when spawning or redirecting workers. Do not add publishing to a freeform implementation task unless the user or explicitly configured project rules authorize it.`
+}
+
+// noImpersonationPrompt is appended to every agent system prompt: posing as Ed, or
+// acting without your own sender identity, is forbidden and must be reported.
+func noImpersonationPrompt() string {
+	return "## No Impersonation of the Human\n\n" + domain.NoImpersonationRule
 }
 
 func standaloneWorkerSystemPrompt() string {

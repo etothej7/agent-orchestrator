@@ -1179,6 +1179,27 @@ func (s *Service) SetAutoResumePolicy(ctx context.Context, id domain.SessionID, 
 	return toAPIError(manager.SetAutoResumePolicy(ctx, id, policy, sender))
 }
 
+// AutoResumePolicy reports a session's auto-resume policy. An unreadable policy reads
+// as never (the same fail-closed rule the resumer applies).
+func (s *Service) AutoResumePolicy(ctx context.Context, id domain.SessionID) (domain.AutoResumePolicy, error) {
+	if _, found, err := s.store.GetSession(ctx, id); err != nil {
+		return "", toAPIError(err)
+	} else if !found {
+		return "", apierr.NotFound("SESSION_NOT_FOUND", "Session not found")
+	}
+	reader, ok := s.store.(interface {
+		AutoResumePolicy(ctx context.Context, id domain.SessionID) (domain.AutoResumePolicy, error)
+	})
+	if !ok {
+		return "", apierr.Conflict("AUTO_RESUME_UNSUPPORTED", "This build cannot read an auto-resume policy", nil)
+	}
+	policy, err := reader.AutoResumePolicy(ctx, id)
+	if err != nil {
+		return domain.AutoResumeNever, nil
+	}
+	return policy, nil
+}
+
 // SetAutoReview enables or disables daemon-side review automation for a session.
 func (s *Service) SetAutoReview(ctx context.Context, id domain.SessionID, enabled bool) (domain.Session, error) {
 	updated, err := s.store.SetSessionAutoReview(ctx, id, enabled, s.now())
@@ -1513,12 +1534,11 @@ func mapSessionError(err error) error {
 			"Could not determine who may change this policy right now; try again")
 	case errors.Is(err, sessionmanager.ErrAutoResumeNotPermitted):
 		return apierr.Forbidden("AUTO_RESUME_NOT_PERMITTED",
-			"Only the human can lift an auto-resume protection; the coordinator can only set never. "+
-				"If you are the human running this from a shell inside AO (it inherits AO_SESSION_ID), "+
-				"add --human to `ao session set-auto-resume`.")
+			"Only the person can lift an auto-resume protection, in the AO app (the session's ... menu, Allow automatic resume); "+
+				"an agent or the coordinator can only set never.")
 	case errors.Is(err, sessionmanager.ErrSessionProtected):
 		return apierr.Conflict("SESSION_PROTECTED",
-			"This session is protected from replacement and teardown. Run `ao session set-auto-resume <session> allowed` first if you really mean it.", nil)
+			"This session is protected from replacement and teardown. If you really mean it, the person can allow automatic resume in the AO app (the session's ... menu).", nil)
 	case errors.Is(err, sessionmanager.ErrTerminated):
 		return apierr.Conflict("SESSION_TERMINATED", "Session is terminated", nil)
 	case errors.Is(err, sessionmanager.ErrAgentExited):

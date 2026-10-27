@@ -256,6 +256,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Patch("/sessions/{sessionId}/auto-inject-ci", c.setAutoInjectCIPolicy)
 	r.Put("/sessions/{sessionId}/reviewer", c.setReviewer)
 	r.Put("/sessions/{sessionId}/auto-review", c.setAutoReview)
+	r.Get("/sessions/{sessionId}/auto-resume", c.getAutoResume)
 	r.Put("/sessions/{sessionId}/auto-resume", c.setAutoResume)
 	r.Post("/sessions/{sessionId}/restore", c.restore)
 	r.Post("/sessions/{sessionId}/exit-agent", c.exitAgent)
@@ -2012,6 +2013,26 @@ type sessionAutoResumeSetter interface {
 	SetAutoResumePolicy(ctx context.Context, id domain.SessionID, policy domain.AutoResumePolicy, sender domain.SessionID) error
 }
 
+// sessionAutoResumeReader is the optional service capability behind the policy read.
+type sessionAutoResumeReader interface {
+	AutoResumePolicy(ctx context.Context, id domain.SessionID) (domain.AutoResumePolicy, error)
+}
+
+// getAutoResume reports the policy now in force so the app can offer to lift a protection.
+func (c *SessionsController) getAutoResume(w http.ResponseWriter, r *http.Request) {
+	reader, ok := c.Svc.(sessionAutoResumeReader)
+	if c.Svc == nil || !ok {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/auto-resume")
+		return
+	}
+	policy, err := reader.AutoResumePolicy(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SessionAutoResumeResponse{SessionID: sessionID(r), Policy: policy})
+}
+
 func (c *SessionsController) setAutoResume(w http.ResponseWriter, r *http.Request) {
 	setter, ok := c.Svc.(sessionAutoResumeSetter)
 	if c.Svc == nil || !ok {
@@ -2025,6 +2046,14 @@ func (c *SessionsController) setAutoResume(w http.ResponseWriter, r *http.Reques
 	}
 	if !in.Policy.Valid() {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_AUTO_RESUME_POLICY", "policy must be allowed or never", nil)
+		return
+	}
+	// Lifting a protection is the person's decision, made in the app. The CLI cannot do
+	// it, and a client that does not say the app confirmed it (an old CLI with --human,
+	// a script, an agent) is refused before anything changes.
+	if in.Policy.Allows() && !in.ConfirmedInApp {
+		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "AUTO_RESUME_LIFT_REQUIRES_APP",
+			"Only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume. No command can do it.", nil)
 		return
 	}
 	if err := setter.SetAutoResumePolicy(r.Context(), sessionID(r), in.Policy, in.SenderSessionID); err != nil {

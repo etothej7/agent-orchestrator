@@ -59,7 +59,7 @@ func TestSessionSetAutoResumeRejectsAnUnknownPolicyBeforeCallingTheDaemon(t *tes
 
 	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
 		"session", "set-auto-resume", "demo-1", "maybe")
-	if err == nil || !strings.Contains(err.Error(), "allowed or never") {
+	if err == nil || !strings.Contains(err.Error(), "must be never") {
 		t.Fatalf("error = %v, want a policy error", err)
 	}
 	if len(*seen) != 0 {
@@ -67,39 +67,42 @@ func TestSessionSetAutoResumeRejectsAnUnknownPolicyBeforeCallingTheDaemon(t *tes
 	}
 }
 
-func TestSessionSetAutoResumeSurfacesAForbiddenChange(t *testing.T) {
-	cfg := setConfigEnv(t)
-	srv, _ := autoResumeServer(t, http.StatusForbidden,
-		`{"error":"forbidden","code":"AUTO_RESUME_NOT_PERMITTED","message":"Only the human can lift an auto-resume protection"}`)
-	writeRunFileFor(t, cfg, srv)
+// No command can lift a protection: allowed is refused before the daemon is called,
+// whoever runs it and whatever it inherits, and the old --human flag no longer exists.
+func TestSessionSetAutoResumeCannotLiftAProtection(t *testing.T) {
+	for name, env := range map[string]string{
+		"a person's shell":                "",
+		"a shell inside an agent session": "worker-9",
+		"the coordinator":                 "coord-1",
+	} {
+		cfg := setConfigEnv(t)
+		srv, seen := autoResumeServer(t, http.StatusOK, `{"sessionId":"demo-1","policy":"allowed"}`)
+		writeRunFileFor(t, cfg, srv)
+		t.Setenv("AO_SESSION_ID", env)
 
-	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
-		"session", "set-auto-resume", "demo-1", "allowed")
-	if err == nil || !strings.Contains(err.Error(), "AUTO_RESUME_NOT_PERMITTED") {
-		t.Fatalf("error = %v, want the forbidden code", err)
+		_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+			"session", "set-auto-resume", "demo-1", "allowed")
+		if err == nil || !strings.Contains(err.Error(), "AO app") {
+			t.Fatalf("%s: error = %v, want a refusal that points at the AO app", name, err)
+		}
+		if len(*seen) != 0 {
+			t.Fatalf("%s: a lift reached the daemon: %v", name, *seen)
+		}
 	}
 }
 
-// A person running the command from a shell inside AO inherits an agent's session id and
-// would be refused as that agent; --human sends no sender so the request is the person's.
-func TestSessionSetAutoResumeHumanFlagIgnoresTheInheritedSessionID(t *testing.T) {
+func TestSessionSetAutoResumeHasNoHumanFlag(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, seen := autoResumeServer(t, http.StatusOK, `{"sessionId":"demo-1","policy":"allowed"}`)
 	writeRunFileFor(t, cfg, srv)
 	t.Setenv("AO_SESSION_ID", "worker-9")
 
-	if _, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
-		"session", "set-auto-resume", "demo-1", "allowed", "--human"); err != nil {
-		t.Fatalf("set-auto-resume --human: %v\nstderr=%s", err, errOut)
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "set-auto-resume", "demo-1", "allowed", "--human")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("error = %v, want the flag to be unknown", err)
 	}
-	if len(*seen) != 1 {
-		t.Fatalf("requests = %v", *seen)
-	}
-	var body map[string]string
-	if err := json.Unmarshal([]byte(strings.SplitN((*seen)[0], " ", 3)[2]), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body["policy"] != "allowed" || body["senderSessionId"] != "" {
-		t.Fatalf("body = %v, want the policy with no sender", body)
+	if len(*seen) != 0 {
+		t.Fatalf("a request was sent: %v", *seen)
 	}
 }

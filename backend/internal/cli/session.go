@@ -356,13 +356,13 @@ type sessionAutoResumeResponse struct {
 }
 
 func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
-	var human bool
 	cmd := &cobra.Command{
-		Use:   "set-auto-resume <id> allowed|never",
-		Short: "Set whether AO may resume, replace or tear down a session on its own",
-		Long: "allowed lets AO resume the session after a reboot. never protects it: AO will not resume it,\n" +
-			"replace it or tear its project down, and a kill keeps its worktree. Only the human can lift never;\n" +
-			"the main coordinator may set it.",
+		Use:   "set-auto-resume <id> never",
+		Short: "Protect a session from automatic resume, replacement and teardown",
+		Long: "never protects the session: AO will not resume it, replace it or tear its project down, and a kill\n" +
+			"keeps its worktree. The main coordinator and the person may set it.\n\n" +
+			"Lifting a protection (allowed) is the person's decision and is made only in the AO app, in the\n" +
+			"session's ... menu (Allow automatic resume). No command can lift it, and none may be used to try.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := normalizeSessionID(args[0])
@@ -370,15 +370,15 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 				return err
 			}
 			policy := strings.ToLower(strings.TrimSpace(args[1]))
-			if policy != "allowed" && policy != "never" {
-				return fmt.Errorf("policy must be allowed or never, got %q", args[1])
+			switch policy {
+			case "never":
+			case "allowed":
+				return usageError{errors.New("only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume; no command can lift a protection")}
+			default:
+				return fmt.Errorf("policy must be never, got %q", args[1])
 			}
 			var res sessionAutoResumeResponse
 			req := sessionAutoResumeRequest{Policy: policy, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
-			if human {
-				// The person at the keyboard, in a shell that inherited an agent's session id.
-				req.SenderSessionID = ""
-			}
 			if err := ctx.putJSON(cmd.Context(), "sessions/"+url.PathEscape(id)+"/auto-resume", req, &res); err != nil {
 				return err
 			}
@@ -386,7 +386,6 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().BoolVar(&human, "human", false, "Act as the person, ignoring AO_SESSION_ID (needed to lift never from a shell inside AO)")
 	return cmd
 }
 

@@ -89,7 +89,7 @@ func TestAutoResumeAuthorityErrorsMapToTheRightAPIErrors(t *testing.T) {
 		t.Fatalf("authority unavailable = %v, want a 503-class AUTO_RESUME_AUTHORITY_UNAVAILABLE", err)
 	}
 	err = mapSessionError(fmt.Errorf("set auto-resume x: %w", sessionmanager.ErrAutoResumeNotPermitted))
-	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindForbidden || !strings.Contains(apiErr.Message, "--human") {
-		t.Fatalf("not permitted = %v, want a 403 whose message tells the human about --human", err)
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindForbidden || !strings.Contains(apiErr.Message, "AO app") || strings.Contains(apiErr.Message, "--human") {
+		t.Fatalf("not permitted = %v, want a 403 whose message sends the person to the AO app (and no longer mentions --human)", err)
 	}
 }

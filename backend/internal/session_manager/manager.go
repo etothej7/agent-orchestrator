@@ -5484,7 +5484,7 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		if m.SessionProtected(ctx, rec.ID) {
 			// Never reclaimed on its own: its worktree is untracked by AO after a kill,
 			// and removing it is a deliberate, manual step after the unlock.
-			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "protected: run `ao session set-auto-resume " + string(rec.ID) + " allowed` first"})
+			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "protected: allow automatic resume for it in the AO app first"})
 			continue
 		}
 		ws := workspaceInfo(rec)

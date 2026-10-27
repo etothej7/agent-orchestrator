@@ -6228,6 +6228,44 @@ paths:
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/auto-resume:
+    get:
+      operationId: getSessionAutoResume
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersSessionAutoResumeResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a session's auto-resume policy
+      tags:
+      - sessions
     put:
       operationId: setSessionAutoResume
       parameters:
@@ -15908,6 +15946,8 @@ components:
       type: object
     ControllersSetSessionAutoResumeRequest:
       properties:
+        confirmedInApp:
+          type: boolean
         policy:
           description: allowed lets AO resume the session after a reboot; never protects
             it from automatic resume, replacement and teardown.
