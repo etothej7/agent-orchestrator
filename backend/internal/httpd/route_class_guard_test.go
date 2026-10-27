@@ -99,6 +99,10 @@ func newGuard(cfg GuardConfig, caller *identity.Caller) guardFixture {
 	r.Post("/api/v1/brand-new-write-route", ok)                                     // not in the table
 	r.Get("/api/v1/sessions", ok)                                                   // read: no class needed
 	r.Get("/mux", ok)                                                               // H: a write-capable upgrade
+	r.Put("/api/v1/projects/{id}", ok)                                              // HP: project settings
+	r.Put("/api/v1/projects/{id}/config", ok)                                       // HP: project config
+	r.Post("/api/v1/projects", ok)                                                  // HP: project add
+	r.Post("/api/v1/dev/import-projects", ok)                                       // HP: project import
 	return guardFixture{router: r, reached: &reached, obs: obs, reproof: reproof}
 }
 
@@ -639,5 +643,36 @@ func TestOnceTheCoordinatorIsIdentifiedByAncestryAnonymousCallersAreRefused(t *t
 	state.set(identity.CoordinatorState{Session: "coord-1"})
 	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
 		t.Fatalf("a proven agent was refused in phase 1 (%d)", got)
+	}
+}
+
+// agentMayMerge (and every other permission-widening project setting) is the person's: with the
+// person-only guard on, an agent, a pre-upgrade session known only by ancestry, a reviewer and an
+// anonymous caller each fail to write it through EVERY route that carries a project configuration,
+// in both identity modes, and the handler (the only thing that could store it) never runs. Only the
+// person's request reaches it.
+func TestNoNonHumanCallerCanWriteProjectConfigThroughAnyRoute(t *testing.T) {
+	type route struct{ method, path string }
+	body := `{"config":{"agentMayMerge":true}}`
+	routes := []route{{"PUT", "/api/v1/projects/repo"}, {"PUT", "/api/v1/projects/repo/config"}, {"POST", "/api/v1/projects"}, {"POST", "/api/v1/dev/import-projects"}}
+	for _, mode := range []RouteClassMode{RouteClassObserve, RouteClassEnforce} {
+		for name, c := range map[string]identity.Caller{"agent": worker, "manager": manager, "coordinator": coord, "bridged agent": bridgedWorker, "reviewer": reviewer, "anonymous": anonymous} {
+			caller := c
+			g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
+			for _, rt := range routes {
+				before := *g.reached
+				rec := do(g.router, rt.method, rt.path, body, nil)
+				if rec.Code != http.StatusForbidden || *g.reached != before {
+					t.Errorf("mode %v: %s %s %s %s: status %d, handler reached %v; the project config is person-only", mode, name, rt.method, rt.path, body, rec.Code, *g.reached != before)
+				}
+			}
+		}
+		caller := human
+		g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
+		for _, rt := range routes {
+			if got := do(g.router, rt.method, rt.path, body, nil).Code; got != http.StatusNoContent {
+				t.Errorf("mode %v: the person was refused %s %s (%d)", mode, rt.method, rt.path, got)
+			}
+		}
 	}
 }

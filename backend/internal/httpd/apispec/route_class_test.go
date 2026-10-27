@@ -118,3 +118,97 @@ func TestRouteClassPinnedRows(t *testing.T) {
 		}
 	}
 }
+
+// A write whose request body can carry a project's configuration (which holds permission-widening
+// settings such as agentMayMerge, permissionMode, env and the lifecycle commands) must be
+// person-only (H or HP): otherwise an agent could widen its own permissions with one config write.
+// The routes are found from the OpenAPI request bodies themselves, so a NEW route that accepts the
+// project config fails this test until it is classed human-only.
+func TestEveryWriteThatCanCarryProjectConfigIsPersonOnly(t *testing.T) {
+	var doc struct {
+		Paths      map[string]map[string]any `yaml:"paths"`
+		Components struct {
+			Schemas map[string]any `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(apispec.Default().YAML(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var refsOf func(v any, out map[string]bool)
+	refsOf = func(v any, out map[string]bool) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, child := range x {
+				if s, ok := child.(string); ok && k == "$ref" {
+					out[s[strings.LastIndex(s, "/")+1:]] = true
+					continue
+				}
+				refsOf(child, out)
+			}
+		case []any:
+			for _, child := range x {
+				refsOf(child, out)
+			}
+		}
+	}
+	// schemas that reach ProjectConfig, transitively
+	reaches := map[string]bool{"ProjectConfig": true}
+	for changed := true; changed; {
+		changed = false
+		for name, schema := range doc.Components.Schemas {
+			if reaches[name] {
+				continue
+			}
+			refs := map[string]bool{}
+			refsOf(schema, refs)
+			for r := range refs {
+				if reaches[r] {
+					reaches[name], changed = true, true
+					break
+				}
+			}
+		}
+	}
+	table := map[string]routeclass.Entry{}
+	for _, e := range routeclass.Entries() {
+		table[e.Method+" "+e.Pattern] = e
+	}
+	found := 0
+	for path, ops := range doc.Paths {
+		for method, op := range ops {
+			m := strings.ToUpper(method)
+			if m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions || m == "PARAMETERS" || m == "SERVERS" {
+				continue
+			}
+			body, _ := op.(map[string]any)["requestBody"]
+			refs := map[string]bool{}
+			refsOf(body, refs)
+			carries := false
+			for r := range refs {
+				carries = carries || reaches[r]
+			}
+			if !carries {
+				continue
+			}
+			found++
+			entry, ok := table[m+" "+path]
+			if !ok || (entry.Class != routeclass.H && entry.Class != routeclass.HP) {
+				t.Errorf("%s %s accepts a project configuration but is class %q; it must be person-only (H or HP)", m, path, entry.Class)
+			}
+		}
+	}
+	if found < 3 {
+		t.Fatalf("found %d writes carrying the project config, want at least the add, settings and config routes", found)
+	}
+	// writers the request schemas do not show: the dev import, initialize, clone and permission
+	// policy routes all write project settings too.
+	for _, key := range []string{
+		"POST /api/v1/dev/import-projects", "POST /api/v1/projects/initialize", "POST /api/v1/projects/clone",
+		"PUT /api/v1/projects/{id}", "PUT /api/v1/projects/{id}/config", "PATCH /api/v1/projects/{id}/permissions",
+		"DELETE /api/v1/projects/{id}/permissions",
+	} {
+		if e, ok := table[key]; !ok || (e.Class != routeclass.H && e.Class != routeclass.HP) {
+			t.Errorf("%s writes project settings but is class %q; it must be person-only", key, e.Class)
+		}
+	}
+}
