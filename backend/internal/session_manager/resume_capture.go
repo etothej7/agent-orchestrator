@@ -23,9 +23,11 @@ type resumeCaptureStore interface {
 type resumeCapture struct {
 	window domain.BootWindow
 
-	storiesOnce    sync.Once
-	storySessions  map[domain.SessionID]bool
-	storiesReadErr error
+	// storiesMu guards the story-assignment cache. Only a successful read is cached: a
+	// failed one (for example a deadline on the first session's check) is retried by the
+	// next session instead of making every later session read "no story" for the boot.
+	storiesMu     sync.Mutex
+	storySessions map[domain.SessionID]bool
 }
 
 // SetBootWindow arms resume-intent capture for this boot. The daemon calls it with
@@ -58,7 +60,6 @@ func (m *Manager) captureResumeIntent(ctx context.Context, rec domain.SessionRec
 		return
 	}
 	if rec.IsTerminated || rec.HibernatedAt != nil || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat ||
-		rec.Metadata.ProviderConversationID == "" ||
 		(rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil) {
 		return
 	}
@@ -106,7 +107,7 @@ func (m *Manager) captureResumeIntent(ctx context.Context, rec domain.SessionRec
 		m.logger.Warn("auto-resume: could not record resume intent", "sessionID", rec.ID, "error", err)
 		return
 	}
-	m.logger.Info("auto-resume: captured", "sessionID", rec.ID, "class", stored.Class, "priorActivity", prior,
+	m.logger.Info("auto-resume: captured", "sessionID", rec.ID, "bootId", window.BootID, "class", stored.Class, "priorActivity", prior,
 		"ruleB", ruleB, "interruptedTurns", len(stored.InterruptedTurns), "new", created)
 }
 
@@ -135,28 +136,37 @@ func (m *Manager) resumeClass(ctx context.Context, capture *resumeCapture, rec d
 // autonomous and not done. The stories are read once per boot; an unreadable list
 // reads as "no" (the session then parks idle, which a message still wakes).
 func (c *resumeCapture) servesOpenStory(ctx context.Context, m *Manager, id domain.SessionID) bool {
-	c.storiesOnce.Do(func() {
+	c.storiesMu.Lock()
+	defer c.storiesMu.Unlock()
+	if c.storySessions == nil {
 		lister, ok := m.store.(interface {
 			ListStories(context.Context) ([]domain.Story, error)
 		})
 		if !ok {
-			return
+			return false
 		}
-		stories, err := lister.ListStories(ctx)
+		// The caller's context carries one session's health-check deadline; the list is
+		// read for every session, so it gets its own short bounded context.
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storyListTimeout)
+		defer cancel()
+		stories, err := lister.ListStories(readCtx)
 		if err != nil {
-			c.storiesReadErr = err
-			m.logger.Warn("auto-resume: stories unreadable, idle sessions will park", "error", err)
-			return
+			m.logger.Warn("auto-resume: stories unreadable, this session will park; the next one retries", "sessionID", id, "error", err)
+			return false
 		}
-		c.storySessions = map[domain.SessionID]bool{}
+		sessions := map[domain.SessionID]bool{}
 		for _, story := range stories {
 			if !story.Autonomous || story.Status == "done" {
 				continue
 			}
 			for _, assignment := range story.Assignments {
-				c.storySessions[assignment.SessionID] = true
+				sessions[assignment.SessionID] = true
 			}
 		}
-	})
+		c.storySessions = sessions
+	}
 	return c.storySessions[id]
 }
+
+// storyListTimeout bounds the one story-list read capture does per boot.
+const storyListTimeout = 10 * time.Second

@@ -1,6 +1,8 @@
 package sessionmanager
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -217,5 +219,43 @@ func TestCaptureKeepsALiveIntent(t *testing.T) {
 	f.run(t)
 	if in := f.st.intents["mer-1"]; in.BootID != "boot-1" || in.Attempts != 2 || in.State != domain.ResumeResuming {
 		t.Fatalf("a live intent was replaced: %+v", in)
+	}
+}
+
+// The story list is read once per boot, with its own short context (not the first
+// session's health-check deadline), and only a successful read is cached: a failure must
+// not make every later session read "no story" for the rest of the boot.
+func TestStoryListReadSurvivesACancelledCallerAndIsOnlyCachedOnSuccess(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	m.SetBootWindow(captureWindow())
+	st.stories = []domain.Story{{ID: "s1", Autonomous: true, Status: "in_progress", Assignments: []domain.StoryAssignment{{SessionID: "mer-1"}}}}
+	capture := m.currentResumeCapture()
+
+	// A caller whose deadline already expired (a slow per-session health check) still gets
+	// the list: the read uses its own context.
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !capture.servesOpenStory(expired, m, "mer-1") {
+		t.Fatal("an expired caller context made the story read fail")
+	}
+
+	// A failed read is not cached: the next session retries and succeeds.
+	m2, st2, _ := newChatManager(&recordingLauncher{})
+	m2.SetBootWindow(captureWindow())
+	st2.stories = st.stories
+	st2.storiesErr = errors.New("database is locked")
+	capture2 := m2.currentResumeCapture()
+	if capture2.servesOpenStory(ctx, m2, "mer-1") {
+		t.Fatal("a failed read reported a story")
+	}
+	st2.storiesErr = nil
+	if !capture2.servesOpenStory(ctx, m2, "mer-1") {
+		t.Fatal("a later session still read 'no story' after one failed read")
+	}
+	reads := st2.storyReads
+	capture2.servesOpenStory(ctx, m2, "mer-1")
+	capture2.servesOpenStory(ctx, m2, "other-1")
+	if st2.storyReads != reads {
+		t.Fatalf("a successful read was not cached: %d reads after %d", st2.storyReads, reads)
 	}
 }
