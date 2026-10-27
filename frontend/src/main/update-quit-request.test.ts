@@ -49,6 +49,7 @@ describe("parseUpdateQuitRequest", () => {
 			{ version: "latest" }, { version: "" }, { version: 7 },
 			{ appPid: 0 }, { appPid: -3 }, { appPid: 1.5 }, { appPid: "4242" },
 			{ runnerPid: 0 }, { runnerPid: null },
+			{ recoveryEntry: "" }, { recoveryEntry: "relative.sh" }, { recoveryEntry: 5 }, { recoveryEntry: "/ok.sh\0x" },
 			{ stagedApp: undefined }, { stagedApp: "" }, { stagedApp: "relative/App.app" }, { stagedApp: 7 }, { stagedApp: "/ok/App.app\0x" }, { stagedApp: `/${"x".repeat(1100)}.app` },
 			{ issuedAt: "now" }, { expiresAt: Number.NaN }, { expiresAt: undefined },
 		]) {
@@ -86,6 +87,7 @@ describe("the watcher", () => {
 	let events: string[];
 	let armResult: { value: boolean };
 	let netCancels: string[];
+	let armRequests: Array<{ stamp: string; version: string; recoveryEntry?: string }>;
 	let cancelQuits: number;
 
 	const dir = () => path.join(stateDir, "update-restart");
@@ -116,7 +118,7 @@ describe("the watcher", () => {
 			userIdleSeconds: () => idle.value,
 			appWindowFocused: () => focused.value,
 			relaunchNet: {
-				arm: async (stamp) => { events.push(`arm:${stamp}`); return armResult.value; },
+				arm: async (request) => { armRequests.push(request); events.push(`arm:${request.stamp}`); return armResult.value; },
 				cancel: async (stamp) => { events.push(`cancel-net:${stamp}`); netCancels.push(stamp); },
 			},
 			cancelUpdateQuit: () => { cancelQuits += 1; },
@@ -137,6 +139,7 @@ describe("the watcher", () => {
 		events = [];
 		armResult = { value: true };
 		netCancels = [];
+		armRequests = [];
 		cancelQuits = 0;
 		await stage();
 	});
@@ -337,17 +340,36 @@ describe("the watcher", () => {
 		expect(events.some((e) => e.startsWith("arm:"))).toBe(false);
 	});
 
-	it("the idle gate: the person comes back after the quit was asked for: the quit is stood down and the net cancelled", async () => {
+	it("B2: the person comes back while the quit is under way: nothing is cancelled and the quit is not asked again", async () => {
 		await writeRequest(req());
 		const watcher = make();
 		await watcher.tick();
 		expect(quits).toBe(1);
 		idle.value = 5;
+		focused.value = true;
+		drafts.value = 1; // the controller holds a quit for a draft itself, in before-quit
 		clock.value += 1_000;
+		await watcher.tick();
+		clock.value += QUIT_RETRY_AFTER_MS - 2_000;
+		await watcher.tick();
+		expect(await status()).toMatchObject({ state: "quitting" });
+		expect(netCancels).toEqual([]);
+		expect(cancelQuits).toBe(0);
+		expect(quits).toBe(1);
+	});
+
+	it("B2: once the quit was asked and the app is still alive after the retry window, the gates apply again and the net is stood down", async () => {
+		await writeRequest(req());
+		const watcher = make();
+		await watcher.tick();
+		expect(quits).toBe(1);
+		idle.value = 5;
+		clock.value += QUIT_RETRY_AFTER_MS + 1;
 		await watcher.tick();
 		expect(await status()).toMatchObject({ state: "deferred", reason: "user_active" });
 		expect(netCancels).toEqual([STAMP]);
 		expect(cancelQuits).toBeGreaterThan(0);
+		expect(quits).toBe(1);
 	});
 
 	it("staged binding: a request whose staged app is not inside update/staged/<stamp>/ is rejected and removed without quitting", async () => {
@@ -388,6 +410,12 @@ describe("the watcher", () => {
 		expect(events).toEqual([`arm:${STAMP}`, "quit"]);
 	});
 
+	it("passes the version and the recovery entry the request names to the net", async () => {
+		await writeRequest(req({ recoveryEntry: "/Users/someone/.ao/update/staged/recover.sh" }));
+		await make().tick();
+		expect(armRequests).toEqual([{ stamp: STAMP, version: "0.14.5-ed.7.2", recoveryEntry: "/Users/someone/.ao/update/staged/recover.sh" }]);
+	});
+
 	it("never quits when the net cannot be armed: it defers (safety_net_unavailable), keeps the request and tries again", async () => {
 		await writeRequest(req());
 		armResult.value = false;
@@ -417,7 +445,7 @@ describe("the watcher", () => {
 		const watcher = make();
 		await watcher.tick();
 		drafts.value = 1;
-		clock.value += 1_000;
+		clock.value += QUIT_RETRY_AFTER_MS + 1; // the quit was held (the app is still here): the window passed
 		await watcher.tick();
 		expect(await status()).toMatchObject({ state: "deferred", reason: "unsent_drafts" });
 		expect(netCancels).toEqual([STAMP]);

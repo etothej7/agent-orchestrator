@@ -99,6 +99,7 @@ import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
 import { createUpdateQuitWatcher } from "./main/update-quit-request";
 import { createRelaunchNet } from "./main/update-relaunch-net";
+import { aoWindowFocused } from "./main/app-focus";
 import { createCoordinatorBadge } from "./main/coordinator-badge";
 import { confirmFullQuit } from "./main/quit-confirmation";
 import {
@@ -3352,12 +3353,14 @@ function startUpdateQuitWatcher(): void {
 		now: Date.now,
 		draftRiskCount: () => chatDraftRisks.length,
 		userIdleSeconds: () => powerMonitor.getSystemIdleTime(),
-		appWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
+		// The shell is a BaseWindow, which BrowserWindow.getFocusedWindow() never returns: ask both.
+		appWindowFocused: () => aoWindowFocused({ BaseWindow, BrowserWindow }),
 		// If the quit goes through and nothing brings AO back, this relaunches it hidden after ten minutes.
 		relaunchNet: createRelaunchNet({
 			stateDir,
 			appPath: resolveBundlePath(),
-			exeName: path.basename(process.execPath),
+			fromVersion: app.getVersion(),
+			uid: process.getuid?.() ?? -1,
 			lockPath: path.join(stateDir, "install.lock"),
 			markerPath: path.join(stateDir, "install-swap-marker"),
 		}),

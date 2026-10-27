@@ -15,6 +15,7 @@ an address or a credential.
   "stamp": "20261027T230000Z",
   "version": "0.14.5-ed.7.2",
   "stagedApp": "/Users/me/.ao/update/staged/20261027T230000Z/Agent Orchestrator.app",
+  "recoveryEntry": "/Users/me/.ao/update/staged/20261027T230000Z/recover.sh",
   "appPid": 4242,
   "runnerPid": 9001,
   "issuedAt": 1800000000000,
@@ -26,22 +27,30 @@ an address or a credential.
   pid, so a request left behind by an earlier run can never quit the next app: it rejects the file and removes it.
 * The file must be a regular file owned by the user, mode 0600 (no group or world access), at most 4 KB, not a symlink.
 * `expiresAt - issuedAt` is at most 30 minutes; `issuedAt` may be at most 60 s in the future.
+* `recoveryEntry` is optional: the installer's recovery entry (an absolute path), which the relaunch net runs if an
+  install is left half-swapped (see 2b). The net only runs it if it is a regular file owned by the user, executable and
+  not group- or world-writable.
 * **The request names a staged update** (`stagedApp` + `version`). The app checks, on every poll, that
   `stagedApp` resolves (realpath, so a symlink cannot lead out) to a directory ending in `.app` inside
   `<state dir>/update/staged/<stamp>/`; that the `<stamp>` folder is a real directory (not a symlink) and the app,
   folder and `Contents/Info.plist` are owned by the user and not group- or world-writable; and that the Info.plist
-  `CFBundleShortVersionString` equals `version`. Otherwise the request is rejected (`staged_invalid`) and removed.
+  `CFBundleShortVersionString` equals `version`. The Info.plist is resolved with realpath too and must still be inside the
+  staged app, so a symlinked `Contents/` or Info.plist cannot lead out. Otherwise the request is rejected (`staged_invalid`) and removed.
   This is not authentication (a same-user process can fabricate a staged folder); the package's cryptographic checks
   (CDHash, hashes) stay with the runner. It stops stray, stale or half-written requests.
 * The app polls once a second (packaged builds only). A valid request starts an *update quit*: no warning, no
   relaunch, and **never a dialog**. It is honoured only when ALL of these hold; otherwise the request is kept and
   the app reports `deferred`, so the quit happens as soon as they do, or the request expires:
-  1. the Mac has been idle for at least 300 s (`powerMonitor.getSystemIdleTime()`) and no AO window has the focus
-     (`reason: "user_active"`; a person who comes back after the quit was asked for stands it down again, and the
-     relaunch net below is cancelled);
+  1. the Mac has been idle for at least 300 s (`powerMonitor.getSystemIdleTime()`) and no AO window has the focus.
+     AO's shell is a `BaseWindow`, so focus is read from `BaseWindow.getFocusedWindow()` (and `BrowserWindow`'s)
+     (`reason: "user_active"`);
   2. no unsent chat draft is at risk (`reason: "unsent_drafts"`; never a dialog);
   3. the relaunch safety net is armed (`reason: "safety_net_unavailable"` if it cannot be: AO does not quit).
-  A quit that did not take effect (the app is still here) is asked for again after 30 s. The "update quit in
+  **Once the quit has been asked for, it is under way**: for the next 30 s the gates are not asked again and nothing
+  is cancelled (the app can take seconds to tear down, and nothing can stop the quit any more; the relaunch net stays
+  armed). Only a quit that did not take effect (a draft held it in `before-quit`, or the app is still here after the
+  30 s) is stood down: the gates apply again, the net is cancelled if a gate defers, and the quit is asked for again
+  when they pass. The "update quit in
   progress" state that suppresses the draft dialog lasts at most 20 s of quiet, and is cleared when the watcher
   stands the quit down.
 
@@ -62,15 +71,31 @@ AO must never stay closed, whatever dies. Before the app honours a quit it arms 
 (it outlives the app) that does not depend on the runner:
 
 * `net.pid` is written by the net as soon as it runs; the app only quits once it exists.
-* After **600 s** the net looks: if a cancel file exists it stops (`outcome` = `cancelled`); if an AO app process is
+* After **600 s** the net looks (a net pid whose process is not a relaunch net, for example a reused pid number, is
+  not trusted: arming starts a real one): if a cancel file exists it stops (`outcome` = `cancelled`); if an AO app process is
   running (`^<app>/Contents/MacOS/`) it stops (`app_running`); otherwise it relaunches hidden with `open -g -j <app>`
   (`relaunched`).
 * It first waits while the installer is mid-swap or rolling back: `~/.ao/install-swap-marker` exists, or
   `~/.ao/install.lock/` exists with a live owner pid (or no pid yet). A stale lock (dead owner) is ignored. If that
-  goes on for 45 minutes it relaunches anyway.
+  goes on for 45 minutes it gives up waiting. The lock's pid must be digits only; a sign, a space or text is a stale
+  lock. The `pgrep` pattern is the app path with regex characters escaped.
+* **A swap marker still there when the wait runs out means the bundle may be half-swapped, and the net NEVER
+  relaunches** (launching it would block the installer's own startup recovery, which refuses while the app or daemon
+  runs with a marker). It runs the installer's recovery entry if one is recorded (the request's `recoveryEntry`, or a
+  line `M_RECOVERY="<absolute path>"` in the marker), which restores a consistent bundle and relaunches:
+  `outcome` = `recovery_ok` (exit 0) or `recovery_failed`. With no usable recovery entry `outcome` = `blocked_marker`.
+  In both failure cases AO stays closed, and the net writes a stopped result
+  (`update/runs/<stamp>/result.json`, write-once, a runner's result is never overwritten) with one failed check,
+  `relaunch_net_blocked_marker` or `relaunch_net_recovery_failed`, and a plain text ("AO was left closed on purpose: an
+  update was interrupted part-way and the installer has to recover it before AO can start. Nothing was relaunched."),
+  so the update manager's single message tells the person. The file passes `validateUpdateResult`.
 * **The runner cancels the net on success** by creating `relaunch-net/<stamp>/cancel` (any content). The app also
   cancels it when the quit is called off (a draft appeared, the person came back, the request expired or was
   removed), and arms it again when the quit goes ahead. Arming is idempotent per stamp.
+* **Runner contract:** cancel the net only after the new app has been verified running (the installer's post-launch
+  checks), not when the swap finishes. If `validateUpdateResult` refuses a result (for example a long path-like string
+  with digits trips the base64 rule, or `abc::def` looks like IPv6), write a generic fallback text rather than losing
+  the failure message.
 * The net runs with a minimal environment (no inherited secrets) and writes `outcome` once, then exits.
 
 ## 3. Result (runner -> update manager): `update/runs/<stamp>/result.json`

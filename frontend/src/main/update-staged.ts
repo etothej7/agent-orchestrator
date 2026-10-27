@@ -57,7 +57,9 @@ export async function verifyStagedPackage(input: {
 		const appInfo = await lstat(realApp);
 		if (!appInfo.isDirectory() || !privateEnough(appInfo, uid)) return { ok: false };
 
-		const plistFile = path.join(realApp, "Contents", "Info.plist");
+		// realpath again: a symlinked Contents/ (or Info.plist) must not lead out of the staged app.
+		const plistFile = await realpath(path.join(realApp, "Contents", "Info.plist"));
+		if (!plistFile.startsWith(realApp + path.sep)) return { ok: false };
 		const plistInfo = await lstat(plistFile);
 		if (!plistInfo.isFile() || plistInfo.size > MAX_PLIST_BYTES || !privateEnough(plistInfo, uid)) return { ok: false };
 		const version = await (input.readAppVersion ?? readAppVersion)(plistFile);

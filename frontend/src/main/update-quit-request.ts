@@ -50,6 +50,8 @@ export type UpdateQuitRequest = {
 	version: string;
 	/** The staged app (a path inside `<stateDir>/update/staged/<stamp>/`). */
 	stagedApp: string;
+	/** The installer's recovery entry (an absolute path), run by the relaunch net if an install is left half-swapped. */
+	recoveryEntry?: string;
 	/** The pid of the app that must quit. */
 	appPid: number;
 	runnerPid: number;
@@ -95,6 +97,7 @@ export function parseUpdateQuitRequest(raw: string, now: number): ParsedQuitRequ
 		typeof v.stamp !== "string" || !STAMP.test(v.stamp) ||
 		typeof v.version !== "string" || !VERSION.test(v.version) ||
 		typeof v.stagedApp !== "string" || v.stagedApp.length === 0 || v.stagedApp.length > MAX_STAGED_PATH || v.stagedApp.includes("\0") || !path.isAbsolute(v.stagedApp) ||
+		(v.recoveryEntry !== undefined && (typeof v.recoveryEntry !== "string" || v.recoveryEntry.length === 0 || v.recoveryEntry.length > MAX_STAGED_PATH || v.recoveryEntry.includes("\0") || !path.isAbsolute(v.recoveryEntry))) ||
 		!positiveInt(v.appPid) || !positiveInt(v.runnerPid) ||
 		typeof v.issuedAt !== "number" || !Number.isFinite(v.issuedAt) ||
 		typeof v.expiresAt !== "number" || !Number.isFinite(v.expiresAt) ||
@@ -105,7 +108,7 @@ export function parseUpdateQuitRequest(raw: string, now: number): ParsedQuitRequ
 	if (v.expiresAt <= now) return { ok: false, reason: "expired", stamp: v.stamp };
 	return {
 		ok: true,
-		request: { stamp: v.stamp, version: v.version, stagedApp: v.stagedApp, appPid: v.appPid, runnerPid: v.runnerPid, issuedAt: v.issuedAt, expiresAt: v.expiresAt },
+		request: { stamp: v.stamp, version: v.version, stagedApp: v.stagedApp, ...(typeof v.recoveryEntry === "string" ? { recoveryEntry: v.recoveryEntry } : {}), appPid: v.appPid, runnerPid: v.runnerPid, issuedAt: v.issuedAt, expiresAt: v.expiresAt },
 	};
 }
 
@@ -135,7 +138,10 @@ export type UpdateQuitWatcherDeps = {
 	/** An AO window has the focus. */
 	appWindowFocused(): boolean;
 	/** The relaunch safety net: `arm` is true only once it is running; `cancel` stops it. */
-	relaunchNet: { arm(stamp: string): Promise<boolean>; cancel(stamp: string): Promise<void> };
+	relaunchNet: {
+		arm(request: { stamp: string; version: string; recoveryEntry?: string }): Promise<boolean>;
+		cancel(stamp: string): Promise<void>;
+	};
 	/** Gives up an update quit that was asked for (clears its no-dialog state). */
 	cancelUpdateQuit(): void;
 	/** Idle seconds required; defaults to UPDATE_QUIT_MIN_IDLE_SECONDS. */
@@ -219,6 +225,11 @@ export function createUpdateQuitWatcher(deps: UpdateQuitWatcherDeps) {
 			});
 			if (!staged.ok) return await reject("staged_invalid", request.stamp);
 
+			// The quit has been asked for and is under way (the app can take seconds to tear down). Nothing here can stop it
+			// any more, so the gates are not asked again and the net is never cancelled: only a quit that was actually
+			// prevented (a draft held it in before-quit, or this window passed with the app still alive) is stood down.
+			if (quitAskedAt && quitAskedAt.stamp === request.stamp && deps.now() - quitAskedAt.at < QUIT_RETRY_AFTER_MS) return;
+
 			if (deps.appWindowFocused() || deps.userIdleSeconds() < (deps.minIdleSeconds ?? UPDATE_QUIT_MIN_IDLE_SECONDS)) {
 				await standDown();
 				await report({ state: "deferred", reason: "user_active", stamp: request.stamp });
@@ -229,9 +240,8 @@ export function createUpdateQuitWatcher(deps: UpdateQuitWatcherDeps) {
 				await report({ state: "deferred", reason: "unsent_drafts", stamp: request.stamp });
 				return;
 			}
-			if (quitAskedAt && quitAskedAt.stamp === request.stamp && deps.now() - quitAskedAt.at < QUIT_RETRY_AFTER_MS) return;
 			// AO never quits without a recovery that does not depend on the runner staying alive.
-			if (!(await deps.relaunchNet.arm(request.stamp))) {
+			if (!(await deps.relaunchNet.arm({ stamp: request.stamp, version: request.version, ...(request.recoveryEntry ? { recoveryEntry: request.recoveryEntry } : {}) }))) {
 				await report({ state: "deferred", reason: "safety_net_unavailable", stamp: request.stamp });
 				return;
 			}

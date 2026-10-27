@@ -96,6 +96,21 @@ describe("verifyStagedPackage", () => {
 		expect((await verify()).ok).toBe(false);
 	});
 
+	it("refuses a symlinked Contents folder or Info.plist that leads out of the staged app (version check on a file outside)", async () => {
+		const outside = path.join(state, "outside");
+		await mkdir(path.join(outside, "Contents"), { recursive: true });
+		await writeFile(path.join(outside, "Contents", "Info.plist"), plist(VERSION), { mode: 0o644 });
+		// 1. Contents is a symlink to a folder outside the app
+		await mkdir(appPath(), { recursive: true, mode: 0o755 });
+		await symlink(path.join(outside, "Contents"), path.join(appPath(), "Contents"));
+		expect((await verify()).ok).toBe(false);
+		// 2. Contents is real, Info.plist is a symlink to a file outside
+		await rm(path.join(appPath(), "Contents"), { force: true });
+		await mkdir(path.join(appPath(), "Contents"), { recursive: true, mode: 0o755 });
+		await symlink(path.join(outside, "Contents", "Info.plist"), path.join(appPath(), "Contents", "Info.plist"));
+		expect((await verify()).ok).toBe(false);
+	});
+
 	it("refuses when the app's version is not the version the request names", async () => {
 		await stage("0.14.5-ed.7.1");
 		expect((await verify()).ok).toBe(false);
