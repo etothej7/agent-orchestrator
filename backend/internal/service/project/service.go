@@ -734,12 +734,16 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := confineAgentMerge(ctx, row.Config.AgentMayMerge, &in.Config); err != nil {
 		return Project{}, err
 	}
+	wantMerge := in.Config.AgentMayMerge
 	updated, err := m.store.UpdateProjectSettings(ctx, string(id), inDisplayName, in.Config)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_SETTINGS_UPDATE_FAILED", "Failed to update project settings")
 	}
 	if !updated {
 		return Project{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
+	}
+	if err := m.applyAgentMerge(ctx, id, row.Config.AgentMayMerge, wantMerge); err != nil {
+		return Project{}, err
 	}
 	row.DisplayName = inDisplayName
 	row.Config = in.Config
@@ -773,9 +777,13 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := confineAgentMerge(ctx, row.Config.AgentMayMerge, &in.Config); err != nil {
 		return Project{}, err
 	}
+	stored := row.Config.AgentMayMerge
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
+	}
+	if err := m.applyAgentMerge(ctx, id, stored, in.Config.AgentMayMerge); err != nil {
+		return Project{}, err
 	}
 	return m.projectFromRow(ctx, row), nil
 }

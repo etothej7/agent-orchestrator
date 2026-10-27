@@ -137,15 +137,45 @@ func (q *Queries) PinProjectSessionPermissions(ctx context.Context, arg PinProje
 	return err
 }
 
+const setProjectAgentMayMerge = `-- name: SetProjectAgentMayMerge :execrows
+UPDATE projects
+SET config = CASE
+    WHEN CAST(?1 AS INTEGER) = 1 THEN json_set(CASE WHEN json_valid(config) THEN config ELSE '{}' END, '$.agentMayMerge', json('true'))
+    ELSE json_remove(CASE WHEN json_valid(config) THEN config ELSE '{}' END, '$.agentMayMerge')
+END
+WHERE id = ?2 AND archived_at IS NULL
+`
+
+type SetProjectAgentMayMergeParams struct {
+	Enabled int64
+	ID      domain.ProjectID
+}
+
+// The only statement that changes whether agents may merge. The caller must be the person (the service checks).
+func (q *Queries) SetProjectAgentMayMerge(ctx context.Context, arg SetProjectAgentMayMergeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setProjectAgentMayMerge, arg.Enabled, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateProjectSettings = `-- name: UpdateProjectSettings :execrows
 UPDATE projects
-SET display_name = ?, config = ?
-WHERE id = ? AND archived_at IS NULL
+SET display_name = ?1,
+    -- agentMayMerge is kept from the stored row (see UpsertProject); only SetProjectAgentMayMerge changes it.
+    config = CASE
+        WHEN json_valid(projects.config) AND json_extract(projects.config, '$.agentMayMerge') = 1
+            THEN json_set(CASE WHEN json_valid(?2) THEN ?2 ELSE '{}' END, '$.agentMayMerge', json('true'))
+        WHEN json_valid(?2) THEN json_remove(?2, '$.agentMayMerge')
+        ELSE ?2
+    END
+WHERE id = ?3 AND archived_at IS NULL
 `
 
 type UpdateProjectSettingsParams struct {
 	DisplayName string
-	Config      sql.NullString
+	Config      interface{}
 	ID          domain.ProjectID
 }
 
@@ -166,7 +196,15 @@ ON CONFLICT (id) DO UPDATE SET
     display_name = excluded.display_name,
     registered_at = excluded.registered_at,
     archived_at = excluded.archived_at,
-    config = excluded.config,
+    -- agentMayMerge is the person's setting and is changed only by SetProjectAgentMayMerge: whatever a writer
+    -- carries for it (a stale copy it read earlier, or an agent's rewrite) is replaced by the stored value, in
+    -- the same statement that writes the rest, so no interleaving can flip it.
+    config = CASE
+        WHEN json_valid(projects.config) AND json_extract(projects.config, '$.agentMayMerge') = 1
+            THEN json_set(CASE WHEN json_valid(excluded.config) THEN excluded.config ELSE '{}' END, '$.agentMayMerge', json('true'))
+        WHEN json_valid(excluded.config) THEN json_remove(excluded.config, '$.agentMayMerge')
+        ELSE excluded.config
+    END,
     kind = excluded.kind
 `
 
@@ -203,7 +241,15 @@ ON CONFLICT (id) DO UPDATE SET
     repo_origin_url = excluded.repo_origin_url,
     display_name = excluded.display_name,
     archived_at = excluded.archived_at,
-    config = excluded.config,
+    -- agentMayMerge is the person's setting and is changed only by SetProjectAgentMayMerge: whatever a writer
+    -- carries for it (a stale copy it read earlier, or an agent's rewrite) is replaced by the stored value, in
+    -- the same statement that writes the rest, so no interleaving can flip it.
+    config = CASE
+        WHEN json_valid(projects.config) AND json_extract(projects.config, '$.agentMayMerge') = 1
+            THEN json_set(CASE WHEN json_valid(excluded.config) THEN excluded.config ELSE '{}' END, '$.agentMayMerge', json('true'))
+        WHEN json_valid(excluded.config) THEN json_remove(excluded.config, '$.agentMayMerge')
+        ELSE excluded.config
+    END,
     kind = excluded.kind
 `
 

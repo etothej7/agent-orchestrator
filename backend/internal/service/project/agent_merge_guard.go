@@ -30,3 +30,17 @@ func confineAgentMerge(ctx context.Context, stored bool, cfg *domain.ProjectConf
 	cfg.AgentMayMerge = stored
 	return nil
 }
+
+// applyAgentMerge writes the person's choice of agentMayMerge after the rest of the config was saved. The config
+// writers keep the stored value inside their own statement (so a racing or stale write cannot flip it), which is why
+// this is a separate, single-purpose write; only the person gets here with a changed value (confineAgentMerge has
+// already refused anyone else, and kept the stored value for them).
+func (m *Service) applyAgentMerge(ctx context.Context, id domain.ProjectID, stored, wanted bool) error {
+	if stored == wanted {
+		return nil
+	}
+	if _, err := m.store.SetProjectAgentMayMerge(ctx, string(id), wanted); err != nil {
+		return apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
+	}
+	return nil
+}

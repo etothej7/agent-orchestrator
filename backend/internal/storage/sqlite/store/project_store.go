@@ -220,6 +220,24 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, id, displayName strin
 	return rows > 0, nil
 }
 
+// SetProjectAgentMayMerge turns on or off whether agents may merge pull requests for a project, and is the ONLY
+// write that changes it: every other writer of a project's config keeps the stored value inside its own statement,
+// so a stale or hostile copy of the config cannot flip it. The caller must be the person. It returns false when
+// the project is missing or archived.
+func (s *Store) SetProjectAgentMayMerge(ctx context.Context, id string, enabled bool) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	flag := int64(0)
+	if enabled {
+		flag = 1
+	}
+	rows, err := s.qw.SetProjectAgentMayMerge(ctx, gen.SetProjectAgentMayMergeParams{Enabled: flag, ID: domain.ProjectID(id)})
+	if err != nil {
+		return false, fmt.Errorf("set agentMayMerge for project %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // CountProjectsIncludingArchived returns all registry rows, including projects
 // the user archived. It is intentionally separate from ListProjects so first-run
 // seeding does not recreate Scratch after any project has existed.
