@@ -608,3 +608,36 @@ func TestARefusedBridgedCallerIsPrioritizedByItsMatchedSession(t *testing.T) {
 		t.Fatalf("prioritized %v, want the kernel-matched worker-1", rp.asked)
 	}
 }
+
+// Once the bridge has identified the active coordinator on a coordinator-only route, a caller that
+// proved nothing and matched no session is refused there, even though the coordinator holds no
+// proof yet; before that, anonymous callers still pass (phase 1).
+func TestOnceTheCoordinatorIsIdentifiedByAncestryAnonymousCallersAreRefused(t *testing.T) {
+	p := "/api/v1/sessions/coord-1/conversation/human-decisions"
+	state := &fakeCoordinatorBox{s: identity.CoordinatorState{Session: "coord-1"}}
+	caller := anonymous
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve, Coordinator: state}, &caller)
+	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("anonymous refused before the coordinator was identified (%d)", got)
+	}
+	caller = bridgedCoord
+	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("the bridged coordinator was refused (%d)", got)
+	}
+	caller = anonymous
+	rec := do(g.router, "POST", p, "{}", nil)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "COORDINATOR_IDENTITY_REQUIRED") {
+		t.Fatalf("anonymous after the coordinator was identified = %d %s, want 403 COORDINATOR_IDENTITY_REQUIRED", rec.Code, rec.Body.String())
+	}
+	// the memory is about THAT coordinator: a replacement that was not identified reopens phase 1 for itself
+	state.set(identity.CoordinatorState{Session: "coord-2"})
+	if got := call(g.router, "POST", "/api/v1/sessions/coord-2/conversation/human-decisions", nil); got != http.StatusNoContent {
+		t.Fatalf("anonymous refused for a different, unidentified coordinator (%d)", got)
+	}
+	// a proven agent (the new coordinator after its relaunch) is unaffected by the memory
+	caller = worker
+	state.set(identity.CoordinatorState{Session: "coord-1"})
+	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("a proven agent was refused in phase 1 (%d)", got)
+	}
+}

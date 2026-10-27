@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
 
@@ -52,6 +53,9 @@ type GuardConfig struct {
 	Reproof Prioritizer
 	// Observer, when set, is told about every anonymous call on a classified route.
 	Observer Observer
+	// bridgedCoordinator remembers, for this daemon run, the coordinator session the bridge has
+	// identified on a coordinator-only route. Set by routeClassGuard.
+	bridgedCoordinator *atomic.Value
 }
 
 // CoordinatorProofs reports the active coordinator's proof state, looked up per request so a
@@ -114,6 +118,7 @@ const maxKindPeek = 1 << 20
 // Reads need no class, except the terminal upgrade (GET /mux), which can type into any terminal.
 // The route's own predicate (self, owner, manager, reviewer of that run) is the handler's job.
 func routeClassGuard(router chi.Routes, cfg GuardConfig, log *slog.Logger) func(http.Handler) http.Handler {
+	cfg.bridgedCoordinator = &atomic.Value{}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !needsClass(r) || requestscope.IsLAN(r.Context()) {
@@ -195,11 +200,20 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 		// observe-allowed (below).
 		if caller.IsBridged() {
 			if state.Session != "" && caller.Session == state.Session {
+				cfg.bridgedCoordinator.Store(state.Session)
 				cfg.noteAnonymous(r, entry, pattern, caller, true, "")
 				return "", false
 			}
 			cfg.noteAnonymous(r, entry, pattern, caller, false, codeCallerIdentityNeeds)
 			return codeCallerIdentityNeeds, true
+		}
+		// Once the bridge has identified the active coordinator, a caller that proved nothing and
+		// matched no session is not that coordinator: refused, as after a proof.
+		if !caller.IsAgent() && !caller.IsReviewer() && state.Session != "" {
+			if seen, _ := cfg.bridgedCoordinator.Load().(domain.SessionID); seen == state.Session {
+				cfg.noteAnonymous(r, entry, pattern, caller, false, codeCoordinatorIdent)
+				return codeCoordinatorIdent, true
+			}
 		}
 	}
 	if caller.IsAgent() || caller.IsReviewer() {
