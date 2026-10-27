@@ -6631,6 +6631,7 @@ export interface components {
         };
         ProjectConfig: {
             agentConfig?: components["schemas"]["AgentConfig"];
+            agentMayMerge?: boolean;
             agentRules?: string;
             agentRulesFile?: string;
             autoReview?: boolean;

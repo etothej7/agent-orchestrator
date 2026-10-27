@@ -1,6 +1,10 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestProjectConfigValidate(t *testing.T) {
 	tests := []struct {
@@ -218,5 +222,33 @@ func TestProjectConfigIsZero(t *testing.T) {
 	}
 	if (ProjectConfig{AutoReview: true}).IsZero() {
 		t.Fatal("config with autoReview enabled should not be zero")
+	}
+}
+
+func TestAgentsMayNotMergeUnlessAPersonTurnedItOn(t *testing.T) {
+	if (ProjectConfig{}).AgentMergeAllowed() {
+		t.Fatal("a zero project config lets agents merge")
+	}
+	// Projects stored before the setting existed, and ones that never mention it, stay off.
+	for name, raw := range map[string]string{
+		"empty object":         `{}`,
+		"a pre-existing block": `{"defaultBranch":"main","autoReview":true,"workersRequestReview":true}`,
+		"explicitly off":       `{"agentMayMerge":false}`,
+		"wrong type":           `{"agentMayMerge":"yes"}`,
+	} {
+		var cfg ProjectConfig
+		_ = json.Unmarshal([]byte(raw), &cfg) // a malformed value must not turn it on either
+		if cfg.AgentMergeAllowed() {
+			t.Errorf("%s: agents may merge", name)
+		}
+	}
+	var on ProjectConfig
+	if err := json.Unmarshal([]byte(`{"agentMayMerge":true}`), &on); err != nil || !on.AgentMergeAllowed() {
+		t.Fatalf("an explicit true was not honoured: %v %+v", err, on)
+	}
+	// Off is not written out, so saving a project never records a permission nobody gave.
+	out, err := json.Marshal(ProjectConfig{})
+	if err != nil || strings.Contains(string(out), "agentMayMerge") {
+		t.Fatalf("a default config serialises the setting: %s %v", out, err)
 	}
 }
