@@ -58,7 +58,7 @@ func (s *Serve) Apply(ctx context.Context, bridgePort int, ownedPorts ...int) er
 	if cfg.funnel {
 		return ErrFunnelExposed
 	}
-	if cfg.inUse && !(cfg.proxyPort > 0 && containsPort(ownedPorts, cfg.proxyPort)) {
+	if cfg.inUse && !cfg.ownedBy(ownedPorts) {
 		return ErrForeignServe
 	}
 	target := fmt.Sprintf("http://127.0.0.1:%d", bridgePort)
@@ -78,13 +78,18 @@ func (s *Serve) Clear(ctx context.Context, ownedPorts ...int) error {
 	if err != nil {
 		return err
 	}
-	if !cfg.inUse || !(cfg.proxyPort > 0 && containsPort(ownedPorts, cfg.proxyPort)) {
+	if !cfg.inUse || !cfg.ownedBy(ownedPorts) {
 		return nil
 	}
 	if _, err := s.run(ctx, "serve", "--https=443", "off"); err != nil {
 		return fmt.Errorf("tailscale serve --https=443 off: %w", err)
 	}
 	return nil
+}
+
+// ownedBy reports whether :443 is AO's single loopback proxy to one of ports.
+func (c serve443) ownedBy(ports []int) bool {
+	return c.proxyPort > 0 && containsPort(ports, c.proxyPort)
 }
 
 func containsPort(ports []int, p int) bool {
@@ -164,12 +169,10 @@ func (s *Serve) inspect(ctx context.Context) (serve443, error) {
 	if len(handlers) != 1 || !ok || h.Path != "" || h.Text != "" || h.Redirect != "" {
 		return cfg, nil
 	}
-	u, err := url.Parse(h.Proxy)
-	if err != nil || u.Scheme != "http" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
-		return cfg, nil
-	}
-	if port, err := strconv.Atoi(u.Port()); err == nil && port > 0 {
-		cfg.proxyPort = port
+	if u, perr := url.Parse(h.Proxy); perr == nil && u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") {
+		if port, aerr := strconv.Atoi(u.Port()); aerr == nil && port > 0 {
+			cfg.proxyPort = port
+		}
 	}
 	return cfg, nil
 }
