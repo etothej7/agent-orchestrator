@@ -240,11 +240,12 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 		switch record.Type {
 		case "attachment":
 			if record.Attachment.Type == "queued_command" {
-				text, err := checkpointContent(record.Attachment.Prompt)
-				if err != nil {
-					return ports.NativeCheckpointBoundary{}, err
+				// A queued command without a readable prompt binds no submission
+				// text, so a hook that follows it is checked against the turn's
+				// own prompt. It never aborts the checkpoint by itself.
+				if text, err := checkpointContent(record.Attachment.Prompt); err == nil {
+					queuedByUUID[record.UUID] = text
 				}
-				queuedByUUID[record.UUID] = text
 				continue
 			}
 			if record.Attachment.Type == "hook_additional_context" && record.Attachment.HookEvent == "UserPromptSubmit" {

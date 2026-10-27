@@ -349,6 +349,43 @@ func TestNativeCheckpointQueuedCommandBindsByAncestry(t *testing.T) {
 	}
 }
 
+// A queued_command whose prompt is missing or not text must not abort the
+// checkpoint on its own (it was ignored before queued prompts were read). A hook
+// that follows one is still checked against the turn's own prompt, so nothing
+// is admitted that was not admitted before.
+func TestNativeCheckpointSkipsUnreadableQueuedPrompt(t *testing.T) {
+	start := `{"type":"user","sessionId":"native","uuid":"user-0","parentUuid":"","promptId":"prompt-0","message":{"content":"Write the notes"}}` + "\n" +
+		submissionHookRecord("hook-0", "user-0", 0) +
+		`{"type":"assistant","sessionId":"native","uuid":"tool-call","parentUuid":"hook-0","message":{"content":[{"type":"text","text":"writing"}],"stop_reason":"tool_use"}}` + "\n"
+	answer := func(parent string) string {
+		return fmt.Sprintf(`{"type":"assistant","sessionId":"native","uuid":"answer","parentUuid":%q,"message":{"content":[{"type":"text","text":"DONE"}],"stop_reason":"end_turn"}}`, parent) + "\n"
+	}
+	unreadable := map[string]string{
+		"missing prompt": `{"type":"attachment","sessionId":"native","uuid":"queued-1","parentUuid":"tool-call","attachment":{"type":"queued_command","commandMode":"prompt"}}` + "\n",
+		"object prompt":  `{"type":"attachment","sessionId":"native","uuid":"queued-1","parentUuid":"tool-call","attachment":{"type":"queued_command","prompt":{"unexpected":true}}}` + "\n",
+	}
+	original := domain.NativeCheckpointObservation{Submission: true, PromptID: "prompt-0", Text: "Write the notes"}
+	for name, queued := range unreadable {
+		t.Run(name+" with no hook settles", func(t *testing.T) {
+			request := ports.NativeCheckpointRequest{ProviderConversationID: "native", Evidence: checkpointEvidence(original,
+				domain.NativeCheckpointObservation{PromptID: "prompt-0", Text: "DONE"})}
+			got, err := verifyCheckpointTranscript(context.Background(), strings.NewReader(start+queued+answer("queued-1")), request)
+			if err != nil || got.UserMessageID != "user-0" || got.AssistantText != "DONE" {
+				t.Fatalf("unreadable queued prompt aborted the checkpoint: boundary=%+v error=%v", got, err)
+			}
+		})
+		t.Run(name+" with a following hook is not admitted", func(t *testing.T) {
+			request := ports.NativeCheckpointRequest{ProviderConversationID: "native", Evidence: checkpointEvidence(original,
+				domain.NativeCheckpointObservation{Submission: true, PromptID: "prompt-0", Text: "Also, make n8 about mango."},
+				domain.NativeCheckpointObservation{PromptID: "prompt-0", Text: "DONE"})}
+			transcript := start + queued + submissionHookRecord("hook-1", "queued-1", 1) + answer("hook-1")
+			if _, err := verifyCheckpointTranscript(context.Background(), strings.NewReader(transcript), request); !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+				t.Fatalf("submission following an unreadable queued prompt was admitted: %v", err)
+			}
+		})
+	}
+}
+
 // Records shaped as Claude Code 2.1.303 writes them when Esc interrupts a
 // terminal turn: no Stop fires, the turn never gets an end_turn reply, and a
 // user record in the prompt's own cycle holds only the marker. A tool use cut
