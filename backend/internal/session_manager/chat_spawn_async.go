@@ -411,7 +411,7 @@ func (m *Manager) recordChatStartupFailure(ctx context.Context, id domain.Sessio
 
 // retryFailedChatSpawn reuses the published session and durable turn queue.
 // Queueing the opening brief again would send the user's task twice.
-func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRecord, releaseHarness func()) (RestoreResult, bool, error) {
+func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRecord, releaseHarness func(), opts ...resumeOption) (RestoreResult, bool, error) {
 	if (rec.Kind != domain.KindWorker && rec.Kind != domain.KindOrchestrator) || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
 		return RestoreResult{}, false, fmt.Errorf("retry start %s: %w", rec.ID, ports.ErrChatUnsupported)
 	}
@@ -455,7 +455,7 @@ func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRe
 			}
 			return RestoreResult{}, false, cause
 		}
-		resumed, err := m.resumeAgentRecordWithPolicy(ctx, "retry start", rec, false)
+		resumed, err := m.resumeAgentRecordWithPolicy(ctx, "retry start", rec, false, opts...)
 		if err != nil {
 			return fail(err)
 		}

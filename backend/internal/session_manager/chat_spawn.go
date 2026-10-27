@@ -475,6 +475,7 @@ func (m *Manager) resumeChatController(
 	project domain.ProjectRecord,
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
+	neverFresh bool,
 	reconnectOnly bool,
 	controllerGeneration string,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
@@ -516,7 +517,7 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
-	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && !neverFreshChat(ctx) &&
+	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && !neverFresh &&
 		m.providerNeverPersisted(ctx, rec)
 	var awakeTarget *domain.AwakeAgentTarget
 	if len(awakeTargets) > 0 {
@@ -756,16 +757,24 @@ func (m *Manager) restoredWorkspaceProjectDirectories(
 	return directories, nil
 }
 
-type neverFreshChatKey struct{}
+// resumeOption is an explicit option of one resume, threaded through the whole chain
+// as a parameter. It is deliberately not a context value: a hand-off that rebuilt or
+// dropped the context (the failed-spawn retry, a background retry) would silently turn
+// a never-fresh resume back into one that may start fresh in place.
+type resumeOption func(*resumeSettings)
 
-// withNeverFreshChat marks a Chat resume that must continue the saved provider
-// conversation: no fresh-in-place start even for a conversation AO can prove never
-// persisted. Unattended resume uses it so a restart can never re-run the saved task.
-func withNeverFreshChat(ctx context.Context) context.Context {
-	return context.WithValue(ctx, neverFreshChatKey{}, true)
+type resumeSettings struct {
+	// neverFresh: continue the saved provider conversation or fail; never start a
+	// fresh one in its place, even for a conversation AO can prove never persisted.
+	neverFresh bool
 }
 
-func neverFreshChat(ctx context.Context) bool {
-	set, _ := ctx.Value(neverFreshChatKey{}).(bool)
-	return set
+func withNeverFresh() resumeOption { return func(s *resumeSettings) { s.neverFresh = true } }
+
+func resumeSettingsOf(opts []resumeOption) resumeSettings {
+	var s resumeSettings
+	for _, opt := range opts {
+		opt(&s)
+	}
+	return s
 }

@@ -3347,8 +3347,14 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 	if rec.ProvisionState.IsProvisioning() {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
 	}
+	// The never-fresh mode travels as an explicit option on every path below, the
+	// failed-spawn retry included.
+	var chatOpts []resumeOption
+	if opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		chatOpts = append(chatOpts, withNeverFresh())
+	}
 	if rec.ProvisionState == domain.SessionProvisionFailed {
-		result, handedOff, err := m.retryFailedChatSpawn(ctx, rec, releaseHarness)
+		result, handedOff, err := m.retryFailedChatSpawn(ctx, rec, releaseHarness, chatOpts...)
 		if handedOff {
 			releaseHarness = nil
 			resumeHandedOff = true
@@ -3431,13 +3437,12 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 		}
 	}
 	strictHistory := requireNativeHistory
-	if opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+	if len(chatOpts) > 0 {
 		// Chat: context resume, never a fresh conversation (see resumeOptions).
 		strictHistory = false
-		ctx = withNeverFreshChat(ctx)
 	}
 	result, err = m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec,
-		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
+		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil), chatOpts...)
 	if err == nil && m.chat != nil && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil {
 		// A failed move to a new release kept the user's queued messages for
@@ -3479,8 +3484,9 @@ func (m *Manager) resumeAgentRecordWithPolicy(
 	operation string,
 	rec domain.SessionRecord,
 	requireNativeHistory bool,
+	opts ...resumeOption,
 ) (RestoreResult, error) {
-	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, false, requireNativeHistory, "")
+	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, false, requireNativeHistory, "", opts...)
 }
 
 func (m *Manager) resumeAgentRecordWithReservedGeneration(
@@ -3490,6 +3496,7 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	forceFresh bool,
 	requireNativeHistory bool,
 	reservedGeneration string,
+	opts ...resumeOption,
 ) (RestoreResult, error) {
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
@@ -3507,10 +3514,10 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 		ProjectID: rec.ProjectID,
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat || meta.RuntimeHandleID == "" {
-		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil)
+		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil, opts...)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil)
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil, opts...)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
@@ -3540,7 +3547,7 @@ func (m *Manager) relaunchSessionWithPolicy(
 	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "", historyPolicy, nil)
 }
 
-func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string) (RestoreResult, error) {
+func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string, opts ...resumeOption) (RestoreResult, error) {
 	ctx, releaseCoordination := coordinationsvc.ReadLock(ctx, m.store)
 	defer releaseCoordination()
 	// Relaunch dispatches from the currently committed persisted mode, never from
@@ -3553,7 +3560,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
 		return m.resumeChatController(
-			ctx, operation, rec, project, ws, requireNativeHistory, false, reservedGeneration, historyPolicy,
+			ctx, operation, rec, project, ws, requireNativeHistory, resumeSettingsOf(opts).neverFresh, false, reservedGeneration, historyPolicy,
 		)
 	}
 
