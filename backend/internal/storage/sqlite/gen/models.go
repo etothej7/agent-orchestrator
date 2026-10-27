@@ -825,6 +825,13 @@ type SessionHarnessRelease struct {
 	Release   string
 }
 
+type SessionIdentity struct {
+	SessionID   string
+	ProofSha256 string
+	IssuedAt    time.Time
+	Generation  int64
+}
+
 type SessionInterfaceTransition struct {
 	ID                   string
 	SessionID            domain.SessionID
