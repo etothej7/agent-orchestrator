@@ -81,7 +81,7 @@ func ManagerStandingMessageID(revision string) string {
 }
 
 func managerStandingText(revision string) string {
-	return fmt.Sprintf("AO standing instruction update (revision %s). This is internal and applies from now on, in addition to your launch instructions. Do not reply about it. Apply this rule to all future work:\n\n%s", revision, domain.RepoManagerEndTurnRule)
+	return fmt.Sprintf("AO standing instruction update (revision %s). This is internal and applies from now on, in addition to your launch instructions. Do not reply about it. Apply these rules to all future work:\n\n%s", revision, domain.RepoManagerStandingText())
 }
 
 // DeliverManagerStandingInstructions teaches a running repo manager the

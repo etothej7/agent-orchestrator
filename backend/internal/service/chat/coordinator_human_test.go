@@ -918,7 +918,7 @@ func TestManagerStandingInstructionsReachOnlyStoryManagersOncePerRevision(t *tes
 			domain.Story{ID: "s1", Title: "TEST one", Autonomous: true, Status: "in_progress"},
 			domain.Story{ID: "s2", Title: "TEST two", Autonomous: true, Status: "backlog"})
 		got := deliveries(t, h, 3)
-		if len(got) != 1 || !strings.Contains(got[0], "Ending your turn:") || !strings.Contains(got[0], domain.RepoManagerStandingRevision()) {
+		if len(got) != 1 || !strings.Contains(got[0], "Ending your turn:") || !strings.Contains(got[0], "Worker conversations:") || !strings.Contains(got[0], domain.RepoManagerStandingRevision()) {
 			t.Fatal("end-turn rule not delivered exactly once", got)
 		}
 		if _, found, err := h.st.ConversationMessageByClientID(context.Background(), h.ctrl.ConversationID(), chatsvc.ManagerStandingMessageID(domain.RepoManagerStandingRevision())); err != nil || !found {

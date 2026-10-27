@@ -53,6 +53,20 @@ const CoordinatorDelegationRule = `Delegating: after you delegate and the handof
 // manager that is already running.
 const RepoManagerEndTurnRule = `Ending your turn: once you have performed every assignment, handoff, evidence record and dispatch you can perform now, and what remains is waiting on a worker or reviewer, end your turn. Do not poll, sleep, loop or check on them, and do not hold your turn open: AO queues a new turn for you right away when a worker or reviewer on one of your stories files a done, needs-input or stuck report, or the story status changes. A worker that reports done outside a story is delivered only after a five-minute settlement window, so do not end your turn waiting on that. Keep working in the same turn for as long as there is authorized work you can do immediately, such as an unassigned role, an undelivered handoff, a finding to route or evidence to record. Do not end your turn with a handoff undelivered or while you hold a result you have not yet acted on.`
 
+// RepoManagerWorkerScopeRule keeps each worker's and reviewer's conversation to a
+// single story. A session re-reads its entire history on every turn, so a worker
+// handed story after story gets steadily more expensive and mixes unrelated
+// tickets in one conversation. Like the end-turn rule it is both a section of the
+// manager's system prompt and part of the standing instruction delivered to a
+// manager that is already running.
+const RepoManagerWorkerScopeRule = `Worker conversations: give every story its own new worker session and its own new reviewer session, opened with that story's handoff. Within a story, send fixes back to the same worker and re-reviews to the same reviewer. When the story is done, end both sessions (ao session kill <id>) and never send either of them the next story: spawn new ones. A session re-reads its whole history on every turn, so reusing one across stories makes every later turn cost more and mixes unrelated tickets in one conversation.`
+
+// RepoManagerStandingText is everything an existing repo manager is taught in
+// place: when to end its turn and how long a worker conversation lives.
+func RepoManagerStandingText() string {
+	return RepoManagerEndTurnRule + "\n\n" + RepoManagerWorkerScopeRule
+}
+
 // CoordinatorStandingText is everything an existing overall coordinator is taught
 // in place: how it reaches the human and how it delegates.
 func CoordinatorStandingText() string {
@@ -68,5 +82,5 @@ func standingRevision(text string) string {
 // existing coordinator receives each revision exactly once.
 func CoordinatorStandingRevision() string { return standingRevision(CoordinatorStandingText()) }
 
-// RepoManagerStandingRevision identifies the current repo-manager rule.
-func RepoManagerStandingRevision() string { return standingRevision(RepoManagerEndTurnRule) }
+// RepoManagerStandingRevision identifies the current repo-manager rules.
+func RepoManagerStandingRevision() string { return standingRevision(RepoManagerStandingText()) }

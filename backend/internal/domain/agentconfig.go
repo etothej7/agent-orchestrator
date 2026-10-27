@@ -51,6 +51,7 @@ type AgentLaunchOptions struct {
 	// Ultracode starts Claude Code with Ultracode on.
 	Ultracode bool `json:"ultracode,omitempty"`
 	// AutoCompactWindow is where Claude Code compacts on its own: "200k" or "1m".
+	// Empty is Auto, which starts Claude Code at DefaultAutoCompactWindow.
 	AutoCompactWindow string `json:"autoCompactWindow,omitempty"`
 	// HandoffNote is a terminal switch target's note, kept until the target has
 	// started. A relaunch that finds it follows a switch cut short by a daemon
@@ -60,6 +61,11 @@ type AgentLaunchOptions struct {
 
 // AutoCompactTokens is each compaction window choice as a token count.
 var AutoCompactTokens = map[string]int{"200k": 200_000, "1m": 1_000_000}
+
+// DefaultAutoCompactWindow is where Auto compacts. Every turn re-reads the whole
+// conversation, so letting a long session grow toward 1M multiplies the cost of
+// each later turn; only an explicit "1m" keeps the larger window.
+const DefaultAutoCompactWindow = "200k"
 
 // IsZero reports whether the config carries no settings, so storage can persist
 // SQL NULL and resolution can skip an empty config.

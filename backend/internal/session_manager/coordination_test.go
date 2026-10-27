@@ -62,6 +62,15 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if strings.Contains(manager, "end your turn immediately") || !strings.Contains(manager, "Keep working in the same turn for as long as there is authorized work") {
 		t.Fatal("end-turn rule must not cut off in-turn assignment, handoff or finding work")
 	}
+	// A session re-reads its whole history every turn: one story per conversation.
+	for _, want := range []string{"Worker conversations:", "its own new worker session and its own new reviewer session", "never send either of them the next story", "ao session kill <id>"} {
+		if !strings.Contains(manager, want) {
+			t.Fatalf("repo manager lacks the one-story-per-conversation rule %q", want)
+		}
+	}
+	if strings.Contains(manager, "create/reuse") {
+		t.Fatal("repo manager is still told to reuse a worker across stories")
+	}
 	for _, want := range []string{"end your turn instead of polling managers", "when a repo manager reports done, needs-input or stuck to you", "a manager's checkpoint is batched", "when a story has no assigned manager"} {
 		if !strings.Contains(overall, want) {
 			t.Fatalf("overall coordinator delegation rule lacks %q", want)
