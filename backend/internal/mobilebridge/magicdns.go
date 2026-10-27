@@ -19,7 +19,7 @@ type TailscaleRunner func(ctx context.Context, args ...string) ([]byte, error)
 
 // execTailscale is the production TailscaleRunner.
 func execTailscale(ctx context.Context, args ...string) ([]byte, error) {
-	return aoprocess.CommandContext(ctx, "tailscale", args...).Output()
+	return aoprocess.CommandContext(ctx, tailscaleBinary(), args...).Output()
 }
 
 // TailscaleInfo is what the local daemon can tell us about this node.
