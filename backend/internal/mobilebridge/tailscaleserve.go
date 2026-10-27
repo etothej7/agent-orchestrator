@@ -87,11 +87,6 @@ func (s *Serve) Clear(ctx context.Context, ownedPorts ...int) error {
 	return nil
 }
 
-// ownedBy reports whether :443 is AO's single loopback proxy to one of ports.
-func (c serve443) ownedBy(ports []int) bool {
-	return c.proxyPort > 0 && containsPort(ports, c.proxyPort)
-}
-
 func containsPort(ports []int, p int) bool {
 	for _, q := range ports {
 		if q > 0 && q == p {
@@ -113,6 +108,11 @@ type serve443 struct {
 	// content (static text/path, redirect, extra handlers, TCP forward, a
 	// non-loopback proxy) leaves it zero, so it can never read as AO's.
 	proxyPort int
+}
+
+// ownedBy reports whether :443 is AO's single loopback proxy to one of ports.
+func (c serve443) ownedBy(ports []int) bool {
+	return c.proxyPort > 0 && containsPort(ports, c.proxyPort)
 }
 
 // inspect reads `tailscale serve status --json`. A failed call or unparseable
