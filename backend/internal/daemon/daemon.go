@@ -250,6 +250,17 @@ func Run(buildVersion string) error {
 	// graceful shutdown inside Server.Run and stops the background goroutines.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// What the previous daemon run left behind is read ONCE, before any startup write
+	// or health pass, so auto-resume can tell exits recorded during its shutdown from
+	// older ones. This run records itself only after the boot health pass (see
+	// liveness.start below) and stamps the start of its own graceful shutdown the
+	// moment the signal context cancels.
+	bootID := uuid.NewString()
+	bootWindow := readBootWindow(ctx, store, bootID, time.Now().UTC(), log)
+	liveness := newDaemonLiveness(store, bootID, log)
+	liveness.watchShutdown(ctx)
+	log.Info("daemon boot window", "bootId", bootID, "previousRun", bootWindow.HasPrevious, "fallback", bootWindow.Fallback,
+		"shutdownWindowStart", bootWindow.ShutdownWindowStart(), "shutdownWindowRule", bootWindow.RuleBEnabled())
 	go telemetryPolicy.Watch(ctx, time.Second, cfg.Telemetry.Events, cfg.Telemetry.EventsExplicit, eventsAllowed, sentryobs.SetPolicyEnabled)
 	startGitHubLoginResolver(ctx, cfg, telemetryIdentity, log)
 	cdcPipe, err := startCDC(ctx, store, log)
@@ -1154,6 +1165,9 @@ func Run(buildVersion string) error {
 			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
 				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
 			}
+			// The health pass is done: record this run (never before, so a boot that dies
+			// mid-pass cannot mask the previous run's shutdown window) and keep it fresh.
+			liveness.start(ctx)
 			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
 			}
@@ -1226,6 +1240,7 @@ func Run(buildVersion string) error {
 	// via defer) avoids the LIFO trap where a Stop() that blocks on ctx-cancel
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
+	liveness.wait()
 	if standingInstructionsDone != nil {
 		<-standingInstructionsDone
 	}
@@ -1295,6 +1310,7 @@ func Run(buildVersion string) error {
 	if err := cdcPipe.Stop(); err != nil {
 		log.Error("cdc pipeline shutdown", "err", err)
 	}
+	liveness.endedClean()
 	return runErr
 }
 

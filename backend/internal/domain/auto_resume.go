@@ -124,3 +124,88 @@ func (r DaemonRun) End() time.Time {
 	}
 	return end
 }
+
+// ShutdownWindowLookback is how far before the previous daemon's last sign of life
+// an exit is still attributed to that daemon's shutdown. It is generous against a
+// 10 s heartbeat plus a 10 s shutdown timeout.
+const ShutdownWindowLookback = 60 * time.Second
+
+// FirstBootFallbackMaxAge bounds how stale the first-boot fallback may be before
+// the shutdown-window rule is switched off for that boot.
+const FirstBootFallbackMaxAge = 10 * time.Minute
+
+// BootWindow is what the previous daemon run left behind. It is computed ONCE, at
+// the very start of boot and before any health pass, because the pass itself writes
+// rows (and bumps their update times) that would otherwise drift the window to "now".
+type BootWindow struct {
+	BootID    string
+	BootStart time.Time
+	// PrevStart and PrevEnd bound the previous run. PrevEnd is clamped to BootStart
+	// so a clock that jumped backwards cannot place the window in the future.
+	PrevStart time.Time
+	PrevEnd   time.Time
+	// HasPrevious is true when a previous daemon_runs row existed.
+	HasPrevious bool
+	// Fallback is true when there was no previous row (the first boot after upgrading
+	// from a version that wrote none) and PrevEnd is the newest session update time.
+	Fallback bool
+}
+
+// NewBootWindow builds the window. prev is the previous run (nil if none) and
+// newestSessionUpdate the newest session update time read before the pass (zero if
+// there are no sessions).
+func NewBootWindow(bootID string, bootStart time.Time, prev *DaemonRun, newestSessionUpdate time.Time) BootWindow {
+	w := BootWindow{BootID: bootID, BootStart: bootStart}
+	clamp := func(t time.Time) time.Time {
+		if t.After(bootStart) {
+			return bootStart
+		}
+		return t
+	}
+	switch {
+	case prev != nil:
+		w.HasPrevious = true
+		w.PrevStart = clamp(prev.StartedAt)
+		w.PrevEnd = clamp(prev.End())
+	case !newestSessionUpdate.IsZero():
+		w.Fallback = true
+		w.PrevEnd = clamp(newestSessionUpdate)
+	}
+	return w
+}
+
+// RuleBEnabled reports whether exits recorded during the previous daemon's
+// shutdown may be attributed to a restart. With no previous run and no sessions
+// there is nothing to anchor on; a fallback anchor that is more than
+// FirstBootFallbackMaxAge old no longer says anything about a restart.
+func (w BootWindow) RuleBEnabled() bool {
+	switch {
+	case w.HasPrevious:
+		return true
+	case w.Fallback:
+		return w.BootStart.Sub(w.PrevEnd) <= FirstBootFallbackMaxAge
+	default:
+		return false
+	}
+}
+
+// ShutdownWindowStart is the earliest exit time still attributed to the previous
+// daemon's shutdown: a minute before its last sign of life, but never before that
+// run started (a boot that lived under a minute must not re-capture the exits its
+// own health pass wrote).
+func (w BootWindow) ShutdownWindowStart() time.Time {
+	start := w.PrevEnd.Add(-ShutdownWindowLookback)
+	if w.HasPrevious && w.PrevStart.After(start) {
+		start = w.PrevStart
+	}
+	return start
+}
+
+// InShutdownWindow reports whether an exit at t belongs to the previous daemon's
+// shutdown. The upper bound is the start of THIS boot, not the previous run's last
+// stamp: the dying daemon records exits after its last heartbeat (and after its
+// shutdown stamp when it is killed before its clean end), and no daemon runs
+// between the two boots, so nothing else can write an exit in that gap.
+func (w BootWindow) InShutdownWindow(t time.Time) bool {
+	return w.RuleBEnabled() && !t.Before(w.ShutdownWindowStart()) && !t.After(w.BootStart)
+}
