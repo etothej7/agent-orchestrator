@@ -60,6 +60,9 @@ export function BrowserImportDialog({
 	const sourcesRef = useRef<BrowserImportSource[]>([]);
 
 	const source = sources.find((candidate) => candidate.id === sourceId);
+	// This build does not import cookies (see the capability text): the choice is off, whatever the toggle says.
+	const cookiesRefused = source?.cookieSupportReason === "cookies-stored-without-keychain";
+	const importCookies = includeCookies && !cookiesRefused;
 	const selectedProfiles = source?.profiles.filter((profile) => selectedProfileIds.includes(profile.id)) ?? [];
 	const canClose = view !== "running";
 	const requestId = progress?.requestId;
@@ -200,7 +203,7 @@ export function BrowserImportDialog({
 	};
 
 	const startImport = async () => {
-		if (!bridge || !source || selectedProfiles.length === 0 || (!includeCookies && !includeHistory)) return;
+		if (!bridge || !source || selectedProfiles.length === 0 || (!importCookies && !includeHistory)) return;
 		const id = crypto.randomUUID();
 		setProgress({ requestId: id, phase: "preparing", completed: 0, total: selectedProfiles.length });
 		setView("running");
@@ -210,7 +213,7 @@ export function BrowserImportDialog({
 				requestId: id,
 				sourceId: source.id,
 				profileIds: selectedProfiles.map((profile) => profile.id),
-				includeCookies,
+				includeCookies: importCookies,
 				includeHistory,
 				destination:
 					destinationMode === "merge"
@@ -267,7 +270,8 @@ export function BrowserImportDialog({
 							destinationMode={destinationMode}
 							destinationNames={destinationNames}
 							error={error?.message ?? ""}
-							includeCookies={includeCookies}
+							cookiesRefused={cookiesRefused}
+							includeCookies={importCookies}
 							includeHistory={includeHistory}
 							loading={loading}
 							sourceLoading={sourceLoading}
@@ -298,7 +302,7 @@ export function BrowserImportDialog({
 							</div>
 						</div>
 					) : null}
-					{view === "result" && result ? <ResultStep empty={resultEmpty} includeCookies={includeCookies} includeHistory={includeHistory} result={result} /> : null}
+					{view === "result" && result ? <ResultStep empty={resultEmpty} includeCookies={importCookies} includeHistory={includeHistory} result={result} /> : null}
 				</div>
 
 				<div className={settingsDialogFooterClass}>
@@ -312,7 +316,7 @@ export function BrowserImportDialog({
 					) : null}
 					{view === "form" ? (
 						<Button
-							disabled={loading || sourceLoading || !source || selectedProfiles.length === 0 || (!includeCookies && !includeHistory) || !namesValid}
+							disabled={loading || sourceLoading || !source || selectedProfiles.length === 0 || (!importCookies && !includeHistory) || !namesValid}
 							onClick={() => void startImport()}
 							type="button"
 							variant="footer-primary"
@@ -351,6 +355,7 @@ function ImportForm({
 	loading,
 	sourceLoading,
 	error,
+	cookiesRefused,
 	includeCookies,
 	includeHistory,
 	destinationMode,
@@ -372,6 +377,7 @@ function ImportForm({
 	loading: boolean;
 	sourceLoading: boolean;
 	error: string;
+	cookiesRefused: boolean;
 	includeCookies: boolean;
 	includeHistory: boolean;
 	destinationMode: "separate" | "merge";
@@ -436,6 +442,7 @@ function ImportForm({
 						</div>
 					) : <ProfilesStep onChange={onSelectProfiles} selected={selectedProfileIds} source={source} />}
 					<OptionsStep
+						cookiesRefused={cookiesRefused}
 						destinationMode={destinationMode}
 						destinationNames={destinationNames}
 						includeCookies={includeCookies}
@@ -483,6 +490,7 @@ function ProfilesStep({ source, selected, onChange }: { source: BrowserImportSou
 function OptionsStep({
 	source,
 	profiles,
+	cookiesRefused,
 	includeCookies,
 	includeHistory,
 	destinationMode,
@@ -496,6 +504,7 @@ function OptionsStep({
 }: {
 	source: BrowserImportSource;
 	profiles: BrowserImportSource["profiles"];
+	cookiesRefused: boolean;
 	includeCookies: boolean;
 	includeHistory: boolean;
 	destinationMode: "separate" | "merge";
@@ -518,7 +527,7 @@ function OptionsStep({
 						<span className="block text-sm font-medium">{t("settings.browserImport.cookies")}</span>
 						<span className="block text-xs text-muted-foreground">{t("settings.browserImport.cookiesDescription")}</span>
 					</span>
-					<input checked={includeCookies} className="mt-0.5 size-4 shrink-0 accent-accent" onChange={(event) => setIncludeCookies(event.target.checked)} type="checkbox" />
+					<input checked={includeCookies} className="mt-0.5 size-4 shrink-0 accent-accent" disabled={cookiesRefused} onChange={(event) => setIncludeCookies(event.target.checked)} type="checkbox" />
 				</label>
 				{source.cookieSupport !== "supported" ? (
 					<p className="text-xs text-muted-foreground">
@@ -633,6 +642,7 @@ function applySourceDefaults(
 function capabilityKey(reason: BrowserImportSource["cookieSupportReason"]): MessageKey {
 	if (reason === "chromium-encryption-partial") return "settings.browserImport.capability.chromium-encryption-partial";
 	if (reason === "chromium-encryption-unsupported") return "settings.browserImport.capability.chromium-encryption-unsupported";
+	if (reason === "cookies-stored-without-keychain") return "settings.browserImport.capability.cookies-stored-without-keychain";
 	return "settings.browserImport.cookiesDescription";
 }
 
@@ -648,5 +658,6 @@ function warningKey(code: BrowserImportWarning["code"]): MessageKey {
 		case "invalid-cookies-skipped": return "settings.browserImport.warning.invalid-cookies-skipped";
 		case "cookie-attributes-defaulted": return "settings.browserImport.warning.cookie-attributes-defaulted";
 		case "cookie-write-failed": return "settings.browserImport.warning.cookie-write-failed";
+		case "cookies-refused": return "settings.browserImport.warning.cookies-refused";
 	}
 }

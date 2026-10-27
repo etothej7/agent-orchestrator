@@ -42,6 +42,8 @@ export function createDesktopQuitController(options: {
 	let userInitiated = false;
 	let warningsPassed = false;
 	let checkingWarnings = false;
+	/** An unattended update quit is under way: no dialog may open on its account, ever. */
+	let updateQuitInFlight = false;
 	let lastActivity = 0;
 
 	/** Forget everything about the quit in progress. */
@@ -50,9 +52,15 @@ export function createDesktopQuitController(options: {
 		userInitiated = false;
 		warningsPassed = false;
 		inFlight = false;
+		updateQuitInFlight = false;
 	};
 	const touch = () => {
 		lastActivity = now();
+	};
+	/** An update quit is under way, and has not gone quiet for longer than a quit may take (it then no longer counts). */
+	const updateQuitActive = () => {
+		if (updateQuitInFlight && now() - lastActivity > QUIT_FLOW_STALE_MS) updateQuitInFlight = false;
+		return updateQuitInFlight;
 	};
 
 	return {
@@ -67,6 +75,16 @@ export function createDesktopQuitController(options: {
 			if (inFlight && !checkingWarnings && now() - lastActivity > QUIT_FLOW_STALE_MS) resetFlow();
 			if (!inFlight && !checkingWarnings) resetFlow();
 			touch();
+			if (updateQuitActive()) {
+				// An unattended update quit never asks. A draft that appeared since it began holds the quit,
+				// silently; the update watcher sees the draft and defers until it is gone.
+				if (options.draftRiskCount() > 0) {
+					event.preventDefault();
+					resetFlow();
+					return true;
+				}
+				return false;
+			}
 			if (options.draftRiskCount() === 0 || draftLeaveConfirmed) return false;
 			event.preventDefault();
 			if (options.confirmDraftLeave()) {
@@ -119,6 +137,31 @@ export function createDesktopQuitController(options: {
 			userInitiated = true;
 			touch();
 			options.quit();
+		},
+		/**
+		 * The update runner asked for a quit (see update-quit-request.ts). Never a dialog: unsent drafts defer
+		 * it ("deferred": nothing happened, ask again later) instead of asking, and the quit never warns or
+		 * relaunches. A draft that appears after this check holds the quit in `handleBeforeQuit`, also silently.
+		 */
+		quitForUpdate(): "quitting" | "deferred" {
+			resetFlow();
+			if (options.draftRiskCount() > 0) return "deferred";
+			inFlight = true;
+			updateQuitInFlight = true;
+			touch();
+			options.quit();
+			return "quitting";
+		},
+		/** True while an unattended update quit is under way: window handlers must not open a dialog. */
+		isUpdateQuitInFlight(): boolean {
+			return updateQuitActive();
+		},
+		/**
+		 * The update quit was called off (a draft appeared, the Mac is in use, the request went away): forget it, so
+		 * the person's next close or quit asks about drafts as usual. Does nothing to any other quit in progress.
+		 */
+		cancelUpdateQuit(): void {
+			if (updateQuitInFlight) resetFlow();
 		},
 		/** The OS is shutting down: quit now, never warn. */
 		quitForShutdown(): void {

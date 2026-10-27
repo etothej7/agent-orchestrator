@@ -1,4 +1,5 @@
 import { isPersonalBuild } from "./main/personal-build";
+import { shouldUseMockKeychain } from "./main/keychain-policy";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
@@ -99,6 +100,9 @@ import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKe
 import { forbiddenDebugSwitch } from "./main/packaged-hardening";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { createUpdateQuitWatcher } from "./main/update-quit-request";
+import { createRelaunchNet } from "./main/update-relaunch-net";
+import { aoWindowFocused } from "./main/app-focus";
 import { createCoordinatorBadge } from "./main/coordinator-badge";
 import { confirmFullQuit } from "./main/quit-confirmation";
 import {
@@ -236,8 +240,10 @@ const APP_DISPLAY_NAME = "Orchestrator.inc";
 app.setName(app.isPackaged ? APP_DISPLAY_NAME : `${APP_DISPLAY_NAME} (dev)`);
 
 // An unsigned dev Electron is a new app to macOS whenever its binary changes, so Chromium's
-// keychain-held cookie key prompted on start. Dev runs use the stand-in key; packaged keep the keychain.
-if (!app.isPackaged && process.platform === "darwin") {
+// keychain-held cookie key prompted on start. Dev runs and personal (ad-hoc signed) builds use the stand-in key,
+// so no build ever reads, writes or asks about the keychain; stock packaged builds keep it. See
+// main/keychain-policy.ts and frontend/docs/personal-build-keychain.md. Must run before app ready.
+if (shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform })) {
 	app.commandLine.appendSwitch("use-mock-keychain");
 }
 
@@ -839,6 +845,8 @@ async function createWindowInternal(): Promise<void> {
 		profileStore: browserProfileStore,
 		historyStore: browserHistoryStore,
 		fromPartition: (partition) => session.fromPartition(partition),
+		// Cookies saved in persistent or imported profiles would be protected by file permissions only under the stand-in key.
+		cookieImportRefused: shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform }),
 	});
 	await profileImporter.initialize();
 	const windowOptions: Electron.BaseWindowConstructorOptions = {
@@ -987,6 +995,8 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("will-prevent-unload", (event) => {
 		if (
 			chatDraftRisks.length > 0 &&
+			// An unattended update quit never asks: doing nothing below honors the renderer's request to stay.
+			!desktopQuit.isUpdateQuitInFlight() &&
 			(desktopQuit.draftLeaveConfirmed() ||
 				chatDraftWindowCloseConfirmed ||
 				confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog))
@@ -1000,6 +1010,11 @@ async function createWindowInternal(): Promise<void> {
 	});
 
 	mainWindow.on("close", (event) => {
+		if (desktopQuit.isUpdateQuitInFlight() && chatDraftRisks.length > 0) {
+			// A draft appeared after an unattended update quit began: hold the window, silently.
+			event.preventDefault();
+			return;
+		}
 		const preventClose = shouldPreventUnsafeChatDraftClose(
 			chatDraftRisks,
 			desktopQuit.draftLeaveConfirmed() || chatDraftWindowCloseConfirmed,
@@ -3376,6 +3391,39 @@ function initAutoUpdates(): void {
 	void ensureUpdatePrefs(stateDir).then(() => startAutoUpdates(stateDir));
 }
 
+// The update runner's way to ask this app to quit without a dialog (see main/update-quit-request.ts and
+// frontend/docs/unattended-update.md). Only packaged builds listen; a request must name this process.
+function startUpdateQuitWatcher(): void {
+	if (!app.isPackaged) return;
+	const runFile = runFilePath();
+	if (!runFile) return;
+	const stateDir = path.dirname(runFile);
+	const watcher = createUpdateQuitWatcher({
+		stateDir,
+		pid: process.pid,
+		uid: process.getuid?.() ?? -1,
+		now: Date.now,
+		draftRiskCount: () => chatDraftRisks.length,
+		userIdleSeconds: () => powerMonitor.getSystemIdleTime(),
+		// The shell is a BaseWindow, which BrowserWindow.getFocusedWindow() never returns: ask both.
+		appWindowFocused: () => aoWindowFocused({ BaseWindow, BrowserWindow }),
+		// If the quit goes through and nothing brings AO back, this relaunches it hidden after ten minutes.
+		relaunchNet: createRelaunchNet({
+			stateDir,
+			appPath: resolveBundlePath(),
+			fromVersion: app.getVersion(),
+			uid: process.getuid?.() ?? -1,
+			lockPath: path.join(stateDir, "install.lock"),
+			markerPath: path.join(stateDir, "install-swap-marker"),
+		}),
+		cancelUpdateQuit: () => desktopQuit.cancelUpdateQuit(),
+		quitForUpdate: () => desktopQuit.quitForUpdate(),
+		log: (message, detail) => console.info(`[update-quit] ${message}`, detail ?? ""),
+	});
+	watcher.start();
+	app.once("will-quit", () => watcher.stop());
+}
+
 // Resolve the bundle path `ao start` will later `open` and stat as a usable app.
 // On macOS process.execPath is .../Agent Orchestrator.app/Contents/MacOS/<exe>;
 // the thing `ao start` opens is the enclosing `.app` directory, so walk up three
@@ -3424,6 +3472,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 
 app.whenReady().then(async () => {
 	coordinatorBadge.start();
+	startUpdateQuitWatcher();
 	const personalBuild = isPersonalBuild(app.getVersion());
 	if (app.isPackaged && !personalBuild) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");

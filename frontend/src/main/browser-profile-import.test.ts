@@ -1,12 +1,12 @@
 import { createCipheriv, createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserHistoryStore } from "./browser-history-store";
-import { BrowserProfileImportService, decryptWindowsChromiumCookie, readMacChromiumPassword } from "./browser-profile-import";
+import { BrowserProfileImportService, COOKIE_IMPORT_REFUSED_MESSAGE, decryptWindowsChromiumCookie, readMacChromiumPassword } from "./browser-profile-import";
 import { BrowserProfileStore } from "./browser-profile-store";
 import { BROWSER_PROFILE_MAX_COUNT } from "../shared/browser-profiles";
 
@@ -1021,6 +1021,134 @@ describe("BrowserProfileImportService", () => {
 			destination: { mode: "merge", name: "Imported Chrome" },
 		}, vi.fn())).rejects.toThrow("already exists");
 		expect(cleared).toEqual([]);
+	});
+
+	describe("cookie import refused (the build keeps browser logins protected by file permissions only)", () => {
+		const request = (sourceId: string, profileId: string, over: Record<string, unknown> = {}) => ({
+			requestId: "44444444-4444-4444-8444-444444444444",
+			sourceId,
+			profileIds: [profileId],
+			includeCookies: true,
+			includeHistory: true,
+			destination: { mode: "merge" as const, name: "Imported Chrome" },
+			...over,
+		});
+
+		it("marks every source's cookies unsupported with a plain reason, history still supported", async () => {
+			const root = await fixtureRoot();
+			const { localAppData } = await createChromeFixture(root);
+			const stateDir = path.join(root, "ao-state");
+			const service = new BrowserProfileImportService({
+				stateDir, profileStore: new BrowserProfileStore({ stateDir }), historyStore: new BrowserHistoryStore({ stateDir }),
+				platform: "win32", homeDir: root, env: { LOCALAPPDATA: localAppData }, fromPartition: vi.fn(), cookieImportRefused: true,
+			});
+			expect((await service.discover()).sources[0]).toMatchObject({
+				cookieSupport: "unsupported", cookieSupportReason: "cookies-stored-without-keychain", historySupport: true,
+			});
+		});
+
+		it("imports history but no cookie, reads no cookie database, and says so", async () => {
+			const root = await fixtureRoot();
+			const { localAppData } = await createChromeFixture(root);
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const setCookie = vi.fn(async () => undefined);
+			const service = new BrowserProfileImportService({
+				stateDir, profileStore, historyStore: new BrowserHistoryStore({ stateDir }),
+				platform: "win32", homeDir: root, env: { LOCALAPPDATA: localAppData }, now: () => new Date("2026-01-01T00:00:00.000Z"),
+				fromPartition: () => ({ cookies: { set: setCookie }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+				cookieImportRefused: true,
+			});
+			const source = (await service.discover()).sources[0]!;
+			const result = await service.import(request(source.id, source.profiles[0]!.id), vi.fn());
+			expect(result.entries[0]).toMatchObject({ importedCookies: 0, skippedCookies: 0, importedHistoryEntries: 2 });
+			expect(result.entries[0]!.warnings).toEqual([{ code: "cookies-refused" }]); // no cookie was read, so no per-cookie warning
+			expect(setCookie).not.toHaveBeenCalled();
+		});
+
+		it("refuses a cookies-only import with a plain message and creates no profile", async () => {
+			const root = await fixtureRoot();
+			const { localAppData } = await createChromeFixture(root);
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const service = new BrowserProfileImportService({
+				stateDir, profileStore, historyStore: new BrowserHistoryStore({ stateDir }),
+				platform: "win32", homeDir: root, env: { LOCALAPPDATA: localAppData }, fromPartition: vi.fn(), cookieImportRefused: true,
+			});
+			const source = (await service.discover()).sources[0]!;
+			await expect(service.import(request(source.id, source.profiles[0]!.id, { includeHistory: false }), vi.fn()))
+				.rejects.toThrow(COOKIE_IMPORT_REFUSED_MESSAGE);
+			expect(COOKIE_IMPORT_REFUSED_MESSAGE).toMatch(/switched off.*keychain.*history/);
+			expect((await new BrowserProfileStore({ stateDir }).load()).profiles).toHaveLength(0);
+		});
+
+		it("on macOS never asks the keychain for a browser's key (a fake `security` records every call); a normal import does", async () => {
+			const root = await fixtureRoot();
+			const { localAppData } = await createChromeFixture(root);
+			const support = path.join(root, "Library", "Application Support", "Google");
+			await mkdir(support, { recursive: true });
+			await rename(path.join(localAppData, "Google", "Chrome", "User Data"), path.join(support, "Chrome"));
+			const bin = path.join(root, "fake-bin");
+			const log = path.join(root, "security.log");
+			await mkdir(bin);
+			await writeFile(path.join(bin, "security"), `#!/bin/sh\necho "$@" >> '${log}'\nexit 44\n`);
+			await chmod(path.join(bin, "security"), 0o755);
+			const originalPath = process.env.PATH;
+			process.env.PATH = `${bin}:${originalPath ?? ""}`; // the importer runs `security` by name: it finds the fake, never the real one
+			try {
+				const run = async (refused: boolean, name: string, extra: Record<string, unknown>) => {
+					const stateDir = path.join(root, `state-${name}`);
+					const profileStore = new BrowserProfileStore({ stateDir });
+					await profileStore.load();
+					const service = new BrowserProfileImportService({
+						stateDir, profileStore, historyStore: new BrowserHistoryStore({ stateDir }),
+						platform: "darwin", homeDir: root, env: {}, fromPartition: () => ({
+							cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined,
+						}), cookieImportRefused: refused,
+					});
+					const source = (await service.discover()).sources.find((candidate) => candidate.name.includes("Chrome"))!;
+					return await service.import({ ...request(source.id, source.profiles[0]!.id), destination: { mode: "merge", name }, ...extra }, vi.fn());
+				};
+				const refused = await run(true, "refused", {});
+				expect(refused.entries[0]).toMatchObject({ importedCookies: 0, importedHistoryEntries: 2 });
+				expect(await readFile(log, "utf8").catch(() => "")).toBe(""); // the keychain was never asked
+				await run(false, "control", {}).catch(() => undefined);
+				expect((await readFile(log, "utf8").catch(() => "")).trim().length).toBeGreaterThan(0); // the detector does detect
+			} finally {
+				process.env.PATH = originalPath;
+			}
+		});
+
+		it("applies to Firefox too: history imports, the cookie database is never read", async () => {
+			const root = await fixtureRoot();
+			const appData = path.join(root, "roaming");
+			const profileRoot = path.join(appData, "Mozilla", "Firefox", "Profiles", "fixture.default-release");
+			await mkdir(profileRoot, { recursive: true });
+			new Database(path.join(profileRoot, "cookies.sqlite")).close();
+			const history = new Database(path.join(profileRoot, "places.sqlite"));
+			history.exec(`
+				CREATE TABLE moz_places (url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER);
+				INSERT INTO moz_places VALUES ('https://example.com/from-firefox', 'Firefox fixture', 3, 1767225600000000);
+			`);
+			history.close();
+			const stateDir = path.join(root, "ao-state");
+			const profileStore = new BrowserProfileStore({ stateDir });
+			await profileStore.load();
+			const setCookie = vi.fn(async () => undefined);
+			const service = new BrowserProfileImportService({
+				stateDir, profileStore, historyStore: new BrowserHistoryStore({ stateDir }),
+				platform: "win32", homeDir: root, env: { APPDATA: appData },
+				fromPartition: () => ({ cookies: { set: setCookie }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+				cookieImportRefused: true,
+			});
+			const source = (await service.discover()).sources[0]!;
+			expect(source).toMatchObject({ cookieSupport: "unsupported", cookieSupportReason: "cookies-stored-without-keychain" });
+			const result = await service.import(request(source.id, source.profiles[0]!.id, { destination: { mode: "merge", name: "Firefox history" } }), vi.fn());
+			expect(result.entries[0]).toMatchObject({ importedCookies: 0, importedHistoryEntries: 1, warnings: [{ code: "cookies-refused" }] });
+			expect(setCookie).not.toHaveBeenCalled();
+		});
 	});
 
 	it("uses selected-profile order for cookie conflicts and newest metadata for merged history", async () => {
