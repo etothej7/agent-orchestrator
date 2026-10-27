@@ -3221,7 +3221,36 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
-func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
+func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (RestoreResult, error) {
+	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: requireNativeHistory})
+}
+
+// resumeOptions are the knobs of one agent resume.
+type resumeOptions struct {
+	// requireNativeHistory refuses a launch that would not continue the provider's
+	// own conversation, instead of falling back to a fresh launch with the saved
+	// prompt (which would replay the original task).
+	requireNativeHistory bool
+	// skipReadinessReconcile skips the branch that, for a session whose status
+	// readiness reads "unavailable", reconciles the live session instead of
+	// resuming it. That reconcile relaunches NON-strictly, so an unattended strict
+	// resume must never take it.
+	skipReadinessReconcile bool
+}
+
+// ResumeAgentStrict resumes an exited agent for unattended (automatic) resume. It
+// is ResumeAgentWithMode with two differences: native history is REQUIRED, so a
+// missing or unverifiable conversation ends in ErrNotResumable or a history error
+// instead of a fresh launch that re-runs the original task; and it never takes the
+// readiness-reconcile branch, which relaunches non-strictly (readiness reads
+// "unavailable" for any row with no recovery entry once boot reconciliation failed,
+// exited rows included). The worktree is preserved exactly as for ResumeAgentWithMode.
+func (m *Manager) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, skipReadinessReconcile: true})
+}
+
+func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts resumeOptions) (result RestoreResult, err error) {
+	requireNativeHistory := opts.requireNativeHistory
 	ctx, releaseCoordination := coordinationsvc.ReadLock(ctx, m.store)
 	defer releaseCoordination()
 	if err := m.beginAgentResume(ctx, id); err != nil {
@@ -3281,7 +3310,7 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 		}
 		return result, err
 	}
-	if rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable" {
+	if rec.HibernatedAt == nil && !opts.skipReadinessReconcile && m.SessionStatusReadiness(rec) == "unavailable" {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
