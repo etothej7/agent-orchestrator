@@ -547,13 +547,15 @@ func (b *BridgeService) serve() *mobilebridge.Serve {
 }
 
 // ownedServePorts are the bridge ports AO may recognise as its own :443 route:
-// the one it recorded applying, or — for a mode turned on before the record
-// existed — the last bound port.
+// the one it recorded applying, or — for a route installed before the record
+// existed — the last bound port. "Installed" means the mode is on or its
+// teardown is still pending: an older build can leave the mode off with the
+// cleanup flag set, and that route is still AO's to remove.
 func ownedServePorts(st mobilebridge.State) []int {
 	if st.ServeAppliedPort > 0 {
 		return []int{st.ServeAppliedPort}
 	}
-	if st.SecurePairing && st.LastPort > 0 {
+	if (st.SecurePairing || st.ServeCleanupPending) && st.LastPort > 0 {
 		return []int{st.LastPort}
 	}
 	return nil
@@ -945,7 +947,7 @@ func prevServeOwned(prev mobilebridge.State) int {
 	if prev.ServeAppliedPort > 0 {
 		return prev.ServeAppliedPort
 	}
-	if prev.SecurePairing {
+	if prev.SecurePairing || prev.ServeCleanupPending {
 		return prev.LastPort
 	}
 	return 0

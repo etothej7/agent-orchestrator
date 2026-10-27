@@ -1640,3 +1640,41 @@ func TestSecurePairingOffClearsALegacyRouteWithNoOwnershipRecord(t *testing.T) {
 		t.Errorf("state = %+v, want off with no cleanup pending", st)
 	}
 }
+
+// An older build can leave ServeCleanupPending set with the mode already off
+// and no ownership record. Its route still points at the last bound port and is
+// AO's to remove; clearing must not skip it, nor drop the pending flag.
+func TestPendingCleanupOfALegacyRouteStillClearsIt(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(b *BridgeService) error
+	}{
+		{"turning the mode off again", func(b *BridgeService) error { _, err := b.SetSecurePairing(false); return err }},
+		{"disable", func(b *BridgeService) error { return b.Disable() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, f := cliBridge(t, proxyCfg("3011"))
+			mustNoErr(t, func() error {
+				return mobilebridge.Save(b.ConfigPath, mobilebridge.State{
+					Enabled: true, Password: "secret12", LastPort: 3011,
+					SecurePairing: false, ServeCleanupPending: true, SecurePairingAutoEnabledV1: true,
+				})
+			})
+			mustNoErr(t, func() error { return tc.run(b) })
+			if f.cfg != `{}` {
+				t.Fatalf("serve config = %s, want AO's legacy route removed", f.cfg)
+			}
+			if st := loadState(t, b); st.ServeCleanupPending {
+				t.Errorf("state = %+v, cleanup still pending after a successful clear", st)
+			}
+		})
+	}
+}
+
+// With neither flag set the last port is not evidence of ownership.
+func TestOwnedServePortsNeedsAnOwnershipSignal(t *testing.T) {
+	if got := ownedServePorts(mobilebridge.State{LastPort: 3011}); len(got) != 0 {
+		t.Errorf("owned = %v with no record, mode off and nothing pending, want none", got)
+	}
+}
