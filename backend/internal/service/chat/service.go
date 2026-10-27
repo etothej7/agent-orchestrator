@@ -833,6 +833,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			if prepareErr != nil {
 				return nil, fmt.Errorf("prepare chat controller environment: %w", prepareErr)
 			}
+			applyLaunchProof(cfg.MCPServers, env)
 			return env, nil
 		}
 	}

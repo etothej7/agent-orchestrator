@@ -44,6 +44,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
@@ -1010,7 +1011,10 @@ func Run(buildVersion string) error {
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
-		UICapability:       uiCapabilityVerifier,
+		UICapability:    uiCapabilityVerifier,
+		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store),
+		// Observe until the app signs every human action; AO_ROUTE_CLASS_MODE=enforce turns it on.
+		RouteClassMode:     httpd.ParseRouteClassMode(os.Getenv("AO_ROUTE_CLASS_MODE")),
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
 		ArtifactVersions:   lcStack.ArtifactVersions,

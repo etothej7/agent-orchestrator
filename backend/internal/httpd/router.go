@@ -62,10 +62,14 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.Use(recoverTelemetry(log, deps.Telemetry))
 	// Marks (never refuses) requests carrying a valid human-UI capability.
 	r.Use(humanCapabilityMiddleware(deps.UICapability, nil))
+	// Resolves the caller (human, a session, or nobody) for the handlers; refuses nothing.
+	r.Use(callerIdentityMiddleware(deps.SessionIdentity, log))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
+	// Deny by default: a mutating route with no class is refused; classes are enforced per mode.
+	r.Use(routeClassGuard(r, deps.RouteClassMode, log))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are
