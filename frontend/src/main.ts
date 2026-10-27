@@ -98,6 +98,7 @@ import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
 import { createUpdateQuitWatcher } from "./main/update-quit-request";
+import { createRelaunchNet } from "./main/update-relaunch-net";
 import { createCoordinatorBadge } from "./main/coordinator-badge";
 import { confirmFullQuit } from "./main/quit-confirmation";
 import {
@@ -3343,12 +3344,24 @@ function startUpdateQuitWatcher(): void {
 	if (!app.isPackaged) return;
 	const runFile = runFilePath();
 	if (!runFile) return;
+	const stateDir = path.dirname(runFile);
 	const watcher = createUpdateQuitWatcher({
-		stateDir: path.dirname(runFile),
+		stateDir,
 		pid: process.pid,
 		uid: process.getuid?.() ?? -1,
 		now: Date.now,
 		draftRiskCount: () => chatDraftRisks.length,
+		userIdleSeconds: () => powerMonitor.getSystemIdleTime(),
+		appWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
+		// If the quit goes through and nothing brings AO back, this relaunches it hidden after ten minutes.
+		relaunchNet: createRelaunchNet({
+			stateDir,
+			appPath: resolveBundlePath(),
+			exeName: path.basename(process.execPath),
+			lockPath: path.join(stateDir, "install.lock"),
+			markerPath: path.join(stateDir, "install-swap-marker"),
+		}),
+		cancelUpdateQuit: () => desktopQuit.cancelUpdateQuit(),
 		quitForUpdate: () => desktopQuit.quitForUpdate(),
 		log: (message, detail) => console.info(`[update-quit] ${message}`, detail ?? ""),
 	});

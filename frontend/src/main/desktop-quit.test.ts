@@ -336,6 +336,41 @@ describe("an unattended update quit", () => {
 		expect(t.controller.isUpdateQuitInFlight()).toBe(false);
 	});
 
+	it("U1: the in-flight state has a lifetime: a vetoed update quit stops counting once it has gone quiet", async () => {
+		const clock = { value: 0 };
+		const t = harness({ clock });
+		t.vetoNext();
+		t.controller.quitForUpdate();
+		expect(t.controller.isUpdateQuitInFlight()).toBe(true);
+		clock.value += QUIT_FLOW_STALE_MS - 1;
+		expect(t.controller.isUpdateQuitInFlight()).toBe(true);
+		clock.value += 2;
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false); // no later quit action was needed to clear it
+	});
+
+	it("U1: cancelUpdateQuit clears the state at once, so the next close asks about drafts normally", async () => {
+		const t = harness();
+		t.vetoNext();
+		t.controller.quitForUpdate();
+		expect(t.controller.isUpdateQuitInFlight()).toBe(true);
+		t.controller.cancelUpdateQuit();
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false);
+		// and a later quit is a fresh one, not an update quit: it is warned/asked as usual
+		const drafts = { value: 1 };
+		const u = harness({ drafts: () => drafts.value, confirmDraft: [false] });
+		u.controller.requestUserQuit();
+		expect(u.log).toContain("draft?");
+	});
+
+	it("U1: cancelUpdateQuit leaves a quit the person asked for alone", async () => {
+		const t = harness({ warn: [true] });
+		t.controller.requestUserQuit();
+		t.controller.cancelUpdateQuit();
+		await settle();
+		expect(t.log).toEqual(["quit", "warn?", "quit"]);
+		expect(t.exits()).toBe(1);
+	});
+
 	it("never relaunches and never arms a relaunch", async () => {
 		const t = harness();
 		t.controller.quitForUpdate();

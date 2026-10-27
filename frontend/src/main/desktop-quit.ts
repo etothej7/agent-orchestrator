@@ -57,6 +57,11 @@ export function createDesktopQuitController(options: {
 	const touch = () => {
 		lastActivity = now();
 	};
+	/** An update quit is under way, and has not gone quiet for longer than a quit may take (it then no longer counts). */
+	const updateQuitActive = () => {
+		if (updateQuitInFlight && now() - lastActivity > QUIT_FLOW_STALE_MS) updateQuitInFlight = false;
+		return updateQuitInFlight;
+	};
 
 	return {
 		/**
@@ -70,7 +75,7 @@ export function createDesktopQuitController(options: {
 			if (inFlight && !checkingWarnings && now() - lastActivity > QUIT_FLOW_STALE_MS) resetFlow();
 			if (!inFlight && !checkingWarnings) resetFlow();
 			touch();
-			if (updateQuitInFlight) {
+			if (updateQuitActive()) {
 				// An unattended update quit never asks. A draft that appeared since it began holds the quit,
 				// silently; the update watcher sees the draft and defers until it is gone.
 				if (options.draftRiskCount() > 0) {
@@ -149,7 +154,14 @@ export function createDesktopQuitController(options: {
 		},
 		/** True while an unattended update quit is under way: window handlers must not open a dialog. */
 		isUpdateQuitInFlight(): boolean {
-			return updateQuitInFlight;
+			return updateQuitActive();
+		},
+		/**
+		 * The update quit was called off (a draft appeared, the Mac is in use, the request went away): forget it, so
+		 * the person's next close or quit asks about drafts as usual. Does nothing to any other quit in progress.
+		 */
+		cancelUpdateQuit(): void {
+			if (updateQuitInFlight) resetFlow();
 		},
 		/** The OS is shutting down: quit now, never warn. */
 		quitForShutdown(): void {
