@@ -25,6 +25,17 @@ func (a probeAgent) NativeConversationExists(context.Context, ports.SessionRef, 
 	return a.exists, a.err
 }
 
+// probeOnlyAgent has the history probe but not the handoff interface (cline, kilocode,
+// omp and others), which must still count as proof.
+type probeOnlyAgent struct {
+	fakeAgent
+	exists bool
+}
+
+func (a probeOnlyAgent) NativeConversationExists(context.Context, ports.SessionRef, string, map[string]string) (bool, error) {
+	return a.exists, nil
+}
+
 // handoffOnlyAgent reserves native ids but has no history probe.
 type handoffOnlyAgent struct{ fakeAgent }
 
@@ -40,6 +51,7 @@ func TestProbeNativeHistoryOnlyAnExplicitExistsIsPresent(t *testing.T) {
 	}{
 		{"the probe says it exists", probeAgent{exists: true}, NativeHistoryPresent},
 		{"the probe says it is gone", probeAgent{exists: false}, NativeHistoryMissing},
+		{"a probe without the handoff interface still counts", probeOnlyAgent{exists: true}, NativeHistoryPresent},
 		{"the probe fails", probeAgent{err: errors.New("transcript root unreadable")}, NativeHistoryUnproven},
 		{"the adapter has a handoff but no probe", handoffOnlyAgent{}, NativeHistoryUnproven},
 		{"the adapter has no handoff", fakeAgent{}, NativeHistoryUnproven},
@@ -152,5 +164,32 @@ func TestParkResumeSessionReportsContentionAsNotParked(t *testing.T) {
 	}
 	if st.sessions["mer-1"].HibernatedAt != nil {
 		t.Fatal("contention left a marker behind")
+	}
+}
+
+// A background reattach retry can capture an intent minutes after boot, so the
+// resumer waits for them: WaitStartupChecks returns only once the boot pass and every
+// scheduled retry are done, and honours cancellation.
+func TestWaitStartupChecksWaitsForTheBackgroundRetries(t *testing.T) {
+	m, _, _ := newChatManager(&recordingLauncher{})
+	m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
+	m.startupRetries.Add(1)
+	waited := make(chan error, 1)
+	go func() { waited <- m.WaitStartupChecks(ctx) }()
+	select {
+	case err := <-waited:
+		t.Fatalf("returned %v while a retry was still running", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	m.startupRetries.Done()
+	if err := <-waited; err != nil {
+		t.Fatalf("WaitStartupChecks = %v after the retries finished", err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	m2, _, _ := newChatManager(&recordingLauncher{})
+	if err := m2.WaitStartupChecks(cancelled); err == nil {
+		t.Fatal("WaitStartupChecks ignored cancellation before the boot pass finished")
 	}
 }

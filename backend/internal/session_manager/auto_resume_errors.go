@@ -25,6 +25,9 @@ const (
 	ResumeFailureNeedsPerson
 	// ResumeFailurePermanent means the session cannot be resumed at all.
 	ResumeFailurePermanent
+	// ResumeFailureRefused means AO must not resume it on its own (protected, or
+	// stopped on purpose). Silent: a person chose this, so there is nothing to report.
+	ResumeFailureRefused
 )
 
 // ResumeReason is the fixed, public phrase for a failure that needs a person. It is
@@ -48,6 +51,8 @@ func ClassifyResumeFailure(err error) ResumeFailure {
 		return ResumeFailureUnknown
 	case errors.Is(err, ErrAgentNotExited):
 		return ResumeFailureAlreadyRunning
+	case errors.Is(err, ErrSessionProtected), errors.Is(err, ErrStoppedOnPurpose):
+		return ResumeFailureRefused
 	case needsPerson(err):
 		return ResumeFailureNeedsPerson
 	case errors.Is(err, ErrTerminated), errors.Is(err, ErrNotFound), errors.Is(err, ErrIncompleteHandle),

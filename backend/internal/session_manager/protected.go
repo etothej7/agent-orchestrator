@@ -16,6 +16,10 @@ import (
 // allowed`.
 var ErrSessionProtected = errors.New("session is protected: its auto-resume policy is never")
 
+// ErrStoppedOnPurpose means a person stopped the agent (or an account or update move
+// did), so an unattended resume must leave it stopped.
+var ErrStoppedOnPurpose = errors.New("agent was stopped on purpose")
+
 // autoResumePolicyStore is the optional part of the store that answers the policy.
 // AutoResumeAllowed fails closed: a read error is "not allowed".
 type autoResumePolicyStore interface {

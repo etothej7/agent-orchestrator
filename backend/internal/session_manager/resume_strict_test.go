@@ -191,3 +191,29 @@ func TestResumeFailureReasonIsAFixedPhraseNeverRawErrorText(t *testing.T) {
 		}
 	}
 }
+
+// The unattended entry point refuses by itself, not only through the resumer's pre-check.
+func TestResumeAgentStrictRefusesAProtectedOrStoppedSessionItself(t *testing.T) {
+	cases := map[string]func(*fakeStore){
+		"protected":         func(st *fakeStore) { st.protected = map[domain.SessionID]bool{"mer-1": true} },
+		"policy unreadable": func(st *fakeStore) { st.policyUnreadable = true },
+		"stopped on purpose": func(st *fakeStore) {
+			st.stopReasons = map[domain.SessionID]domain.StopReason{"mer-1": domain.StopReasonUser}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			launcher := &recordingLauncher{}
+			mgr, store, rt := newChatManager(launcher)
+			seedChatResumeSession(store, domain.ActivityExited)
+			mutate(store)
+			_, err := mgr.ResumeAgentStrict(context.Background(), "mer-1")
+			if ClassifyResumeFailure(err) != ResumeFailureRefused {
+				t.Fatalf("error = %v (class %v), want a silent refusal", err, ClassifyResumeFailure(err))
+			}
+			if len(launcher.started) != 0 || rt.created != 0 {
+				t.Fatalf("a refused resume launched something: %d %d", len(launcher.started), rt.created)
+			}
+		})
+	}
+}

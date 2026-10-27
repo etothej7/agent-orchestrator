@@ -15,8 +15,9 @@ import (
 // through type assertions, so a manager that loses a method would silently turn
 // auto-resume off. These fail to compile instead.
 var (
-	_ autoresume.Manager                            = (*sessionmanager.Manager)(nil)
-	_ interface{ SetBootWindow(domain.BootWindow) } = (*sessionmanager.Manager)(nil)
+	_ autoresume.Manager                                    = (*sessionmanager.Manager)(nil)
+	_ interface{ SetBootWindow(domain.BootWindow) }         = (*sessionmanager.Manager)(nil)
+	_ interface{ WaitStartupChecks(context.Context) error } = (*sessionmanager.Manager)(nil)
 )
 
 // A session manager that cannot resume (a test double) turns the pass off rather

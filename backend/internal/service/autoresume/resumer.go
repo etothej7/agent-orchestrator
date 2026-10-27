@@ -84,8 +84,18 @@ type Config struct {
 	ResumeWindow time.Duration
 	// ProbeConcurrency bounds the idle-session history probes in flight.
 	ProbeConcurrency int
-	Now              func() time.Time
-	Sleep            func(ctx context.Context, d time.Duration) error
+	// ContinueExpiry is how long after capture a continue turn is still worth
+	// sending; a later one would tell an agent that may be idle or finished to
+	// "continue where you left off".
+	ContinueExpiry time.Duration
+	// WaitStartupChecks blocks until the boot health pass and its background reattach
+	// retries are done: a late retry can capture an intent minutes after boot. Nil
+	// means there is nothing to wait for.
+	WaitStartupChecks func(ctx context.Context) error
+	// WriteTimeout bounds each state write, which runs detached from cancellation.
+	WriteTimeout time.Duration
+	Now          func() time.Time
+	Sleep        func(ctx context.Context, d time.Duration) error
 }
 
 func (c Config) withDefaults() Config {
@@ -114,6 +124,8 @@ func (c Config) withDefaults() Config {
 	setInt(&c.MaxResumes, 3)
 	setDuration(&c.ResumeWindow, 30*time.Minute)
 	setInt(&c.ProbeConcurrency, 3)
+	setDuration(&c.ContinueExpiry, 15*time.Minute)
+	setDuration(&c.WriteTimeout, 10*time.Second)
 	if c.Now == nil {
 		c.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -157,35 +169,54 @@ func New(bootID string, manager Manager, chat Chat, store Store, notify Notifier
 }
 
 // Run performs the pass: park idle sessions, wait for the system to settle, bring
-// working sessions up in stages, then deliver the continue turns. It is safe to run
-// again after a crash: intents carry their own progress.
+// working sessions up in stages, then deliver the continue turns. It keeps scanning
+// until the boot's startup checks are done, because a background reattach retry can
+// capture an intent minutes after the first scan; late intents are parked or resumed
+// the same way, without a second settle delay. It is safe to run again after a
+// crash: intents carry their own progress.
 func (r *Resumer) Run(ctx context.Context) error {
 	intents, err := r.store.ListResumeIntents(ctx)
 	if err != nil {
 		return err
 	}
-	var live []domain.ResumeIntent
 	for _, intent := range intents {
-		if !intent.State.Live() {
-			continue
-		}
 		if intent.State == domain.ResumeResuming {
 			// A daemon killed mid-resume left it. A resume that did finish reads as
 			// already running below, which counts as resumed.
 			intent.State = domain.ResumePending
 			r.save(ctx, &intent)
 		}
-		live = append(live, intent)
 	}
-	if len(live) == 0 && !r.hasPendingContinue(intents) {
-		return nil
-	}
-	r.parkIdle(ctx, live)
-	if r.hasWorking(ctx) {
-		if err := r.cfg.Sleep(ctx, r.settleDelay(ctx)); err != nil {
-			return err
+	settled := r.cfg.WaitStartupChecks == nil
+	settleDone := false
+	// A round that finds nothing pending either ends the pass (startup checks are
+	// done) or waits for them once and looks again. Bounded so a write that keeps
+	// failing cannot spin.
+	for round := 0; round < 20; round++ {
+		pending := r.pendingIntents(ctx)
+		if len(pending) == 0 {
+			if settled {
+				break
+			}
+			if err := r.cfg.WaitStartupChecks(ctx); err != nil {
+				return err
+			}
+			settled = true
+			continue
 		}
-		if err := r.resumeWorking(ctx); err != nil {
+		r.parkIdle(ctx, pending)
+		if r.hasWorking(ctx) {
+			if !settleDone {
+				if err := r.cfg.Sleep(ctx, r.settleDelay(ctx)); err != nil {
+					return err
+				}
+				settleDone = true
+			}
+			if err := r.resumeWorking(ctx); err != nil {
+				return err
+			}
+		}
+		if err := r.deliverContinues(ctx); err != nil {
 			return err
 		}
 	}
@@ -201,8 +232,14 @@ func (r *Resumer) settleDelay(ctx context.Context) time.Duration {
 }
 
 // save writes an intent with its compare-and-swap revision and bumps the local copy.
+//
+// The write is detached from the caller's cancellation (and bounded): a stage cut-off
+// or a shutdown that cancels an attempt must still be able to record where the
+// intent stands, or it would stay "resuming" with nothing to pick it up again.
 func (r *Resumer) save(ctx context.Context, intent *domain.ResumeIntent) bool {
 	intent.UpdatedAt = r.cfg.Now()
+	ctx, cancel := r.detached(ctx)
+	defer cancel()
 	ok, err := r.store.SaveResumeIntent(ctx, *intent)
 	if err != nil {
 		r.log.Warn("auto-resume: could not save intent", "sessionID", intent.SessionID, "error", err)
@@ -212,6 +249,17 @@ func (r *Resumer) save(ctx context.Context, intent *domain.ResumeIntent) bool {
 		intent.Revision++
 	}
 	return ok
+}
+
+// detached is a bounded context that survives the caller's cancellation.
+func (r *Resumer) detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), r.cfg.WriteTimeout)
+}
+
+// pendingIntents lists every intent still waiting for a first or later attempt,
+// idle and working alike.
+func (r *Resumer) pendingIntents(ctx context.Context) []domain.ResumeIntent {
+	return append(r.liveIntents(ctx, domain.ResumeIdle), r.liveIntents(ctx, domain.ResumeWorking)...)
 }
 
 func (r *Resumer) liveIntents(ctx context.Context, class domain.ResumeClass) []domain.ResumeIntent {
@@ -269,7 +317,9 @@ func (r *Resumer) fail(ctx context.Context, intent *domain.ResumeIntent, state d
 	if r.notify == nil {
 		return
 	}
-	if err := r.notify.NotifyResumeFailure(ctx, intent.SessionID, reason, r.bootID); err != nil {
+	noticeCtx, cancel := r.detached(ctx)
+	defer cancel()
+	if err := r.notify.NotifyResumeFailure(noticeCtx, intent.SessionID, reason, r.bootID); err != nil {
 		r.log.Warn("auto-resume: could not record the failure notice", "sessionID", intent.SessionID, "error", err)
 	}
 }
@@ -328,7 +378,28 @@ func (r *Resumer) parkOne(ctx context.Context, intent domain.ResumeIntent) {
 	}
 	// Unproven, or contention that never cleared: resume it actively.
 	intent.Class = domain.ResumeWorking
-	r.save(ctx, &intent)
+	if !r.save(ctx, &intent) {
+		// Another writer changed it first: look again, and promote the fresh copy if
+		// it is still waiting, so the intent never stays idle and pending forever.
+		current, ok := r.find(ctx, intent.SessionID)
+		if ok && current.State == domain.ResumePending && current.Class == domain.ResumeIdle {
+			current.Class = domain.ResumeWorking
+			r.save(ctx, &current)
+		}
+	}
+}
+
+func (r *Resumer) find(ctx context.Context, id domain.SessionID) (domain.ResumeIntent, bool) {
+	intents, err := r.store.ListResumeIntents(ctx)
+	if err != nil {
+		return domain.ResumeIntent{}, false
+	}
+	for _, intent := range intents {
+		if intent.SessionID == id {
+			return intent, true
+		}
+	}
+	return domain.ResumeIntent{}, false
 }
 
 // stageOf orders sessions: 1 the main coordinator, 2 repo and story managers, 3 the
@@ -410,6 +481,9 @@ func (r *Resumer) runStage(ctx context.Context, intents []domain.ResumeIntent) e
 	if len(intents) == 0 {
 		return nil
 	}
+	// The cap decides when to stop STARTING resumes; it never cancels one in flight
+	// (each attempt has its own timeout), so a cut-off session is not burned an
+	// attempt or left half-recorded. What it stops starting stays pending.
 	stageCtx, cancel := context.WithTimeout(ctx, r.cfg.StageCap)
 	defer cancel()
 	slots := make(chan struct{}, r.cfg.Concurrency)
@@ -431,7 +505,7 @@ func (r *Resumer) runStage(ctx context.Context, intents []domain.ResumeIntent) e
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			r.resumeOne(stageCtx, intent)
+			r.resumeOne(ctx, intent)
 		}()
 	}
 	wg.Wait()
@@ -482,6 +556,8 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 	case sessionmanager.ResumeFailureAlreadyRunning:
 		intent.RecentResumes = recent
 		r.settle(ctx, intent, domain.ResumeResumed, "")
+	case sessionmanager.ResumeFailureRefused:
+		r.settle(ctx, intent, domain.ResumeAbandoned, "refused")
 	case sessionmanager.ResumeFailureNeedsPerson:
 		r.fail(ctx, intent, domain.ResumeFailed, string(sessionmanager.ResumeFailureReason(err)))
 	case sessionmanager.ResumeFailurePermanent:
@@ -502,17 +578,15 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 	}
 }
 
-// hasPendingContinue reports whether a resumed session still owes its continue turn.
-func (r *Resumer) hasPendingContinue(intents []domain.ResumeIntent) bool {
-	return slices.ContainsFunc(intents, needsContinue)
-}
-
 // needsContinue: a resumed session that was mid-turn (a human prompt the provider
 // confirmed was cut off) or active gets exactly one "continue" turn. Prompts the
 // provider never confirmed are not re-sent.
-func needsContinue(intent domain.ResumeIntent) bool {
+func (r *Resumer) needsContinue(intent domain.ResumeIntent) bool {
 	if intent.State != domain.ResumeResumed || intent.ContinueSentAt != nil {
 		return false
+	}
+	if r.cfg.Now().Sub(intent.CapturedAt) > r.cfg.ContinueExpiry {
+		return false // too old: the agent may be idle or finished by now
 	}
 	return intent.PriorActivity == domain.ActivityActive ||
 		slices.ContainsFunc(intent.InterruptedTurns, func(t domain.InterruptedTurn) bool { return t.Delivered })
@@ -530,7 +604,7 @@ func (r *Resumer) deliverContinues(ctx context.Context) error {
 	}
 	byStage := map[int][]domain.ResumeIntent{}
 	for _, intent := range intents {
-		if needsContinue(intent) {
+		if r.needsContinue(intent) {
 			stage := r.stageOf(ctx, intent.SessionID)
 			byStage[stage] = append(byStage[stage], intent)
 		}

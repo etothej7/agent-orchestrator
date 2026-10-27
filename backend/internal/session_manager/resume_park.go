@@ -36,11 +36,7 @@ func (m *Manager) ProbeNativeHistory(ctx context.Context, id domain.SessionID) N
 	if !ok {
 		return NativeHistoryUnproven
 	}
-	handoff, ok := agent.(ports.AgentInterfaceHandoff)
-	if !ok {
-		return NativeHistoryUnproven
-	}
-	probe, ok := handoff.(ports.AgentInterfaceHandoffHistoryProbe)
+	probe, ok := agent.(ports.AgentInterfaceHandoffHistoryProbe)
 	if !ok {
 		return NativeHistoryUnproven
 	}
@@ -110,4 +106,24 @@ func (m *Manager) ParkResumeSession(ctx context.Context, id domain.SessionID) (b
 		return false, fmt.Errorf("park %s: %w", id, err)
 	}
 	return parked, nil
+}
+
+// WaitStartupChecks blocks until the boot health pass and every background reattach
+// retry it scheduled have finished. A retry can end in a definitive "host not
+// running" minutes after boot and capture a resume intent then, so the resumer waits
+// here before it decides there is nothing left to do.
+func (m *Manager) WaitStartupChecks(ctx context.Context) error {
+	select {
+	case <-m.startupBackgroundReconcileDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	done := make(chan struct{})
+	go func() { m.startupRetries.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

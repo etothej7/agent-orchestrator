@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,7 @@ type world struct {
 	inFlight, max int
 	probesIn, pmx int
 	onResume      func(domain.SessionID)
+	onProbe       func()
 }
 
 func newWorld() *world {
@@ -85,6 +87,9 @@ func (w *world) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (ses
 	}
 	w.mu.Lock()
 	w.inFlight--
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err == nil {
 		w.live[id] = true
 	}
@@ -97,7 +102,11 @@ func (w *world) ProbeNativeHistory(_ context.Context, id domain.SessionID) sessi
 	w.probesIn++
 	w.pmx = max(w.pmx, w.probesIn)
 	proof := w.proof[id]
+	hook := w.onProbe
 	w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	time.Sleep(time.Millisecond)
 	w.mu.Lock()
 	w.probesIn--
@@ -136,7 +145,10 @@ func (w *world) ListResumeIntents(context.Context) ([]domain.ResumeIntent, error
 	return out, nil
 }
 
-func (w *world) SaveResumeIntent(_ context.Context, intent domain.ResumeIntent) (bool, error) {
+func (w *world) SaveResumeIntent(ctx context.Context, intent domain.ResumeIntent) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err // like the real store: a cancelled context fails the write
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if cur, ok := w.intents[intent.SessionID]; !ok || cur.Revision != intent.Revision {
@@ -562,5 +574,142 @@ func TestTheResumerSessionCapabilityIsExactlyThreeMethods(t *testing.T) {
 	}
 	if want := []string{"ParkResumeSession", "ProbeNativeHistory", "ResumeAgentStrict"}; !slices.Equal(names, want) {
 		t.Fatalf("Manager interface methods = %v, want exactly %v", names, want)
+	}
+}
+
+// R1: the stage cap stops STARTING resumes. It must not cancel one in flight, and every
+// write must survive cancellation, so no intent is left "resuming" with nothing to
+// pick it up. The store here fails writes on a cancelled context, like the real one.
+func TestTheStageCapNeverStrandsAnIntentResuming(t *testing.T) {
+	w := newWorld()
+	for i := range 4 {
+		w.add(domain.SessionID(fmt.Sprintf("w%d", i)), domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, time.Duration(i)*time.Second)
+	}
+	w.onResume = func(domain.SessionID) { time.Sleep(60 * time.Millisecond) } // outlasts the cap
+	r := w.resumer(Config{StageCap: 30 * time.Millisecond, Concurrency: 1})
+	r.cfg.Sleep = func(ctx context.Context, d time.Duration) error { // real time so the cap can fire
+		w.mu.Lock()
+		w.now = w.now.Add(d)
+		w.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		return ctx.Err()
+	}
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for id, in := range w.intents {
+		if in.State == domain.ResumeResuming || in.State == domain.ResumePending {
+			t.Fatalf("%s ended %s, want resumed (never stuck resuming or left pending)", id, in.State)
+		}
+	}
+	for id, calls := range map[domain.SessionID]int{"w0": 1, "w1": 1, "w2": 1, "w3": 1} {
+		if got := strings.Count(strings.Join(sessionsOf(w.resumeCalls), ","), string(id)); got != calls {
+			t.Fatalf("%s resumed %d times, want %d: %v", id, got, calls, w.resumeCalls)
+		}
+	}
+}
+
+func sessionsOf(ids []domain.SessionID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return out
+}
+
+// A shutdown that cancels the run while an attempt is in flight records the intent as
+// pending with a retry time (the write is detached), never as resuming.
+func TestACancelledAttemptIsRecordedPendingNotResuming(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	w.onResume = func(domain.SessionID) { cancel() }
+	r := w.resumer(Config{})
+	_ = r.Run(ctx)
+	in := w.intents["w"]
+	if in.State != domain.ResumePending || in.NextAttemptAt == nil {
+		t.Fatalf("intent = %+v, want pending with a retry time after the cancelled attempt", in)
+	}
+}
+
+// R2: an intent captured by the startup retry loop after the pass began is acted on.
+func TestAnIntentCapturedAfterTheFirstScanIsStillResumedAndParked(t *testing.T) {
+	w := newWorld() // nothing captured yet
+	waited := 0
+	cfg := Config{WaitStartupChecks: func(context.Context) error {
+		waited++
+		// The retry loop's last attempt ends definitively and captures two sessions.
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.sessions["late-work"] = domain.SessionRecord{ID: "late-work", Kind: domain.KindWorker, ProjectID: "repo", Mode: domain.SessionModeChat}
+		w.intents["late-work"] = domain.ResumeIntent{SessionID: "late-work", BootID: "boot-1", CapturedAt: t0, Class: domain.ResumeWorking, PriorActivity: domain.ActivityActive, State: domain.ResumePending, Revision: 1}
+		w.sessions["late-idle"] = domain.SessionRecord{ID: "late-idle", Kind: domain.KindWorker, ProjectID: "repo", Mode: domain.SessionModeChat}
+		w.intents["late-idle"] = domain.ResumeIntent{SessionID: "late-idle", BootID: "boot-1", CapturedAt: t0, Class: domain.ResumeIdle, PriorActivity: domain.ActivityIdle, State: domain.ResumePending, Revision: 1}
+		w.proof["late-idle"], w.parkOK["late-idle"] = sessionmanager.NativeHistoryPresent, true
+		return nil
+	}}
+	if err := w.resumer(cfg).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if waited != 1 {
+		t.Fatalf("waited for the startup checks %d times, want once", waited)
+	}
+	if w.state("late-work") != domain.ResumeResumed || w.state("late-idle") != domain.ResumeHibernated {
+		t.Fatalf("late-work=%s late-idle=%s; want resumed and parked", w.state("late-work"), w.state("late-idle"))
+	}
+	if len(w.resumeCalls) != 1 || len(w.continues) != 1 {
+		t.Fatalf("resumes=%v continues=%v, want one of each (no duplicates)", w.resumeCalls, w.continues)
+	}
+	// A second pass over the same state does nothing more.
+	if err := w.resumer(cfg).Run(context.Background()); err != nil || len(w.resumeCalls) != 1 || len(w.continues) != 1 {
+		t.Fatalf("a repeat pass acted again: resumes=%v continues=%v err=%v", w.resumeCalls, w.continues, err)
+	}
+}
+
+func TestAContinueTurnForAnOldIntentIsDropped(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	in := w.intents["w"]
+	in.State, in.CapturedAt = domain.ResumeResumed, t0.Add(-2*time.Hour)
+	w.intents["w"] = in
+	w.live["w"] = true
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.continues) != 0 {
+		t.Fatalf("a continue turn went out for an intent captured two hours ago: %v", w.continues)
+	}
+}
+
+func TestAProtectedRefusalFromTheManagerIsSilent(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	w.resumeErrs["w"] = []error{sessionmanager.ErrSessionProtected}
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w.state("w") != domain.ResumeAbandoned || len(w.notices) != 0 {
+		t.Fatalf("state=%s notices=%v; want abandoned with no notice", w.state("w"), w.notices)
+	}
+}
+
+// P4: losing the compare-and-swap when promoting an unproven idle intent must not leave
+// it idle and pending forever.
+func TestLosingThePromotionRaceStillResumesTheSession(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeIdle, domain.ActivityIdle, 0)
+	w.proof["w"] = sessionmanager.NativeHistoryUnproven
+	w.onProbe = func() { // someone else touches the intent between our read and our write
+		w.mu.Lock()
+		in := w.intents["w"]
+		in.Revision++
+		w.intents["w"] = in
+		w.mu.Unlock()
+	}
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w.state("w") != domain.ResumeResumed {
+		t.Fatalf("state=%s, want resumed after losing the promotion race", w.state("w"))
 	}
 }

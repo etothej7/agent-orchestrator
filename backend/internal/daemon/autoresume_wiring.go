@@ -23,9 +23,15 @@ func runAutoResume(
 		log.Info("auto-resume: session manager cannot resume, pass skipped")
 		return
 	}
+	cfg := autoresume.Config{}
+	// A background reattach retry can capture an intent minutes after boot; the pass
+	// waits for those before it decides there is nothing left to do.
+	if waiter, ok := sessMgr.(interface{ WaitStartupChecks(context.Context) error }); ok {
+		cfg.WaitStartupChecks = waiter.WaitStartupChecks
+	}
 	resumer := autoresume.New(bootID, manager, chat, store,
 		autoresume.NoticeWriter{Store: store, Notify: notifier},
-		autoresume.ContinueSender{Chat: chat}, log, autoresume.Config{})
+		autoresume.ContinueSender{Chat: chat}, log, cfg)
 	if err := resumer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Error("auto-resume pass failed", "err", err)
 	}
