@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -39,7 +40,12 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		err := persistenthost.Run(context.Background(), persistenthost.Config{
+		// Test helper only: a production chat host deliberately outlives its
+		// controller, but a helper started by a test must not outlive that test
+		// binary, however it dies (SIGKILL, a test timeout panic, a crash).
+		ctx, cancel := context.WithCancel(context.Background())
+		go exitWhenTestParentDies(cancel)
+		err := persistenthost.Run(ctx, persistenthost.Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,
@@ -51,6 +57,20 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// exitWhenTestParentDies cancels the host once the test process that spawned it
+// is gone. The helper is its direct child (spawnDetached uses Setsid, not a
+// double fork), so the parent pid changes (to init) when the test dies.
+func exitWhenTestParentDies(cancel context.CancelFunc) {
+	parent := os.Getppid()
+	for {
+		time.Sleep(200 * time.Millisecond)
+		if os.Getppid() != parent {
+			cancel()
+			return
+		}
+	}
 }
 
 func TestOpenCodeV2ACPProviderHelper(t *testing.T) {
@@ -157,6 +177,24 @@ func TestLaunchesOpenCodeACPWithTheBuiltInModeAdvertisedAtStartup(t *testing.T) 
 	}
 }
 
+// fixturePlugin pins binary resolution to the fixture executable, so a test
+// that must never start a real OpenCode cannot pick one from the machine's
+// system install locations.
+type fixturePlugin struct{ binary string }
+
+func (p fixturePlugin) ResolveBinary(context.Context) (string, error) { return p.binary, nil }
+func (fixturePlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusUnknown, nil
+}
+
+// isolateOpenCodeState keeps a test that launches the fixture provider away
+// from the real user's OpenCode state.
+func isolateOpenCodeState(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+}
+
 // startContained runs driver.Start and guarantees that nothing it launched
 // outlives the test. Start launches a detached persistent chat-host that
 // reparents to init and keeps its provider alive until it is terminated, so a
@@ -250,15 +288,17 @@ func TestWrongOpenCodeMajorIsRejectedBeforeACPProcessLaunch(t *testing.T) {
 // Regression: the wrong-major test used to leave a detached chat-host and its
 // OpenCode child running forever whenever Start unexpectedly succeeded (a real
 // OpenCode on the machine satisfied the resolver). startContained must reap
-// whatever Start launched, including on that path.
+// whatever Start launched, including on that path. Resolution is pinned to the
+// fixture and state is isolated, so this never starts a real OpenCode.
 func TestStartContainedLeavesNoChatHostBehind(t *testing.T) {
 	dataDir := t.TempDir()
 	const session = "contained-start"
 	var hostPID int
 	t.Run("start succeeds and is contained", func(t *testing.T) {
-		writeOpenCodeACPExecutable(t, "2.0.0")
+		binary, _ := writeOpenCodeACPExecutable(t, "2.0.0")
+		isolateOpenCodeState(t)
 		cfg := ports.ChatStartConfig{SessionID: session, DataDir: dataDir, WorkspacePath: t.TempDir()}
-		if err := startContained(t, New(opencodev2.New(), nil), cfg); err != nil {
+		if err := startContained(t, New(fixturePlugin{binary}, nil), cfg); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
 		pid, found := persistenthost.HostPID(dataDir, session)
@@ -275,6 +315,123 @@ func TestStartContainedLeavesNoChatHostBehind(t *testing.T) {
 	if _, found := persistenthost.HostPID(dataDir, session); found {
 		t.Fatal("chat-host descriptor still published after cleanup")
 	}
+}
+
+// TestChatHostParentHarness is the child "test process" of
+// TestChatHostExitsWhenItsParentTestProcessDies. It starts the fixture host,
+// reports the host pid, and waits to be killed. It does nothing in a normal run.
+func TestChatHostParentHarness(t *testing.T) {
+	if os.Getenv("AO_TEST_CHAT_HOST_HARNESS") != "1" {
+		return
+	}
+	dataDir := os.Getenv("AO_TEST_CHAT_HOST_DATADIR")
+	const session = "parent-death"
+	_, err := New(fixturePlugin{os.Getenv("AO_TEST_CHAT_HOST_FIXTURE")}, nil).Start(context.Background(), ports.ChatStartConfig{
+		SessionID: session, DataDir: dataDir, WorkspacePath: os.Getenv("AO_TEST_CHAT_HOST_WORKSPACE"),
+	})
+	if err != nil {
+		t.Fatalf("harness Start: %v", err)
+	}
+	pid, found := persistenthost.HostPID(dataDir, session)
+	if !found {
+		t.Fatal("harness host did not publish a descriptor")
+	}
+	fmt.Printf("HOST_PID=%d\n", pid)
+	time.Sleep(2 * time.Minute) // the outer test kills this process long before
+}
+
+func childPIDs(t *testing.T, parent int) []int {
+	t.Helper()
+	out, err := exec.Command("pgrep", "-P", fmt.Sprint(parent)).Output() //nolint:forbidigo // test-only process inspection
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, field := range strings.Fields(string(out)) {
+		var pid int
+		if _, scanErr := fmt.Sscanf(field, "%d", &pid); scanErr == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// A hard-killed test binary (SIGKILL, a timeout panic, a crash) never runs its
+// cleanup. The chat-host helper it spawned is detached, so it would otherwise
+// run forever with its provider. The helper must notice that its parent test
+// process is gone and take its provider down with it, within a bounded time.
+func TestChatHostExitsWhenItsParentTestProcessDies(t *testing.T) {
+	binary, _ := writeOpenCodeACPExecutable(t, "2.0.0")
+	isolateOpenCodeState(t)
+	dataDir, workspace := t.TempDir(), t.TempDir()
+
+	harness := exec.Command(os.Args[0], "-test.run=^TestChatHostParentHarness$", "-test.timeout=2m") //nolint:forbidigo // child test process
+	harness.Env = append(os.Environ(),
+		"AO_TEST_CHAT_HOST_HARNESS=1", "AO_TEST_CHAT_HOST_FIXTURE="+binary,
+		"AO_TEST_CHAT_HOST_DATADIR="+dataDir, "AO_TEST_CHAT_HOST_WORKSPACE="+workspace)
+	stdout, err := harness.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var hostPID int
+	var providerPIDs []int
+	t.Cleanup(func() {
+		// Safety net: a failing run must not leave the helper behind either.
+		_ = harness.Process.Kill()
+		_ = harness.Wait()
+		for _, pid := range append([]int{hostPID}, providerPIDs...) {
+			if pid > 0 && processalive.Alive(pid) {
+				if process, findErr := os.FindProcess(pid); findErr == nil {
+					_ = process.Kill()
+				}
+			}
+		}
+	})
+
+	reported := make(chan int, 1)
+	go func() {
+		for scanner := bufio.NewScanner(stdout); scanner.Scan(); {
+			var pid int
+			if _, scanErr := fmt.Sscanf(scanner.Text(), "HOST_PID=%d", &pid); scanErr == nil {
+				reported <- pid
+				return
+			}
+		}
+	}()
+	select {
+	case hostPID = <-reported:
+	case <-time.After(30 * time.Second):
+		t.Fatal("harness did not report a chat-host pid")
+	}
+	if !processalive.Alive(hostPID) {
+		t.Fatalf("chat-host %d is not running before the parent dies", hostPID)
+	}
+	providerPIDs = childPIDs(t, hostPID)
+	if len(providerPIDs) == 0 {
+		t.Fatalf("chat-host %d has no provider child to track", hostPID)
+	}
+
+	// Kill the parent test process the way a hard timeout or crash would.
+	if err := harness.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = harness.Wait()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		alive := processalive.Alive(hostPID)
+		for _, pid := range providerPIDs {
+			alive = alive || processalive.Alive(pid)
+		}
+		if !alive {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("chat-host %d (provider %v) survived its parent test process being killed", hostPID, providerPIDs)
 }
 
 func TestRejectsProviderNameBeforeResolvingV2Binary(t *testing.T) {
