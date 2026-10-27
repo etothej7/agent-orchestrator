@@ -695,3 +695,46 @@ func TestTheTerminalUpgradeIsLeftToItsOwnTicket(t *testing.T) {
 		t.Fatalf("POST /terminal-tickets is %q, want H: only the person may mint a ticket", e.Class)
 	}
 }
+
+// A refusal on a coordinator-only route promises the same prioritized idle re-proof as any other
+// routine refusal: in the strict phase and after the bridge identified the coordinator, the session
+// the unproven caller is attributed to is moved to the front of the queue. Proven callers are not.
+func TestCoordinatorRouteRefusalsPrioritizeTheCallersSession(t *testing.T) {
+	p := "/api/v1/sessions/coord-1/conversation/human-decisions"
+	claim := func(r *http.Request) *http.Request { r.Header.Set(identity.HeaderClaim, "coord-1"); return r }
+
+	// strict phase: the coordinator holds a proof; an unproven caller claiming coord-1 is refused and queued
+	caller := anonymous
+	rp := &fakePrioritizer{queued: true}
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve, Reproof: rp,
+		Coordinator: fakeCoordinator{state: identity.CoordinatorState{Session: "coord-1", HoldsProof: true}}}, &caller)
+	rec := do(g.router, "POST", p, "{}", claim)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "COORDINATOR_IDENTITY_REQUIRED") {
+		t.Fatalf("strict phase: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(rp.asked) != 1 || rp.asked[0] != "coord-1" {
+		t.Fatalf("strict phase: prioritized %v, want coord-1", rp.asked)
+	}
+	// a proven worker is refused but never "claims" anything
+	caller = worker
+	do(g.router, "POST", p, "{}", claim)
+	if len(rp.asked) != 1 {
+		t.Fatalf("a proven caller was prioritized: %v", rp.asked)
+	}
+
+	// phase 1 after the bridge identified the coordinator: an unproven, unmatched caller is refused and queued
+	state := &fakeCoordinatorBox{s: identity.CoordinatorState{Session: "coord-1"}}
+	rp2 := &fakePrioritizer{queued: true}
+	caller = bridgedCoord
+	g2 := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve, Reproof: rp2, Coordinator: state}, &caller)
+	if got := call(g2.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("bridged coordinator refused (%d)", got)
+	}
+	caller = anonymous
+	if rec := do(g2.router, "POST", p, "{}", claim); rec.Code != http.StatusForbidden {
+		t.Fatalf("phase 1 after identification: %d", rec.Code)
+	}
+	if len(rp2.asked) != 1 || rp2.asked[0] != "coord-1" {
+		t.Fatalf("phase 1: prioritized %v, want coord-1", rp2.asked)
+	}
+}

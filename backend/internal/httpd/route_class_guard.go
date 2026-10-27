@@ -192,6 +192,7 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 			if state.Session != "" && caller.IsSession(state.Session) {
 				return "", false
 			}
+			cfg.prioritizeClaim(r, caller)
 			cfg.noteAnonymous(r, entry, pattern, caller, false, codeCoordinatorIdent)
 			return codeCoordinatorIdent, true
 		}
@@ -211,6 +212,7 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 		// matched no session is not that coordinator: refused, as after a proof.
 		if !caller.IsAgent() && !caller.IsReviewer() && state.Session != "" {
 			if seen, _ := cfg.bridgedCoordinator.Load().(domain.SessionID); seen == state.Session {
+				cfg.prioritizeClaim(r, caller)
 				cfg.noteAnonymous(r, entry, pattern, caller, false, codeCoordinatorIdent)
 				return codeCoordinatorIdent, true
 			}
@@ -241,6 +243,18 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 // refuseAnonymous records the refusal and returns its code: SESSION_NEEDS_IDENTITY (and a
 // prioritized re-proof of that session) when the caller claims a live un-proven session, else
 // CALLER_IDENTITY_REQUIRED.
+// prioritizeClaim asks for the re-proof of the session an unproven caller is attributed to (the
+// kernel-matched one, else the claimed one), so a refusal on a coordinator route promises the same
+// routine re-proof as any other. Proven callers and the person are never attributed.
+func (cfg GuardConfig) prioritizeClaim(r *http.Request, caller identity.Caller) {
+	if caller.IsHuman() || caller.IsAgent() || caller.IsReviewer() || cfg.Reproof == nil {
+		return
+	}
+	if claimed := claimOf(r, caller); claimed != "" {
+		cfg.Reproof.Prioritize(r.Context(), claimed)
+	}
+}
+
 func (cfg GuardConfig) refuseAnonymous(r *http.Request, entry routeclass.Entry, pattern string, caller identity.Caller) string {
 	code := codeCallerIdentityNeeds
 	if claimed := claimOf(r, caller); claimed != "" && cfg.Reproof != nil && cfg.Reproof.Prioritize(r.Context(), claimed) {
