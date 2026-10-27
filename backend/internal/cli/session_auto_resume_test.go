@@ -79,3 +79,27 @@ func TestSessionSetAutoResumeSurfacesAForbiddenChange(t *testing.T) {
 		t.Fatalf("error = %v, want the forbidden code", err)
 	}
 }
+
+// A person running the command from a shell inside AO inherits an agent's session id and
+// would be refused as that agent; --human sends no sender so the request is the person's.
+func TestSessionSetAutoResumeHumanFlagIgnoresTheInheritedSessionID(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, seen := autoResumeServer(t, http.StatusOK, `{"sessionId":"demo-1","policy":"allowed"}`)
+	writeRunFileFor(t, cfg, srv)
+	t.Setenv("AO_SESSION_ID", "worker-9")
+
+	if _, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"session", "set-auto-resume", "demo-1", "allowed", "--human"); err != nil {
+		t.Fatalf("set-auto-resume --human: %v\nstderr=%s", err, errOut)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %v", *seen)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(strings.SplitN((*seen)[0], " ", 3)[2]), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["policy"] != "allowed" || body["senderSessionId"] != "" {
+		t.Fatalf("body = %v, want the policy with no sender", body)
+	}
+}

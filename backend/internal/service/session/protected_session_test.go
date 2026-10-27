@@ -3,10 +3,13 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 func protectedProject() (*fakeStore, *fakeCommander) {
@@ -76,5 +79,17 @@ func TestTeardownProjectIgnoresAProtectedSessionThatIsAlreadyTerminated(t *testi
 	}
 	if len(fc.killed) != 2 {
 		t.Fatalf("killed = %v, want the two live sessions", fc.killed)
+	}
+}
+
+func TestAutoResumeAuthorityErrorsMapToTheRightAPIErrors(t *testing.T) {
+	var apiErr *apierr.Error
+	err := mapSessionError(fmt.Errorf("set auto-resume x: %w", sessionmanager.ErrAutoResumeAuthorityUnavailable))
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindUnavailable || apiErr.Code != "AUTO_RESUME_AUTHORITY_UNAVAILABLE" {
+		t.Fatalf("authority unavailable = %v, want a 503-class AUTO_RESUME_AUTHORITY_UNAVAILABLE", err)
+	}
+	err = mapSessionError(fmt.Errorf("set auto-resume x: %w", sessionmanager.ErrAutoResumeNotPermitted))
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindForbidden || !strings.Contains(apiErr.Message, "--human") {
+		t.Fatalf("not permitted = %v, want a 403 whose message tells the human about --human", err)
 	}
 }
