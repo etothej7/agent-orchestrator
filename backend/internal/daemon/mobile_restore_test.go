@@ -119,3 +119,40 @@ func TestRestoreAppliesServeToStartReturnedPort(t *testing.T) {
 		t.Fatalf("expected ApplyServe called with Start's returned port 54014, got %d (state.LastPort was 3011)", appliedPort)
 	}
 }
+
+// End to end across the boot sequence: an install that never chose a mode gets
+// secure pairing from the migration, restore applies serve to the bound port,
+// and the advertised list leads with the verified TLS tailnet route.
+func TestBootMigrationThenRestoreAdvertisesSecureTailscale(t *testing.T) {
+	const name = "box.tail1.ts.net"
+	path := mobilebridge.Path(t.TempDir())
+	if err := mobilebridge.Save(path, mobilebridge.State{Enabled: true, Password: "secret12", LastPort: 3011}); err != nil {
+		t.Fatal(err)
+	}
+	var appliedPort int
+	bs := &controllers.BridgeService{
+		LAN:                &fakeLAN{returnPort: 54014},
+		ConfigPath:         path,
+		PickLANHosts:       func() []string { return []string{"192.168.1.42"} },
+		PickTailscaleHosts: func() []string { return []string{"100.72.46.7"} },
+		QueryTS:            func() mobilebridge.TailscaleInfo { return mobilebridge.TailscaleInfo{Name: name, CertsEnabled: true} },
+		ServeInUse:         func() (bool, error) { return false, nil },
+		ApplyServe:         func(p int) error { appliedPort = p; return nil },
+		ServeTarget:        func() int { return appliedPort },
+	}
+	if out := bs.MigrateSecurePairingV1(); out != controllers.SecurePairingMigrationEnabled {
+		t.Fatalf("migration = %v, want enabled", out)
+	}
+	if err := restoreMobileOnBoot(path, bs); err != nil {
+		t.Fatal(err)
+	}
+	want := []mobilebridge.Endpoint{
+		{Kind: mobilebridge.KindTailscale, Host: name, Port: 443, Secure: true},
+		{Kind: mobilebridge.KindLAN, Host: "192.168.1.42", Port: 54014},
+	}
+	for label, got := range map[string][]mobilebridge.Endpoint{"offer": bs.Status().Endpoints, "refresh": bs.AdvertisedEndpoints()} {
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("%s = %v, want %v", label, got, want)
+		}
+	}
+}

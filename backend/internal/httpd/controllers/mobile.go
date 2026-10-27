@@ -254,6 +254,9 @@ type BridgeService struct {
 	ClearServe  func() error
 	QueryTS     func() mobilebridge.TailscaleInfo
 	ServeTarget func() int
+	// ServeInUse reports whether tailnet :443 already has any config. Nil means
+	// the real CLI. An error is treated as "in use": unprovable is not empty.
+	ServeInUse func() (bool, error)
 
 	// HostID is this machine's stable identity, echoed into the pairing code so
 	// the phone can verify every endpoint it races against the machine it
@@ -297,6 +300,9 @@ type BridgeService struct {
 	stateMu sync.RWMutex
 	// serveErr records the last Apply/Clear failure for Status.
 	serveErr error
+	// autoEnableRefused is set when the boot migration declined to take over a
+	// :443 config it does not own, so Status can say why secure pairing is off.
+	autoEnableRefused bool
 }
 
 func (b *BridgeService) lanHosts() []string {
@@ -528,6 +534,13 @@ func (b *BridgeService) serveTarget() int {
 	return mobilebridge.NewServe().Target(context.Background())
 }
 
+func (b *BridgeService) serveInUse() (bool, error) {
+	if b.ServeInUse != nil {
+		return b.ServeInUse()
+	}
+	return mobilebridge.NewServe().HTTPSInUse(context.Background())
+}
+
 func (b *BridgeService) serveError() error {
 	b.stateMu.RLock()
 	defer b.stateMu.RUnlock()
@@ -551,6 +564,8 @@ func (b *BridgeService) securePairingStatus(on, bridgeUp bool) SecurePairingStat
 		// calls when the mode is off).
 		if serveErr != nil {
 			sp.Reason = "clear_failed"
+		} else if b.autoEnableRefusedNow() {
+			sp.Reason = "foreign_serve"
 		}
 		return sp
 	}
@@ -687,6 +702,9 @@ func (b *BridgeService) SetSecurePairing(on bool) (MobileStatusResponse, error) 
 	}
 	ownedServe := st.SecurePairing || st.ServeCleanupPending
 	st.SecurePairing = on
+	// Any explicit choice settles the one-time migration for good.
+	st.SecurePairingAutoEnabledV1 = true
+	b.setAutoEnableRefused(false)
 	if on {
 		st.ServeCleanupPending = false
 	} else if ownedServe {
@@ -760,7 +778,7 @@ func (b *BridgeService) enableWithPasswordLocked(pw string, noPublicTunnel, loop
 		accountToken = ""
 		accountTokenOwner = ""
 	}
-	nextSt := mobilebridge.State{Enabled: true, Password: pw, LastPort: port, RetiredPasswordHash: retired, AccountTokenHash: accountTokenHash, AccountToken: accountToken, AccountTokenOwner: accountTokenOwner, SecurePairing: prevSt.SecurePairing, ServeCleanupPending: prevSt.ServeCleanupPending, KeepAwake: prevSt.KeepAwake, KeepAwakeLid: prevSt.KeepAwakeLid, BrowserRemoteAccess: prevSt.BrowserRemoteAccess, NoPublicTunnel: noPublicTunnel, LoopbackOnly: loopbackOnly}
+	nextSt := mobilebridge.State{Enabled: true, Password: pw, LastPort: port, RetiredPasswordHash: retired, AccountTokenHash: accountTokenHash, AccountToken: accountToken, AccountTokenOwner: accountTokenOwner, SecurePairing: prevSt.SecurePairing, SecurePairingAutoEnabledV1: prevSt.SecurePairingAutoEnabledV1, ServeCleanupPending: prevSt.ServeCleanupPending, KeepAwake: prevSt.KeepAwake, KeepAwakeLid: prevSt.KeepAwakeLid, BrowserRemoteAccess: prevSt.BrowserRemoteAccess, NoPublicTunnel: noPublicTunnel, LoopbackOnly: loopbackOnly}
 	if err := mobilebridge.Save(b.ConfigPath, nextSt); err != nil {
 		// Persist failed after the listener came up. A running listener still
 		// serves the old hash; a fresh enable must tear the listener back down.
@@ -1149,4 +1167,84 @@ func (b *BridgeService) ShutdownServe() {
 		return
 	}
 	_ = b.clearServe()
+}
+
+// SecurePairingMigrationOutcome reports what MigrateSecurePairingV1 decided,
+// for the boot log. It carries no host data.
+type SecurePairingMigrationOutcome string
+
+const (
+	// SecurePairingMigrationDone: nothing to do (already decided or already on).
+	SecurePairingMigrationDone SecurePairingMigrationOutcome = "done"
+	// SecurePairingMigrationEnabled: secure pairing was turned on.
+	SecurePairingMigrationEnabled SecurePairingMigrationOutcome = "enabled"
+	// SecurePairingMigrationNotReady: mobile off, tunnel-only, or Tailscale
+	// lacks a name or certificates. Not marked, so a later boot retries.
+	SecurePairingMigrationNotReady SecurePairingMigrationOutcome = "not_ready"
+	// SecurePairingMigrationForeignServe: :443 is configured by something AO
+	// does not own (or could not be read), so it was left strictly alone.
+	SecurePairingMigrationForeignServe SecurePairingMigrationOutcome = "foreign_serve"
+	// SecurePairingMigrationFailed: persisting the choice failed.
+	SecurePairingMigrationFailed SecurePairingMigrationOutcome = "failed"
+)
+
+func (b *BridgeService) autoEnableRefusedNow() bool {
+	b.stateMu.RLock()
+	defer b.stateMu.RUnlock()
+	return b.autoEnableRefused
+}
+
+func (b *BridgeService) setAutoEnableRefused(v bool) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.autoEnableRefused = v
+}
+
+// MigrateSecurePairingV1 is the one-time boot migration that turns on
+// TLS-over-Tailscale pairing for an installation that has Connect Mobile on but
+// never chose a mode, so an away-from-home phone gets a stable HTTPS route
+// without a manual click. Call it before RestoreOnBoot, which then applies
+// serve against the bound port.
+//
+// It acts only when mobile is enabled (not tunnel-only), the marker is unset,
+// Tailscale reports a MagicDNS name and certificates, and tailnet :443 is
+// provably empty. Anything already on :443 is by definition not AO's (the mode
+// was off), and `serve --https=443` would replace it, so the migration refuses
+// and leaves it untouched. The marker is set only once a decision is final:
+// when it enables, when the mode was already on, or when the user chooses
+// explicitly through SetSecurePairing. Transient refusals stay unmarked.
+func (b *BridgeService) MigrateSecurePairingV1() SecurePairingMigrationOutcome {
+	b.transitionMu.Lock()
+	defer b.transitionMu.Unlock()
+
+	st, err := mobilebridge.Load(b.ConfigPath)
+	if err != nil || st.SecurePairingAutoEnabledV1 {
+		return SecurePairingMigrationDone
+	}
+	if !st.Enabled || st.LoopbackOnly {
+		return SecurePairingMigrationNotReady
+	}
+	settle := func(enable bool) SecurePairingMigrationOutcome {
+		st.SecurePairingAutoEnabledV1 = true
+		st.SecurePairing = st.SecurePairing || enable
+		if err := mobilebridge.Save(b.ConfigPath, st); err != nil {
+			return SecurePairingMigrationFailed
+		}
+		if enable {
+			return SecurePairingMigrationEnabled
+		}
+		return SecurePairingMigrationDone
+	}
+	if st.SecurePairing {
+		return settle(false)
+	}
+	if info := b.queryTS(); info.Name == "" || !info.CertsEnabled {
+		return SecurePairingMigrationNotReady
+	}
+	if inUse, err := b.serveInUse(); err != nil || inUse {
+		b.setAutoEnableRefused(true)
+		return SecurePairingMigrationForeignServe
+	}
+	b.setAutoEnableRefused(false)
+	return settle(true)
 }

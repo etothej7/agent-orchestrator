@@ -86,3 +86,33 @@ func (s *Serve) Target(ctx context.Context) int {
 	}
 	return 0
 }
+
+// HTTPSInUse reports whether anything is already configured on tailnet :443 —
+// an HTTPS proxy, a TCP forward, or a web site on that port. It is a read-only
+// probe. An error means the config could not be read, in which case the caller
+// cannot prove :443 is free and must treat it as taken.
+func (s *Serve) HTTPSInUse(ctx context.Context) (bool, error) {
+	out, err := s.run(ctx, "serve", "status", "--json")
+	if err != nil {
+		return false, fmt.Errorf("tailscale serve status: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return false, nil
+	}
+	var parsed struct {
+		TCP map[string]json.RawMessage `json:"TCP"`
+		Web map[string]json.RawMessage `json:"Web"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return false, fmt.Errorf("parse tailscale serve status: %w", err)
+	}
+	if _, ok := parsed.TCP["443"]; ok {
+		return true, nil
+	}
+	for key := range parsed.Web {
+		if strings.HasSuffix(key, ":443") {
+			return true, nil
+		}
+	}
+	return false, nil
+}

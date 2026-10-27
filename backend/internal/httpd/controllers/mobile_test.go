@@ -1213,3 +1213,192 @@ func TestSecurePairingEndpointNeedsARunningBridge(t *testing.T) {
 		t.Fatalf("endpoints = %v, want none while the bridge is off", got)
 	}
 }
+
+// --- one-time secure-pairing migration ---
+
+// migrationBridge is a bridge persisted as enabled with secure pairing never
+// chosen, plus counters for the node-global side effects.
+type migrationBridge struct {
+	*BridgeService
+	applied  []int
+	cleared  int
+	inUseHit int
+}
+
+func newMigrationBridge(t *testing.T, info mobilebridge.TailscaleInfo, inUse func() (bool, error), st mobilebridge.State) *migrationBridge {
+	t.Helper()
+	mb := &migrationBridge{BridgeService: newSecureBridge(t, info, func() int { return 3011 })}
+	mb.ApplyServe = func(p int) error { mb.applied = append(mb.applied, p); return nil }
+	mb.ClearServe = func() error { mb.cleared++; return nil }
+	mb.ServeInUse = func() (bool, error) { mb.inUseHit++; return inUse() }
+	st.Enabled, st.Password, st.LastPort = true, "secret12", 3011
+	if err := mobilebridge.Save(mb.ConfigPath, st); err != nil {
+		t.Fatal(err)
+	}
+	return mb
+}
+
+func empty() (bool, error) { return false, nil }
+
+func loadState(t *testing.T, b *BridgeService) mobilebridge.State {
+	t.Helper()
+	st, err := mobilebridge.Load(b.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestMigrateSecurePairingEnablesOnceWhenEverythingIsReady(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, empty, mobilebridge.State{})
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationEnabled {
+		t.Fatalf("outcome = %v, want enabled", got)
+	}
+	st := loadState(t, mb.BridgeService)
+	if !st.SecurePairing || !st.SecurePairingAutoEnabledV1 {
+		t.Fatalf("state = %+v, want secure pairing on with the marker set", st)
+	}
+	// Boot restore then applies serve against the bound port.
+	if err := mb.RestoreOnBoot(st); err != nil {
+		t.Fatal(err)
+	}
+	if len(mb.applied) != 1 || mb.applied[0] != 3011 {
+		t.Errorf("applied = %v, want one apply on the bound port", mb.applied)
+	}
+	// Second boot: the marker makes it a no-op.
+	mb.inUseHit = 0
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationDone {
+		t.Errorf("second run = %v, want done", got)
+	}
+	if mb.inUseHit != 0 {
+		t.Error("second run probed the serve config again")
+	}
+}
+
+// An explicit "off" is a decision: it must survive a daemon restart, even when
+// the user made it before this build ever ran the migration.
+func TestMigrateSecurePairingRespectsExplicitOff(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, empty, mobilebridge.State{})
+	if _, err := mb.SetSecurePairing(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationDone {
+		t.Fatalf("outcome = %v, want done (marker set by the explicit choice)", got)
+	}
+	if loadState(t, mb.BridgeService).SecurePairing {
+		t.Error("migration turned secure pairing back on after an explicit off")
+	}
+}
+
+func TestMigrateSecurePairingOnThenOffThenRestartStaysOff(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, empty, mobilebridge.State{})
+	mb.MigrateSecurePairingV1()
+	if _, err := mb.SetSecurePairing(false); err != nil {
+		t.Fatal(err)
+	}
+	mb.MigrateSecurePairingV1()
+	if loadState(t, mb.BridgeService).SecurePairing {
+		t.Error("secure pairing came back after the user turned it off")
+	}
+}
+
+func TestMigrateSecurePairingLeavesExistingOptInAlone(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, empty, mobilebridge.State{SecurePairing: true})
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationDone {
+		t.Fatalf("outcome = %v, want done", got)
+	}
+	if mb.inUseHit != 0 || len(mb.applied) != 0 || mb.cleared != 0 {
+		t.Errorf("touched the serve config for an already-on user: probes=%d applies=%v clears=%d", mb.inUseHit, mb.applied, mb.cleared)
+	}
+	if !loadState(t, mb.BridgeService).SecurePairingAutoEnabledV1 {
+		t.Error("marker not recorded")
+	}
+}
+
+// A foreign :443 serve config is never replaced or cleared. The refusal is not
+// final — nothing is marked — and Status says why while the mode is off.
+func TestMigrateSecurePairingRefusesForeignServeConfig(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, func() (bool, error) { return true, nil }, mobilebridge.State{})
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationForeignServe {
+		t.Fatalf("outcome = %v, want foreign serve refusal", got)
+	}
+	st := loadState(t, mb.BridgeService)
+	if st.SecurePairing || st.SecurePairingAutoEnabledV1 {
+		t.Errorf("state = %+v, want untouched", st)
+	}
+	if len(mb.applied) != 0 || mb.cleared != 0 {
+		t.Errorf("modified serve: applies=%v clears=%d", mb.applied, mb.cleared)
+	}
+	if got := mb.Status().SecurePairing.Reason; got != "foreign_serve" {
+		t.Errorf("Reason = %q, want foreign_serve", got)
+	}
+}
+
+// If the serve config cannot be read we cannot prove it is empty, so refuse.
+func TestMigrateSecurePairingRefusesWhenServeConfigUnreadable(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, func() (bool, error) { return false, errors.New("exit 1") }, mobilebridge.State{})
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationForeignServe {
+		t.Fatalf("outcome = %v, want refusal", got)
+	}
+	if loadState(t, mb.BridgeService).SecurePairing {
+		t.Error("enabled despite an unreadable serve config")
+	}
+}
+
+func TestMigrateSecurePairingWaitsUntilTailscaleIsReady(t *testing.T) {
+	cases := []struct {
+		name string
+		info mobilebridge.TailscaleInfo
+		st   mobilebridge.State
+		want SecurePairingMigrationOutcome
+	}{
+		{"no cli", mobilebridge.TailscaleInfo{}, mobilebridge.State{}, SecurePairingMigrationNotReady},
+		{"no certs", mobilebridge.TailscaleInfo{Name: tsUp.Name}, mobilebridge.State{}, SecurePairingMigrationNotReady},
+		{"tunnel-only", tsUp, mobilebridge.State{LoopbackOnly: true}, SecurePairingMigrationNotReady},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mb := newMigrationBridge(t, tc.info, empty, tc.st)
+			if got := mb.MigrateSecurePairingV1(); got != tc.want {
+				t.Fatalf("outcome = %v, want %v", got, tc.want)
+			}
+			st := loadState(t, mb.BridgeService)
+			if st.SecurePairing || st.SecurePairingAutoEnabledV1 {
+				t.Errorf("state = %+v, want untouched so a later boot can retry", st)
+			}
+		})
+	}
+}
+
+func TestMigrateSecurePairingSkipsWhenMobileIsOff(t *testing.T) {
+	mb := newMigrationBridge(t, tsUp, empty, mobilebridge.State{})
+	st := loadState(t, mb.BridgeService)
+	st.Enabled = false
+	if err := mobilebridge.Save(mb.ConfigPath, st); err != nil {
+		t.Fatal(err)
+	}
+	if got := mb.MigrateSecurePairingV1(); got != SecurePairingMigrationNotReady {
+		t.Fatalf("outcome = %v, want not ready", got)
+	}
+	if loadState(t, mb.BridgeService).SecurePairingAutoEnabledV1 {
+		t.Error("marker set while mobile was off")
+	}
+}
+
+// Enable rebuilds the persisted state; the marker must ride along or an
+// explicit choice would be forgotten on the next password rotation.
+func TestSecurePairingMarkerSurvivesEnableAndRotation(t *testing.T) {
+	b := newSecureBridge(t, tsUp, func() int { return 3011 })
+	if _, err := b.SetSecurePairing(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Regenerate(); err != nil {
+		t.Fatal(err)
+	}
+	if !loadState(t, b).SecurePairingAutoEnabledV1 {
+		t.Error("marker lost across enable/regenerate")
+	}
+}

@@ -108,3 +108,36 @@ func TestServeApplyPropagatesError(t *testing.T) {
 		t.Error("Apply returned nil, want the CLI error")
 	}
 }
+
+func TestServeHTTPSInUse(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want bool
+		bad  bool
+	}{
+		{"empty object", `{}`, nil, false, false},
+		{"empty output", ``, nil, false, false},
+		{"https 443 proxy", serveStatusJSON, nil, true, false},
+		{"tcp forward on 443", `{"TCP": {"443": {"TCPForward": "127.0.0.1:9"}}}`, nil, true, false},
+		{"only another port", `{"TCP": {"8443": {"HTTPS": true}}, "Web": {"h.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9"}}}}}`, nil, false, false},
+		{"cli error", ``, errors.New("exit 1"), false, true},
+		{"garbage", `not json`, nil, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordingRunner{out: tc.out, err: tc.err}
+			got, err := (&Serve{Run: r.run}).HTTPSInUse(context.Background())
+			if (err != nil) != tc.bad {
+				t.Fatalf("err = %v, want error=%v", err, tc.bad)
+			}
+			if got != tc.want {
+				t.Errorf("in use = %v, want %v", got, tc.want)
+			}
+			if want := "serve status --json"; strings.Join(r.calls[0], " ") != want {
+				t.Errorf("argv = %q, want a read-only status call", strings.Join(r.calls[0], " "))
+			}
+		})
+	}
+}

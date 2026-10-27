@@ -2611,7 +2611,8 @@ type SecurePairingStatus struct {
 	Host      string `json:"host"`      // MagicDNS name; "" when unknown
 	Port      int    `json:"port"`      // 443 when active, else 0
 	// Reason is a fixed enum the renderer maps to localized setup steps:
-	// no_cli, no_magicdns, no_certs, serve_failed, port_mismatch, clear_failed.
+	// no_cli, no_magicdns, no_certs, serve_failed, port_mismatch, clear_failed,
+	// foreign_serve (the boot migration found :443 in use by something else).
 	// Empty when Available. Never a raw error string — those are untranslated
 	// and can leak paths.
 	Reason string `json:"reason"`
