@@ -3790,12 +3790,14 @@ func prOperations() []operation {
 	return []operation{
 		{
 			method: http.MethodPost, path: "/api/v1/prs/{id}/merge", id: "mergePR", tag: "prs",
-			summary:    "Squash-merge a pull request",
+			summary:    "Squash-merge a pull request (an agent on a project that has not allowed agent merges files a request for the person instead)",
 			pathParams: []any{controllers.PRIDParam{}},
 			reqBody:    controllers.MergePRRequest{},
 			resps: []respUnit{
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusOK, controllers.MergePRResponse{}},
+				{http.StatusAccepted, controllers.FileHumanRequestResponse{}},
+				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusUnprocessableEntity, envelope.APIError{}},

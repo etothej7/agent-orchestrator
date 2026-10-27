@@ -4880,12 +4880,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/MergePRResponse'
           description: OK
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersFileHumanRequestResponse'
+          description: Accepted
         "400":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
         "404":
           content:
             application/json:
@@ -4910,7 +4922,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Squash-merge a pull request
+      summary: Squash-merge a pull request (an agent on a project that has not allowed
+        agent merges files a request for the person instead)
       tags:
       - prs
   /api/v1/prs/{id}/resolve-comments:

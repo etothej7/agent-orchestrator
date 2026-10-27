@@ -27,6 +27,20 @@ func TestPRMergePostsToDaemon(t *testing.T) {
 	}
 }
 
+func TestPRMergeSaysSoWhenTheDaemonFiledARequestInsteadOfMerging(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := reviewServer(t, http.StatusAccepted, `{"request":{"id":"hr-9"},"message":"Filed request hr-9 for the person to approve in the AO app. Do not retry it."}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if strings.Contains(out, "merged PR") || !strings.Contains(out, "Filed request hr-9") {
+		t.Fatalf("stdout = %q; a filed request must not read as a merge", out)
+	}
+}
+
 func TestPRMergeOmitsMissingMethodFromOutput(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, _ := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42}`)

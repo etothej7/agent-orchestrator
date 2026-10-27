@@ -1049,6 +1049,7 @@ func Run(buildVersion string) error {
 		Coordination:       coordinationsvc.New(store, cfg.DataDir),
 		Stories:            storySvc,
 		HumanRequests:      humanRequestSvc,
+		PRMergeStore:       store,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           hookActivity,

@@ -1902,7 +1902,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Squash-merge a pull request */
+        /** Squash-merge a pull request (an agent on a project that has not allowed agent merges files a request for the person instead) */
         post: operations["mergePR"];
         delete?: never;
         options?: never;
@@ -14753,8 +14753,26 @@ export interface operations {
                     "application/json": components["schemas"]["MergePRResponse"];
                 };
             };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersFileHumanRequestResponse"];
+                };
+            };
             /** @description Bad Request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

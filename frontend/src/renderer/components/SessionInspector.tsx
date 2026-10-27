@@ -951,7 +951,9 @@ function PRSummaryCard({
 				body: { prUrl: pr.url, expectedHeadSha: pr.headSha },
 			});
 			if (error) throw new Error(apiErrorMessage(error, t("pr.merge.failed", { number: pr.number })));
-			return data;
+			// The app's own request is the person's, so it is always a merge; the daemon files a request for an
+			// agent's (202) instead, which carries no merge result.
+			return data && "state" in data ? data : undefined;
 		},
 		onSuccess: async (result) => {
 			if (!cloudOrgId && result?.state === "merged") {

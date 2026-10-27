@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
@@ -44,10 +46,18 @@ type APIDeps struct {
 	SessionMemory     controllers.SessionMemoryService
 	SessionSteps      controllers.SessionStepsReader
 	PRs               prsvc.ActionManager
-	Reviews           reviewsvc.Manager
-	Notifications     controllers.NotificationService
-	Stories           *storysvc.Service
-	HumanRequests     controllers.HumanRequestService
+	// PRMergeStore lets the merge route decide who may merge (see controllers.PRsController). The daemon sets
+	// it; nil leaves merging as it was, which only tests and headless builds rely on.
+	PRMergeStore controllers.PRMergeStore
+	// SessionReproof and CallerClaim serve the refusal an unproven session gets on a routine action: the claim
+	// names the session an anonymous caller says it is (diagnostic only) and the reproof asks for it to be
+	// relaunched at its next idle moment. Both may be nil until the identity observations step lands.
+	SessionReproof controllers.SessionReproof
+	CallerClaim    func(ctx context.Context) domain.SessionID
+	Reviews        reviewsvc.Manager
+	Notifications  controllers.NotificationService
+	Stories        *storysvc.Service
+	HumanRequests  controllers.HumanRequestService
 	// TerminalTickets issues the tickets the app's terminals attach /mux with. Set by the router when the
 	// daemon holds a human-capability key; nil means /mux stays open as before (no app started this daemon).
 	TerminalTickets    *terminalticket.Store
@@ -217,7 +227,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		automations:     &controllers.AutomationsController{Svc: deps.Automations},
 		desktop:         &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
 		usage:           &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
-		prs:             &controllers.PRsController{Svc: deps.PRs},
+		prs:             &controllers.PRsController{Svc: deps.PRs, Store: deps.PRMergeStore, Requests: deps.HumanRequests, Claim: deps.CallerClaim, Reproof: deps.SessionReproof},
 		reviews:         &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications:   &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		stories:         &controllers.StoriesController{Svc: deps.Stories},

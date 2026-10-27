@@ -14,6 +14,12 @@ type mergePRResponse struct {
 	OK       bool   `json:"ok"`
 	PRNumber int    `json:"prNumber"`
 	Method   string `json:"method"`
+	// Request and Message are set instead when the project does not let agents merge: the daemon filed a
+	// request for the person (202) rather than merging.
+	Request struct {
+		ID string `json:"id"`
+	} `json:"request"`
+	Message string `json:"message"`
 }
 
 type resolveCommentsRequest struct {
@@ -47,6 +53,10 @@ func newPRMergeCommand(ctx *commandContext) *cobra.Command {
 			}
 			var res mergePRResponse
 			if err := ctx.postJSON(cmd.Context(), "prs/"+url.PathEscape(prNumber)+"/merge", struct{}{}, &res); err != nil {
+				return err
+			}
+			if res.Request.ID != "" {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", strings.TrimSpace(res.Message))
 				return err
 			}
 			if method := strings.TrimSpace(res.Method); method != "" {
