@@ -21,7 +21,7 @@ Readiness requires implementation, passed testing and independent review for
 the same revision. Done additionally requires an explicit scope-completion
 explanation and reference, with questions and blockers resolved. Only the story's
 assigned manager records `done` (the overall coordinator when the story has no
-manager; if a managed story's manager is gone, the coordinator assigns a new manager first, or the human completes it on the board); a worker or reviewer finishes its part with `ao report --done`. Agent idle,
+manager; if a managed story's manager is gone, the coordinator assigns a new manager first, or the human completes it on the board). When several managers are assigned, any one of them may record `done` once the evidence holds. A worker or reviewer finishes its part with `ao report --done`. Agent idle,
 turn completion, and report done never complete a story.
 
 Story identity is explicit on each operation; a manager may serve multiple
