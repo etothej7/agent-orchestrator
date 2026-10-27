@@ -1621,3 +1621,22 @@ func mustNoErr(t *testing.T, f func() error) {
 		t.Fatal(err)
 	}
 }
+
+// A mode turned on by an earlier build has no ownership record. Turning it off
+// must still remove that route: the owned ports come from the state as it was
+// before the flag flipped.
+func TestSecurePairingOffClearsALegacyRouteWithNoOwnershipRecord(t *testing.T) {
+	b, f := cliBridge(t, proxyCfg("3011"))
+	mustNoErr(t, func() error {
+		return mobilebridge.Save(b.ConfigPath, mobilebridge.State{
+			Enabled: true, Password: "secret12", LastPort: 3011, SecurePairing: true, SecurePairingAutoEnabledV1: true,
+		})
+	})
+	mustNoErr(t, func() error { _, err := b.SetSecurePairing(false); return err })
+	if f.cfg != `{}` {
+		t.Fatalf("serve config = %s, want AO's legacy route removed", f.cfg)
+	}
+	if st := loadState(t, b); st.SecurePairing || st.ServeCleanupPending {
+		t.Errorf("state = %+v, want off with no cleanup pending", st)
+	}
+}

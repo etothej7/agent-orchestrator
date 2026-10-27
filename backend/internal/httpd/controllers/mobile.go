@@ -595,13 +595,13 @@ func (b *BridgeService) applyServe(port int, st mobilebridge.State) error {
 
 // clearServe removes AO's own :443 route only; a config that is no longer AO's
 // is left alone (and counts as cleared, since AO's route is gone).
-func (b *BridgeService) clearServe(st mobilebridge.State) error {
+func (b *BridgeService) clearServe(owned []int) error {
 	defer b.invalidateSecureStatus()
 	var err error
 	if b.ClearServe != nil {
 		err = b.ClearServe()
 	} else {
-		err = b.serve().Clear(context.Background(), ownedServePorts(st)...)
+		err = b.serve().Clear(context.Background(), owned...)
 	}
 	if err != nil {
 		return err
@@ -826,6 +826,9 @@ func (b *BridgeService) SetSecurePairing(on bool) (MobileStatusResponse, error) 
 		return MobileStatusResponse{}, errors.New("tailscale secure pairing is unavailable in tunnel-only mode")
 	}
 	ownedServe := st.SecurePairing || st.ServeCleanupPending
+	// Taken before the flag flips: for a mode enabled by an older build (no
+	// ownership record) the owned port is derived from SecurePairing being on.
+	ownedBefore := ownedServePorts(st)
 	st.SecurePairing = on
 	// Any explicit choice settles the one-time migration for good.
 	st.SecurePairingAutoEnabledV1 = true
@@ -846,7 +849,7 @@ func (b *BridgeService) SetSecurePairing(on bool) (MobileStatusResponse, error) 
 	} else if ownedServe {
 		// Persist pending cleanup before touching the node-global Serve route:
 		// a crash or failed clear must not make tunnel-only setup trust this port.
-		err := b.clearServe(st)
+		err := b.clearServe(ownedBefore)
 		b.setServeError(err)
 		if err == nil && st.ServeCleanupPending {
 			st.ServeCleanupPending = false
@@ -1249,7 +1252,7 @@ func (b *BridgeService) Disable() error {
 	// themselves, or one owned by another AO instance, for someone who never
 	// enabled secure pairing at all.
 	if st.SecurePairing || st.ServeCleanupPending {
-		clearErr := b.clearServe(st)
+		clearErr := b.clearServe(ownedServePorts(st))
 		st.ServeCleanupPending = clearErr != nil
 		if clearErr == nil {
 			st.ServeAppliedPort = 0
@@ -1309,7 +1312,7 @@ func (b *BridgeService) ShutdownServe() {
 	if !st.Enabled || (!st.SecurePairing && !st.ServeCleanupPending) {
 		return
 	}
-	_ = b.clearServe(st)
+	_ = b.clearServe(ownedServePorts(st))
 }
 
 // SecurePairingMigrationOutcome reports what MigrateSecurePairingV1 decided,
