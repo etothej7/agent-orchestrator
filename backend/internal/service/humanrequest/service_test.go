@@ -509,7 +509,7 @@ func TestAKindWhoseServiceIsMissingIsRefusedInsteadOfSilentlyDoingNothing(t *tes
 }
 
 func TestKnownKindsAreTheOnesShipped(t *testing.T) {
-	if got := fmt.Sprint(KnownKinds()); got != "[auto_resume_lift conversation_settings pr_merge provider_switch]" {
+	if got := fmt.Sprint(KnownKinds()); got != "[auto_resume_lift conversation_settings pr_merge project_config provider_switch]" {
 		t.Fatalf("kinds = %s", got)
 	}
 }

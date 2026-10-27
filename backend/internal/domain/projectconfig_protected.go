@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // Protected project configuration (ED8). A project's config is written by several routes, and some of
@@ -128,4 +129,20 @@ func nilIfEmpty(m map[string]any) any {
 		return nil
 	}
 	return m
+}
+
+// IsProtectedConfigKey reports whether key names a protected top-level project-config field: a real
+// config field (the JSON names ProjectConfig serialises with) that is not on the safe list.
+func IsProtectedConfigKey(key string) bool {
+	if safeTopLevel[key] {
+		return false
+	}
+	typ := reflect.TypeOf(ProjectConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name == key {
+			return true
+		}
+	}
+	return false
 }

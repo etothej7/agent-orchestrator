@@ -19,6 +19,9 @@ const (
 	HumanRequestProviderSwitch HumanRequestKind = "provider_switch"
 	// HumanRequestPRMerge asks to merge a pull request on a project that has not let agents merge.
 	HumanRequestPRMerge HumanRequestKind = "pr_merge"
+	// HumanRequestProjectConfig asks to change protected settings of a project's configuration (commands that
+	// run, environment, rules, permissions): fields only the person may change.
+	HumanRequestProjectConfig HumanRequestKind = "project_config"
 )
 
 // HumanRequestTargetKind says what a request is about.
