@@ -733,6 +733,12 @@ func (w *Workspace) checkSubmodules(ctx context.Context, dir string) error {
 		if gitDir.IsDir() {
 			return submoduleWork("submodule %s keeps its git directory inside the worktree, so removing it would delete the submodule's commits", path)
 		}
+		// A submodule's own submodules keep their git data in the same admin
+		// directory. They are checked first so the deepest cause is the one named
+		// (a commit inside a nested submodule also makes its parent look modified).
+		if err := w.checkSubmodules(ctx, sub); err != nil {
+			return fmt.Errorf("in submodule %s: %w", path, err)
+		}
 		status, statusErr := w.run(ctx, w.binary, "-C", sub, "status", "--porcelain=v1", "--untracked-files=all")
 		if statusErr != nil {
 			return submoduleWork("cannot read the git status of submodule %s: %v", path, statusErr)
@@ -885,8 +891,13 @@ func (w *Workspace) probeBackupRoot(sessionID domain.SessionID, path string) err
 func (w *Workspace) keepInsteadOfRemoving(ctx context.Context, repo, from, path, suffix, archive string, reason error) error {
 	if errors.Is(reason, errSubmoduleWork) {
 		// Keeping the directory aside prunes its registration and with it the
-		// admin directory holding the submodule's git data: refuse instead.
+		// admin directory holding the submodule's git data: refuse instead. The
+		// refusal still has to put a renamed-aside directory back (or keep it
+		// where the boot sweep never deletes it), exactly as every other refusal.
 		dropArchive(archive)
+		if from != path {
+			w.undiscard(from, path)
+		}
 		return fmt.Errorf("gitworktree: refusing to remove %q: %w", path, reason)
 	}
 	kept, err := keepBeside(from, path, suffix)

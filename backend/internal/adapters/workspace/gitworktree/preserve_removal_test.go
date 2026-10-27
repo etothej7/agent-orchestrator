@@ -895,3 +895,75 @@ func TestACleanSubmoduleDoesNotBlockRemoval(t *testing.T) {
 		t.Fatalf("a clean submodule must not force the directory to be kept: %s", f.logs.String())
 	}
 }
+
+// F9: every refusal after the rename-aside puts the directory back. A check that
+// fails for a reason that is not about the submodule's contents (here the second
+// submodule listing, run on the renamed directory) must not leave the worktree
+// under .discarded, where the next start's sweep deletes it.
+func TestASubmoduleCheckFailureAfterTheRenameRestoresTheDirectory(t *testing.T) {
+	f := newRemovalFixture(t, "sess-late-list-failure")
+	f.write("work.txt", "uncommitted work\n")
+	inner := f.ws.run
+	listings := 0
+	f.ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "ls-files -s") {
+			listings++
+			if listings >= 2 { // the first (before the rename) succeeds; the one on the renamed dir fails
+				return nil, errors.New("simulated listing failure")
+			}
+		}
+		return inner(ctx, binary, args...)
+	}
+	err := f.ws.ForceDestroy(context.Background(), f.info)
+	f.ws.waitForDiscards()
+	if !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("ForceDestroy = %v, want a refusal", err)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(f.info.Path, "work.txt")); readErr != nil || string(got) != "uncommitted work\n" {
+		t.Fatalf("the directory was not put back: %v %q", readErr, got)
+	}
+	if entries, _ := os.ReadDir(f.ws.discardedRoot()); len(entries) != 0 {
+		t.Fatalf("work left under .discarded for the boot sweep: %v", entries)
+	}
+	records, listErr := f.ws.listRecords(context.Background(), f.repo)
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if _, ok := findWorktree(records, f.info.Path); !ok {
+		t.Fatal("the registration was lost")
+	}
+}
+
+// A submodule's own submodule keeps its git data in the same admin directory.
+func TestPreflightRefusesAnUnpushedCommitInsideANestedSubmodule(t *testing.T) {
+	f := newRemovalFixture(t, "sess-nested-submodule")
+	tmp := filepath.Dir(f.repo)
+	mk := func(name, file string) string {
+		dir := filepath.Join(tmp, name)
+		run(t, f.git, "init", dir)
+		runGit(t, f.git, dir, "config", "user.email", "ao@example.com")
+		runGit(t, f.git, dir, "config", "user.name", "Ao")
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		runGit(t, f.git, dir, "add", file)
+		runGit(t, f.git, dir, "commit", "-m", name)
+		return dir
+	}
+	innerSrc := mk("inner-src", "inner.txt")
+	outerSrc := mk("outer-src", "outer.txt")
+	runGit(t, f.git, outerSrc, "-c", "protocol.file.allow=always", "submodule", "add", innerSrc, "deep")
+	runGit(t, f.git, outerSrc, "commit", "-m", "add inner")
+	runGit(t, f.git, f.info.Path, "-c", "protocol.file.allow=always", "submodule", "add", outerSrc, "vendor/sub")
+	runGit(t, f.git, f.info.Path, "-c", "protocol.file.allow=always", "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "submodule", "update", "--init", "--recursive")
+	runGit(t, f.git, f.info.Path, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "add submodules")
+	if err := f.ws.PreflightRemoval(context.Background(), f.info); err != nil {
+		t.Fatalf("clean nested submodules must not refuse: %v", err)
+	}
+	deep := filepath.Join(f.info.Path, "vendor", "sub", "deep")
+	f.subCommit(deep, "deep.txt", "committed in the nested submodule, never pushed\n")
+	err := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "in submodule vendor/sub") || !strings.Contains(err.Error(), "submodule deep") {
+		t.Fatalf("PreflightRemoval = %v, want a refusal naming vendor/sub and deep", err)
+	}
+}
