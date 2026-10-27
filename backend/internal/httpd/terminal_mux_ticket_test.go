@@ -165,3 +165,29 @@ func TestALANClientThatProvedItselfNeedsNoTicket(t *testing.T) {
 		t.Fatal("a request that was not marked LAN attached without a ticket")
 	}
 }
+
+// An agent's shell is a loopback client that can put any Origin on an upgrade (or none): whatever it sends, with
+// the human capability enabled it cannot attach a terminal without a ticket, and a forged or stolen-looking one
+// attaches nothing. This is the condition GET /mux being class OwnProof (not H) rests on.
+func TestALoopbackUpgradeWithAnyOriginAndNoTicketIsRefusedWhenTheAppStartedTheDaemon(t *testing.T) {
+	_, url := ticketServer(t, uicapability.New(ticketTestKey))
+	for name, headers := range map[string]http.Header{
+		"no Origin (a plain script)":          {},
+		"the app's own origin, forged":        {"Origin": {"app://renderer"}},
+		"the local dev server origin, forged": {"Origin": {"http://localhost:5173"}},
+		"a web page's origin":                 {"Origin": {"https://evil.example"}},
+		"a made-up ticket":                    {"Sec-WebSocket-Protocol": {"ao.mux, ao.ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		c, res, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: headers})
+		cancel()
+		if err == nil {
+			_ = c.CloseNow()
+			t.Errorf("%s: a terminal attached without a real ticket", name)
+			continue
+		}
+		if res == nil || res.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: %v %v; want a 403", name, res, err)
+		}
+	}
+}
