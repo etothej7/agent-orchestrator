@@ -30,6 +30,7 @@ type safetyHarness struct {
 	backupRoot string
 	manager    *sessionmanager.Manager
 	store      *sqlite.Store
+	runtime    *stubRuntime
 }
 
 func newSafetyHarness(t *testing.T) *safetyHarness {
@@ -65,13 +66,14 @@ func newSafetyHarness(t *testing.T) *safetyHarness {
 	}
 	messenger := &captureMessenger{}
 	lcm := lifecycle.New(store, messenger)
+	rt := &stubRuntime{}
 	manager := sessionmanager.New(sessionmanager.Deps{
-		Runtime: &stubRuntime{}, Agents: stubAgents{}, Workspace: workspace, Store: store,
+		Runtime: rt, Agents: stubAgents{}, Workspace: workspace, Store: store,
 		Messenger: messenger, Lifecycle: lcm,
 		LookPath: func(string) (string, error) { return "/usr/bin/true", nil },
 	})
 	lcm.SetCompletionTerminator(manager)
-	return &safetyHarness{t: t, git: git, repo: repo, backupRoot: backupRoot, manager: manager, store: store}
+	return &safetyHarness{t: t, git: git, repo: repo, backupRoot: backupRoot, manager: manager, store: store, runtime: rt}
 }
 
 func (h *safetyHarness) spawn() (domain.SessionID, string) {
@@ -354,5 +356,55 @@ func TestKillRefusesToRemoveACleanWorktreeWhoseSecretsCannotBeArchived(t *testin
 	}
 	if got, readErr := os.ReadFile(filepath.Join(worktree, ".env")); readErr != nil || string(got) != "TOKEN=dummy-clean-secret\n" {
 		t.Fatalf(".env after a refused Kill = %q, %v", got, readErr)
+	}
+}
+
+// A worktree whose work cannot be backed up (here: a nested git repository) is
+// refused BEFORE anything is stopped: the old orchestrator keeps running, its
+// worktree is untouched, and the replacement fails cleanly instead of leaving a
+// terminated session whose dirty worktree still holds the branch.
+func TestRetireForReplacementRefusesBeforeTerminatingAnUnpreservableWorktree(t *testing.T) {
+	h := newSafetyHarness(t)
+	ctx := context.Background()
+	id, worktree := h.spawn()
+	nested := filepath.Join(worktree, "vendor", "tool")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init"}, {"-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "--allow-empty", "-m", "nested"}} {
+		out, err := exec.Command(h.git, append([]string{"-C", nested}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(nested, "work.txt"), []byte("nested work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destroyedBefore := h.runtime.destroyed
+
+	for name, call := range map[string]func() error{
+		"preflight": func() error { return h.manager.PreflightRetireForReplacement(ctx, id) },
+		"retire":    func() error { return h.manager.RetireForReplacement(ctx, id) },
+	} {
+		err := call()
+		if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), worktree) || !strings.Contains(err.Error(), "nested git repository") {
+			t.Fatalf("%s error = %v, want a refusal naming the worktree and the nested repository", name, err)
+		}
+	}
+	rec, _, _ := h.store.GetSession(ctx, id)
+	if rec.IsTerminated {
+		t.Fatal("a refused retirement must leave the session running")
+	}
+	if h.runtime.destroyed != destroyedBefore {
+		t.Fatal("the runtime was destroyed although the retirement was refused")
+	}
+	if got, err := os.ReadFile(filepath.Join(nested, "work.txt")); err != nil || string(got) != "nested work\n" {
+		t.Fatalf("worktree content changed: %v %q", err, got)
+	}
+	if _, err := os.Stat(worktree + ".kept"); err == nil {
+		t.Fatal("a refused retirement must not move the worktree")
+	}
+	if listing := h.gitOut("worktree", "list", "--porcelain"); !strings.Contains(listing, "feature/") && !strings.Contains(listing, worktree) {
+		t.Fatalf("worktree no longer registered: %s", listing)
 	}
 }

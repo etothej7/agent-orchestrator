@@ -45,6 +45,17 @@ const (
 	secretLogNameLimit    = 20
 )
 
+// preserveBudget bounds the preservation walk (status, ignored-file listing,
+// hashing) that runs under the repo teardown lock; backupMaxBytes bounds how much
+// untracked and modified content is copied into the repository's object database.
+// Beyond either, ForceDestroy does not copy: it keeps the worktree directory aside
+// (see keepInsteadOfRemoving) so nothing is lost and nothing blocks. They are
+// variables so tests can shrink them.
+var (
+	preserveBudget = 60 * time.Second
+	backupMaxBytes = int64(512 << 20)
+)
+
 // secretPathspecs select git-ignored files that are local secrets and cannot be
 // regenerated: .env, .env.*, .envrc and *.local. node_modules is excluded.
 var secretPathspecs = []string{
@@ -121,6 +132,9 @@ func (w *Workspace) preserveForRemoval(ctx context.Context, repo, dir, path stri
 			return report, nil
 		}
 		return report, fmt.Errorf("cannot read the git status of %q: %w", path, preserveRefusal(err))
+	}
+	if err := checkPreservable(dir, entries); err != nil {
+		return report, fmt.Errorf("cannot preserve %q: %w", path, preserveRefusal(err))
 	}
 	head := w.resolveHead(ctx, dir)
 	unreachable := false
@@ -445,21 +459,13 @@ func (w *Workspace) verifyPinnedHead(ctx context.Context, repo, ref, head string
 // directory and the relative file names (never contents). With no such files it
 // returns nothing and creates nothing.
 func (w *Workspace) archiveIgnoredSecrets(ctx context.Context, dir string, sessionID domain.SessionID) (string, []string, error) {
-	args := append([]string{"-C", dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"}, secretPathspecs...)
-	out, err := w.run(ctx, w.binary, args...)
+	names, err := w.listIgnoredSecrets(ctx, dir)
 	if err != nil {
-		return "", nil, fmt.Errorf("list ignored secret files: %w", err)
-	}
-	var names []string
-	for _, name := range strings.Split(string(out), "\x00") {
-		if name = filepath.Clean(strings.TrimSpace(name)); name != "" && name != "." {
-			names = append(names, name)
-		}
+		return "", nil, err
 	}
 	if len(names) == 0 {
 		return "", nil, nil
 	}
-	sort.Strings(names)
 	session := backupSessionName(sessionID, dir)
 	sessionDir := filepath.Join(w.backupRoot, session)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -542,35 +548,61 @@ func (w *Workspace) archiveIgnoredSecrets(ctx context.Context, dir string, sessi
 // ports.ErrWorkspaceDirty that names what failed and where the archive would
 // go) when the archive cannot be written. dir is where the files are now (the
 // renamed-aside directory on the fast path); path is the registered location.
-func (w *Workspace) archiveSecretsBeforeRemoval(ctx context.Context, repo, dir, path string, info ports.WorkspaceInfo) error {
+func (w *Workspace) archiveSecretsBeforeRemoval(ctx context.Context, repo, dir, path string, info ports.WorkspaceInfo) (string, error) {
 	if _, err := os.Lstat(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil // nothing on disk to protect
+			return "", nil // nothing on disk to protect
 		}
-		return fmt.Errorf("gitworktree: refusing to remove %q: cannot inspect it: %w", path, preserveRefusal(err))
+		return "", fmt.Errorf("gitworktree: refusing to remove %q: cannot inspect it: %w", path, preserveRefusal(err))
 	}
 	records, err := w.listRecords(ctx, repo)
 	if err != nil {
-		return fmt.Errorf("gitworktree: refusing to remove %q: cannot list worktrees to check it for secret files: %w", path, preserveRefusal(err))
+		return "", fmt.Errorf("gitworktree: refusing to remove %q: cannot list worktrees to check it for secret files: %w", path, preserveRefusal(err))
 	}
 	if _, registered := findWorktree(records, path); !registered {
-		return nil // not a worktree git can list files for
+		return "", nil // not a worktree git can list files for
 	}
 	return w.archiveRegisteredSecrets(ctx, dir, path, info)
 }
 
 // archiveRegisteredSecrets archives the secret files of a worktree already known
 // to be registered (Destroy's fast path has just established that).
-func (w *Workspace) archiveRegisteredSecrets(ctx context.Context, dir, path string, info ports.WorkspaceInfo) error {
+func (w *Workspace) archiveRegisteredSecrets(ctx context.Context, dir, path string, info ports.WorkspaceInfo) (string, error) {
 	archive, names, err := w.archiveIgnoredSecrets(ctx, dir, info.SessionID)
 	if err != nil {
-		return fmt.Errorf("gitworktree: refusing to remove %q: could not archive its git-ignored secret files (.env*) to %s: %w",
+		return "", fmt.Errorf("gitworktree: refusing to remove %q: could not archive its git-ignored secret files (.env*) to %s: %w",
 			path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err))
 	}
 	if len(names) > 0 {
 		w.logPreservation(path, info, removalPreservation{secretArchive: archive, secretNames: names})
 	}
-	return nil
+	return archive, nil
+}
+
+// dropArchive deletes a secret archive that turned out to be redundant because
+// the removal it protected did not happen (the directory is still there, or was
+// kept aside whole). It never touches anything outside the archive directory.
+func dropArchive(archive string) {
+	if archive != "" {
+		_ = os.RemoveAll(archive)
+	}
+}
+
+// listIgnoredSecrets lists the git-ignored secret files in dir (sorted, relative).
+func (w *Workspace) listIgnoredSecrets(ctx context.Context, dir string) ([]string, error) {
+	args := append([]string{"-C", dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"}, secretPathspecs...)
+	out, err := w.run(ctx, w.binary, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ignored secret files: %w", err)
+	}
+	var names []string
+	for _, name := range strings.Split(string(out), "\x00") {
+		if name = filepath.Clean(strings.TrimSpace(name)); name != "" && name != "." {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // copyPrivateFile copies src to dst with private permissions (every directory
@@ -626,24 +658,139 @@ func copyPrivateFile(root, src, dst string) error {
 	return nil
 }
 
-// moveUnregisteredAside keeps a directory that is not a registered worktree. It
-// is renamed next to its original path (the convention Restore already uses for
-// stray paths), never deleted, and the registration, if any, is pruned.
-func (w *Workspace) moveUnregisteredAside(ctx context.Context, repo, path string) error {
-	aside, err := moveStrayPathAside(path)
+// checkPreservable rejects what cannot be copied into a backup commit: a nested
+// git repository (status lists it as "dir/" while a backup tree can only hold a
+// gitlink with no contents) and more content than backupMaxBytes.
+func checkPreservable(dir string, entries []dirtyEntry) error {
+	var total int64
+	for _, e := range entries {
+		if strings.HasSuffix(e.path, "/") {
+			return fmt.Errorf("it contains a nested git repository (%s) that a backup commit cannot hold", e.path)
+		}
+		if strings.Contains(e.status, "D") {
+			continue
+		}
+		if info, err := os.Lstat(filepath.Join(dir, e.path)); err == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+	}
+	if total > backupMaxBytes {
+		return fmt.Errorf("its uncommitted files total %d bytes, over the %d byte limit for a backup commit", total, backupMaxBytes)
+	}
+	return nil
+}
+
+// PreflightRemoval says, without changing anything, whether ForceDestroy could
+// keep this worktree's work safe by backing it up. A caller that is about to
+// terminate a session before force-removing its worktree (RetireForReplacement)
+// asks first, so a worktree that cannot be backed up leaves the session running
+// instead of stranding it. A nil result is not a promise: ForceDestroy still
+// preserves again at the moment of removal and, if that then fails, keeps the
+// directory aside rather than deleting it.
+func (w *Workspace) PreflightRemoval(ctx context.Context, info ports.WorkspaceInfo) error {
+	if info.Path == "" {
+		return fmt.Errorf("%w: empty path", ErrUnsafePath)
+	}
+	repo, err := w.repoPathForInfo(info)
 	if err != nil {
-		return fmt.Errorf("gitworktree: refusing to force-remove %q: it is not a registered worktree and could not be moved aside: %w", path, preserveRefusal(err))
+		return err
+	}
+	path, err := w.validateManagedPath(info.Path)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // nothing on disk to lose
+		}
+		return fmt.Errorf("cannot inspect %q: %w", path, preserveRefusal(err))
+	}
+	ctx, cancel := context.WithTimeout(ctx, preserveBudget)
+	defer cancel()
+	records, err := w.listRecords(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("cannot list worktrees to verify %q: %w", path, preserveRefusal(err))
+	}
+	if _, registered := findWorktree(records, path); !registered {
+		return nil // an unregistered directory is kept aside, never deleted
+	}
+	entries, err := w.dirtyEntries(ctx, path)
+	if err != nil {
+		if isNotGitRepositoryError(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot read the git status of %q: %w", path, preserveRefusal(err))
+	}
+	if err := checkPreservable(path, entries); err != nil {
+		return fmt.Errorf("worktree %q has work that cannot be backed up: %w", path, preserveRefusal(err))
+	}
+	// Secrets: only prove the private archive location is writable.
+	names, err := w.listIgnoredSecrets(ctx, path)
+	if err != nil {
+		return fmt.Errorf("could not list the git-ignored secret files of %q: %w", path, preserveRefusal(err))
+	}
+	if len(names) > 0 {
+		if err := w.probeBackupRoot(info.SessionID, path); err != nil {
+			return fmt.Errorf("cannot archive the git-ignored secret files (.env*) of %q to %s: %w",
+				path, filepath.Join(w.backupRoot, backupSessionName(info.SessionID, path)), preserveRefusal(err))
+		}
+	}
+	return nil
+}
+
+// probeBackupRoot checks that a private archive directory can be created.
+func (w *Workspace) probeBackupRoot(sessionID domain.SessionID, path string) error {
+	dir := filepath.Join(w.backupRoot, backupSessionName(sessionID, path))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	return os.Remove(name)
+}
+
+// keepInsteadOfRemoving is what ForceDestroy does when it cannot prove a
+// worktree's work is saved: the directory is kept whole beside its original path
+// (<path>.kept, or .stray for a directory git does not know), the registration is
+// pruned so the branch is released, and the caller is told by a warning, not an
+// error, so a replacement or shutdown is never blocked and nothing is deleted.
+// Only if even that cannot be done is the removal refused. The redundant secret
+// archive is dropped because the secrets are still in the kept directory.
+func (w *Workspace) keepInsteadOfRemoving(ctx context.Context, repo, from, path, suffix, archive string, reason error) error {
+	kept, err := keepBeside(from, path, suffix)
+	if err != nil {
+		if from != path {
+			w.undiscard(from, path) // restores it, or keeps it somewhere the sweep never deletes
+		}
+		return fmt.Errorf("gitworktree: refusing to remove %q: %w (and it could not be kept aside: %w)", path, reason, err)
+	}
+	dropArchive(archive)
+	_, pruneErr := w.run(ctx, w.binary, worktreePruneArgs(repo)...)
+	stillRegistered := false
+	if pruneErr == nil {
+		if records, listErr := w.listRecords(ctx, repo); listErr == nil {
+			_, stillRegistered = findWorktree(records, path)
+		}
+	}
+	if pruneErr != nil || stillRegistered {
+		// The registration would keep holding the branch while its directory is
+		// elsewhere: put the directory back and refuse.
+		if renameErr := os.Rename(kept, path); renameErr != nil {
+			w.logf("gitworktree: kept %q at %q but could not release its registration or restore it: %v", path, kept, renameErr)
+			return fmt.Errorf("gitworktree: refusing to remove %q: its work is kept at %q (%w; the registration could not be released)", path, kept, reason)
+		}
+		if pruneErr != nil {
+			return fmt.Errorf("gitworktree: worktree prune: %w", pruneErr)
+		}
+		return fmt.Errorf("gitworktree: refusing to remove %q: %w (the registration could not be released)", path, reason)
 	}
 	if w.logger != nil {
-		w.logger.Warn("gitworktree: kept an unregistered directory instead of deleting it", "path", path, "movedTo", aside)
-	}
-	if _, err := w.run(ctx, w.binary, worktreePruneArgs(repo)...); err != nil {
-		// A failed prune leaves both halves as they were, so a retry starts from
-		// the state it began in.
-		if renameErr := os.Rename(aside, path); renameErr != nil {
-			w.logf("gitworktree: could not restore %q to %q after a failed prune: %v", aside, path, renameErr)
-		}
-		return fmt.Errorf("gitworktree: worktree prune: %w", err)
+		w.logger.Warn("gitworktree: could not back the worktree up, so its directory was kept aside instead of being deleted",
+			"path", path, "keptAt", kept, "reason", reason.Error())
 	}
 	return nil
 }

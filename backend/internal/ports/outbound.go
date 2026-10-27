@@ -358,6 +358,14 @@ type WorkspacePreparationBranchCleaner interface {
 	DeletePreparedBranch(ctx context.Context, info WorkspaceInfo) error
 }
 
+// WorkspaceRemovalPreflighter is implemented by workspaces that can say, without
+// changing anything, whether ForceDestroy would be able to keep a worktree's work
+// safe. A caller that terminates a session before force-removing its worktree asks
+// first, so an unsafe removal leaves the session running with a clear error.
+type WorkspaceRemovalPreflighter interface {
+	PreflightRemoval(ctx context.Context, info WorkspaceInfo) error
+}
+
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
 	Create(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)

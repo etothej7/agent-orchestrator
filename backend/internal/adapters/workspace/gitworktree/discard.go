@@ -61,16 +61,51 @@ func (w *Workspace) discard(path string) (string, bool) {
 	return "", false
 }
 
+// keepMarker marks a discarded directory the boot-time sweep must leave alone:
+// the last resort when neither restoring nor keeping the directory aside worked.
+const keepMarker = ".ao-keep"
+
 // undiscard moves a discarded directory back to its original path. It is the
 // rollback for a teardown that turned out to be refusable after the move. The
 // directory must survive a refusal, exactly as it did when git itself declined
 // to remove it.
+//
+// If putting it back fails (the path was re-created meanwhile, permissions), the
+// directory must not be left under the discard root: the sweep at the next start
+// deletes everything there. It is kept as a sibling of the original path instead
+// (<path>.kept), and only if that fails too is it marked so the sweep skips it.
 func (w *Workspace) undiscard(discarded, path string) {
-	if err := os.Rename(discarded, path); err != nil {
-		// Nothing further to try: report the directory's real location rather
-		// than leaving the operator to guess where the contents went.
-		w.logf("gitworktree: could not restore discarded worktree %q to %q: %v", discarded, path, err)
+	first := os.Rename(discarded, path)
+	if first == nil {
+		return
 	}
+	if kept, err := keepBeside(discarded, path, ".kept"); err == nil {
+		w.logf("gitworktree: could not restore discarded worktree %q to %q (%v); kept it at %q", discarded, path, first, kept)
+		return
+	}
+	_ = os.WriteFile(filepath.Join(discarded, keepMarker), []byte("kept: it could neither be restored nor moved aside\n"), 0o600)
+	w.logf("gitworktree: could not restore discarded worktree %q to %q (%v); it stays at %q and the discard sweep will skip it", discarded, path, first, discarded)
+}
+
+// keepBeside renames from to a free sibling of path named path+suffix, adding
+// -N when taken, and returns where it went.
+func keepBeside(from, path, suffix string) (string, error) {
+	for i := 0; i < 100; i++ {
+		candidate := path + suffix
+		if i > 0 {
+			candidate = fmt.Sprintf("%s%s-%d", path, suffix, i+1)
+		}
+		if _, err := os.Lstat(candidate); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if err := os.Rename(from, candidate); err != nil {
+			return "", err
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("no available destination beside %q", path)
 }
 
 // removeInBackground unlinks a discarded directory off the caller's path. The
@@ -96,7 +131,11 @@ func (w *Workspace) sweepDiscarded() {
 		return
 	}
 	for _, entry := range entries {
-		w.removeInBackground(filepath.Join(w.discardedRoot(), entry.Name()))
+		dir := filepath.Join(w.discardedRoot(), entry.Name())
+		if _, err := os.Lstat(filepath.Join(dir, keepMarker)); err == nil {
+			continue // kept on purpose: it could not be restored or moved aside
+		}
+		w.removeInBackground(dir)
 	}
 }
 
@@ -151,6 +190,7 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, info
 	if !conclusive || locked {
 		return false, nil
 	}
+	secretArchive := ""
 	discarded, moved := w.discard(path)
 	if !moved {
 		return false, nil
@@ -176,14 +216,18 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, info
 		}
 		// Clean, but its git-ignored secret files (.env*) go with it unless they
 		// are archived first; a failed archive refuses the removal.
-		if err := w.archiveRegisteredSecrets(ctx, discarded, path, info); err != nil {
+		var archive string
+		var archiveErr error
+		if archive, archiveErr = w.archiveRegisteredSecrets(ctx, discarded, path, info); archiveErr != nil {
 			w.undiscard(discarded, path)
-			return true, err
+			return true, archiveErr
 		}
+		secretArchive = archive
 	}
 	if _, err := w.run(ctx, w.binary, worktreePruneArgs(repo)...); err != nil {
 		w.undiscard(discarded, path)
-		return false, nil //nolint:nilerr // the git-driven path re-runs prune and reports the failure
+		dropArchive(secretArchive) // the git-driven path archives again
+		return false, nil          //nolint:nilerr // the git-driven path re-runs prune and reports the failure
 	}
 	// Past this point the registration is gone, so restoring the directory is
 	// no longer a safe undo: it would put a de-registered worktree back on disk,
@@ -198,6 +242,7 @@ func (w *Workspace) discardWorktree(ctx context.Context, repo, path string, info
 	}
 	if stillRegistered {
 		w.undiscard(discarded, path)
+		dropArchive(secretArchive)
 		return true, fmt.Errorf("gitworktree: refusing to remove %q: path is still registered after git worktree prune", path)
 	}
 	w.removeInBackground(discarded)

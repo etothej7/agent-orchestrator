@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -260,7 +262,31 @@ func TestForceDestroyArchivesIgnoredSecretsPrivatelyAndNeverInGit(t *testing.T) 
 	}
 }
 
-func TestForceDestroyRefusesWhenTheSecretArchiveFails(t *testing.T) {
+// keptAside asserts the worktree directory was kept whole beside its original
+// path (and the registration released), returning where it went.
+func (f *removalFixture) keptAside(suffix string) string {
+	f.t.Helper()
+	if _, err := os.Stat(f.info.Path); !errors.Is(err, os.ErrNotExist) {
+		f.t.Fatalf("the original path should be free after keeping the worktree aside: %v", err)
+	}
+	kept := f.info.Path + suffix
+	if _, err := os.Stat(kept); err != nil {
+		f.t.Fatalf("worktree directory was not kept at %s: %v", kept, err)
+	}
+	records, err := f.ws.listRecords(context.Background(), f.repo)
+	if err != nil {
+		f.t.Fatalf("list: %v", err)
+	}
+	if _, ok := findWorktree(records, f.info.Path); ok {
+		f.t.Fatal("kept-aside worktree is still registered, so it would keep holding its branch")
+	}
+	return kept
+}
+
+// A worktree whose secrets cannot be archived is refused up front by the
+// preflight; if the removal happens anyway (a race), ForceDestroy keeps the
+// directory aside instead of deleting it, and the branch is released.
+func TestForceDestroyKeepsTheWorktreeAsideWhenTheSecretArchiveFails(t *testing.T) {
 	f := newRemovalFixture(t, "sess-archive-fail")
 	f.write(".gitignore", ".env\n")
 	f.write(".env", "TOKEN=dummy\n")
@@ -268,24 +294,28 @@ func TestForceDestroyRefusesWhenTheSecretArchiveFails(t *testing.T) {
 	if err := os.WriteFile(f.backupRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("block backup root: %v", err)
 	}
-	err := f.force()
-	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), f.info.Path) {
-		t.Fatalf("ForceDestroy error = %v, want a refusal naming the worktree", err)
+	preflight := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(preflight, ports.ErrWorkspaceDirty) || !strings.Contains(preflight.Error(), f.info.Path) || !strings.Contains(preflight.Error(), filepath.Join(f.backupRoot, "sess-archive-fail")) {
+		t.Fatalf("PreflightRemoval = %v, want a refusal naming the worktree and the archive location", preflight)
 	}
-	if got, readErr := os.ReadFile(filepath.Join(f.info.Path, ".env")); readErr != nil || string(got) != "TOKEN=dummy\n" {
-		t.Fatalf("refused removal changed the worktree: %v %q", readErr, got)
+	if err := f.force(); err != nil {
+		t.Fatalf("ForceDestroy must keep the directory aside, not fail: %v", err)
 	}
-	records, listErr := f.ws.listRecords(context.Background(), f.repo)
-	if listErr != nil {
-		t.Fatalf("list: %v", listErr)
+	kept := f.keptAside(".kept")
+	if got, _ := os.ReadFile(filepath.Join(kept, ".env")); string(got) != "TOKEN=dummy\n" {
+		t.Fatalf("kept .env = %q", got)
 	}
-	if _, ok := findWorktree(records, f.info.Path); !ok {
-		t.Fatal("refused removal left the worktree unregistered")
+	if !strings.Contains(f.logs.String(), "kept aside instead of being deleted") {
+		t.Fatalf("no warning says where the worktree went: %s", f.logs.String())
 	}
+	// The branch is free again: a new worktree can claim it.
+	runGit(t, f.git, f.repo, "worktree", "add", filepath.Join(filepath.Dir(f.info.Path), "again"), "feature/sess-archive-fail")
 }
 
-func TestForceDestroyRefusesWhenTheBackupCannotBeVerified(t *testing.T) {
+func TestForceDestroyKeepsTheWorktreeAsideWhenTheBackupCannotBeVerified(t *testing.T) {
 	f := newRemovalFixture(t, "sess-verify-fail")
+	f.write(".gitignore", ".env\n")
+	f.write(".env", "TOKEN=dummy\n")
 	f.write("important.txt", "do not lose\n")
 	inner := f.ws.run
 	f.ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
@@ -294,13 +324,159 @@ func TestForceDestroyRefusesWhenTheBackupCannotBeVerified(t *testing.T) {
 		}
 		return inner(ctx, binary, args...)
 	}
-	err := f.ws.ForceDestroy(context.Background(), f.info)
-	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "1 untracked") {
-		t.Fatalf("ForceDestroy error = %v, want a refusal naming what is dirty", err)
+	if err := f.ws.ForceDestroy(context.Background(), f.info); err != nil {
+		t.Fatalf("ForceDestroy must keep the directory aside, not fail: %v", err)
 	}
-	if got, _ := os.ReadFile(filepath.Join(f.info.Path, "important.txt")); string(got) != "do not lose\n" {
-		t.Fatal("refused removal lost the file")
+	kept := f.keptAside(".kept")
+	if got, _ := os.ReadFile(filepath.Join(kept, "important.txt")); string(got) != "do not lose\n" {
+		t.Fatalf("kept file lost: %q", got)
 	}
+	// The secret archive made on the way is dropped: the secrets are still in the kept directory.
+	if entries, _ := os.ReadDir(filepath.Join(f.backupRoot, "sess-verify-fail")); len(entries) != 0 {
+		t.Fatalf("redundant secret archive left behind: %v", entries)
+	}
+}
+
+func TestPreflightAndForceDestroyHandleANestedGitRepository(t *testing.T) {
+	f := newRemovalFixture(t, "sess-nested")
+	nested := filepath.Join(f.info.Path, "vendor", "tool")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runGit(t, f.git, nested, "init")
+	if err := os.WriteFile(filepath.Join(nested, "a.txt"), []byte("nested work\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit(t, f.git, nested, "add", "a.txt")
+	runGit(t, f.git, nested, "-c", "user.email=ao@example.com", "-c", "user.name=Ao", "commit", "-m", "nested")
+	err := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "nested git repository") {
+		t.Fatalf("PreflightRemoval = %v, want a refusal that names the nested repository", err)
+	}
+	if err := f.force(); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	kept := f.keptAside(".kept")
+	if got, _ := os.ReadFile(filepath.Join(kept, "vendor", "tool", "a.txt")); string(got) != "nested work\n" {
+		t.Fatalf("nested repository content lost: %q", got)
+	}
+}
+
+func TestPreflightAndForceDestroyBoundTheBackupSize(t *testing.T) {
+	f := newRemovalFixture(t, "sess-big")
+	old := backupMaxBytes
+	backupMaxBytes = 16
+	t.Cleanup(func() { backupMaxBytes = old })
+	f.write("big.bin", strings.Repeat("x", 1024))
+	err := f.ws.PreflightRemoval(context.Background(), f.info)
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("PreflightRemoval = %v, want a size refusal", err)
+	}
+	if err := f.force(); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	kept := f.keptAside(".kept")
+	if info, err := os.Stat(filepath.Join(kept, "big.bin")); err != nil || info.Size() != 1024 {
+		t.Fatalf("oversized file not kept: %v", err)
+	}
+	if refs := f.backupRefs(); len(refs) != 0 {
+		t.Fatalf("an oversized worktree must not be copied into the repository: %v", refs)
+	}
+}
+
+func TestForceDestroyKeepsTheWorktreeAsideWhenPreservationRunsOutOfTime(t *testing.T) {
+	f := newRemovalFixture(t, "sess-slow")
+	f.write("work.txt", "x\n")
+	old := preserveBudget
+	preserveBudget = 100 * time.Millisecond
+	t.Cleanup(func() { preserveBudget = old })
+	inner := f.ws.run
+	f.ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "--porcelain=v1") {
+			<-ctx.Done() // a walk that never finishes
+			return nil, ctx.Err()
+		}
+		return inner(ctx, binary, args...)
+	}
+	if err := f.ws.ForceDestroy(context.Background(), f.info); err != nil {
+		t.Fatalf("ForceDestroy: %v", err)
+	}
+	kept := f.keptAside(".kept")
+	if got, _ := os.ReadFile(filepath.Join(kept, "work.txt")); string(got) != "x\n" {
+		t.Fatalf("work lost on timeout: %q", got)
+	}
+}
+
+// If putting a discarded directory back fails, it must not be left where the next
+// start's sweep deletes it: it is kept beside the original path, and as a last
+// resort marked so the sweep skips it.
+func TestFailedUndiscardKeepsTheDataOutOfTheBootSweep(t *testing.T) {
+	newWS := func(t *testing.T) (*Workspace, string, string) {
+		tmp := t.TempDir()
+		ws, err := New(Options{ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": tmp}})
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+		path := filepath.Join(ws.managedRoot, "proj", "sess")
+		discarded := filepath.Join(ws.discardedRoot(), "sess-1-0")
+		if err := os.MkdirAll(discarded, 0o755); err != nil {
+			t.Fatalf("mkdir discarded: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(discarded, "work.txt"), []byte("unpreserved work"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// The original path was re-created meanwhile, so the rename back fails.
+		if err := mkdirFile(path, "other.txt"); err != nil {
+			t.Fatalf("occupy path: %v", err)
+		}
+		return ws, path, discarded
+	}
+	t.Run("kept beside the original path", func(t *testing.T) {
+		ws, path, discarded := newWS(t)
+		ws.undiscard(discarded, path)
+		if got, err := os.ReadFile(filepath.Join(path+".kept", "work.txt")); err != nil || string(got) != "unpreserved work" {
+			t.Fatalf("data not kept beside the path: %v %q", err, got)
+		}
+		ws.sweepDiscarded()
+		ws.waitForDiscards()
+		if _, err := os.Stat(filepath.Join(path+".kept", "work.txt")); err != nil {
+			t.Fatalf("sweep deleted kept data: %v", err)
+		}
+	})
+	t.Run("marked when it cannot be moved either", func(t *testing.T) {
+		ws, path, discarded := newWS(t)
+		// Occupy every candidate destination so keeping aside is impossible too.
+		if err := os.MkdirAll(path+".kept", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := 2; i <= 100; i++ {
+			if err := os.MkdirAll(fmt.Sprintf("%s.kept-%d", path, i), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ws.undiscard(discarded, path)
+		if _, err := os.Stat(filepath.Join(discarded, keepMarker)); err != nil {
+			t.Fatalf("no keep marker written: %v", err)
+		}
+		// A simulated next start: construction sweeps the discard root.
+		if _, err := New(Options{ManagedRoot: ws.managedRoot, RepoResolver: StaticRepoResolver{"proj": ws.managedRoot}}); err != nil {
+			t.Fatalf("new (boot): %v", err)
+		}
+		ws.waitForDiscards()
+		if got, err := os.ReadFile(filepath.Join(discarded, "work.txt")); err != nil || string(got) != "unpreserved work" {
+			t.Fatalf("the boot sweep deleted unpreserved work: %v %q", err, got)
+		}
+		// Control: an unmarked leftover is still swept.
+		leftover := filepath.Join(ws.discardedRoot(), "stale-9-0")
+		if err := os.MkdirAll(leftover, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ws.sweepDiscarded()
+		ws.waitForDiscards()
+		if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("an unmarked leftover must still be swept: %v", err)
+		}
+	})
 }
 
 func TestForceDestroyPinsADetachedHeadNoRefReaches(t *testing.T) {

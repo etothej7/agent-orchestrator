@@ -1236,6 +1236,15 @@ architectural assumptions:
 9. **Keep hooks gitignored:** Every file an adapter writes must be in `.gitignore`.
 10. **Never change migrations:** Add new migrations instead of modifying existing ones.
 
+### Worktree removal safety (rule 3 in practice)
+
+- **Kill, project teardown and cleanup** use the non-forcing `Destroy`: a worktree with modified, staged or untracked (non-ignored) files is refused and left on disk. A clean worktree is removed.
+- **`ForceDestroy`** (orchestrator replacement, workspace-project retirement, shutdown save) first preserves, on the directory about to be unlinked: uncommitted work goes into a verified backup commit at `refs/ao-backup/<session>/<UTC timestamp>`; a detached HEAD no ref reaches is pinned by a backup ref; a directory that is not a registered worktree is kept aside as `<path>.stray`. If preservation cannot be proven (git unreadable, over the size or time budget, a nested git repository, a failed archive) the directory is kept whole as `<path>.kept`, the registration is released so the branch is free, and a warning says where it went. Nothing is deleted unpreserved.
+- **`RetireForReplacement`** asks the workspace first (`PreflightRemoval`, before anything is stopped or terminated); a worktree whose work cannot be backed up leaves the old orchestrator running and the replacement fails with `ORCHESTRATOR_WORKTREE_NOT_PRESERVABLE`.
+- **Secrets.** Before any removal (`Destroy` of a clean worktree and `ForceDestroy`), git-ignored `.env`, `.env.*`, `.envrc` and `*.local` files at any depth (not under `node_modules`) are copied to a private archive, `<data dir>/backups/<session>/<UTC timestamp>/files/...` (directories 0700, files 0600, never in a git object; the log carries names and a count only). If the archive cannot be written the removal is refused. Other git-ignored files (`settings.local.json`, `*.env`, `.npmrc`, `*.pem`, build output, caches) are **not** preserved. The archive is dropped when the removal it protected did not happen; otherwise it is kept: nothing prunes it, and recovery is manual (copy a file back from `files/`). Delete old archives yourself once you no longer need them.
+- Unpushed commits and stash entries stay in the shared repository (nothing deletes branches or the stash); they are counted in the preservation log.
+- A discarded directory is renamed into `<worktrees>/.discarded` and unlinked in the background; the next start sweeps anything left there, except a directory carrying a `.ao-keep` marker (a rollback that could neither restore nor move it aside).
+
 ---
 
 ## Summary
