@@ -142,19 +142,26 @@ func assertFreshProviderOnRoot(t *testing.T, store *sqlite.Store, id domain.Sess
 // the same provider conversation or nothing, so a restart can never re-run the task.
 func TestUnattendedResumeNeverStartsFreshEvenWhenTheProviderNeverPersisted(t *testing.T) {
 	const reserved = "92fadfcb-3d31-4dd6-93c1-097bf823cc19"
+	ordinary := func(m *Manager, id domain.SessionID) error {
+		_, err := m.ResumeAgentWithMode(context.Background(), id)
+		return err
+	}
+	unattended := func(m *Manager, id domain.SessionID) error {
+		_, err := m.ResumeAgentStrict(context.Background(), id)
+		return err
+	}
 	for _, tc := range []struct {
-		name      string
-		resume    func(*Manager, domain.SessionID) error
-		wantFresh bool
+		name        string
+		resume      func(*Manager, domain.SessionID) error
+		failedSpawn bool
+		wantFresh   bool
 	}{
-		{"ordinary resume", func(m *Manager, id domain.SessionID) error {
-			_, err := m.ResumeAgentWithMode(context.Background(), id)
-			return err
-		}, true},
-		{"unattended resume", func(m *Manager, id domain.SessionID) error {
-			_, err := m.ResumeAgentStrict(context.Background(), id)
-			return err
-		}, false},
+		{"ordinary resume", ordinary, false, true},
+		{"unattended resume", unattended, false, false},
+		// The failed-spawn retry hands the resume off before the ordinary path; the
+		// mode must survive that hand-off.
+		{"ordinary retry of a failed spawn", ordinary, true, true},
+		{"unattended resume of a failed spawn", unattended, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
@@ -172,6 +179,7 @@ func TestUnattendedResumeNeverStartsFreshEvenWhenTheProviderNeverPersisted(t *te
 				},
 				Activity:      domain.Activity{State: domain.ActivityExited, LastActivityAt: now},
 				FirstSignalAt: now, CreatedAt: now, UpdatedAt: now,
+				ProvisionState: provisionStateFor(tc.failedSpawn),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -202,4 +210,11 @@ func TestUnattendedResumeNeverStartsFreshEvenWhenTheProviderNeverPersisted(t *te
 			}
 		})
 	}
+}
+
+func provisionStateFor(failed bool) domain.SessionProvisionState {
+	if failed {
+		return domain.SessionProvisionFailed
+	}
+	return domain.SessionProvisionReady
 }

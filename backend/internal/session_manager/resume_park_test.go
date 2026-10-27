@@ -3,6 +3,8 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -191,5 +193,40 @@ func TestWaitStartupChecksWaitsForTheBackgroundRetries(t *testing.T) {
 	m2, _, _ := newChatManager(&recordingLauncher{})
 	if err := m2.WaitStartupChecks(cancelled); err == nil {
 		t.Fatal("WaitStartupChecks ignored cancellation before the boot pass finished")
+	}
+}
+
+// Only a worktree that is not there counts as missing; any other stat error is not
+// proof, and a file in its place is.
+func TestWorkspaceExistsOnlyTreatsNotExistAsMissing(t *testing.T) {
+	m := &Manager{}
+	dir := t.TempDir()
+	if !m.workspaceExists(dir) {
+		t.Fatal("an existing directory read as missing")
+	}
+	if m.workspaceExists(filepath.Join(dir, "gone")) {
+		t.Fatal("a path that does not exist read as present")
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if m.workspaceExists(file) {
+		t.Fatal("a file where the worktree should be read as present")
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(locked, "worktree")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(locked, 0o700) }()
+	if os.Getuid() != 0 && !m.workspaceExists(inner) {
+		t.Fatal("a permission error was treated as a missing worktree")
 	}
 }

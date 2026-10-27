@@ -44,6 +44,6 @@ func (m *Manager) ReconnectAwakeAgent(ctx context.Context, target domain.AwakeAg
 	if err != nil {
 		return err
 	}
-	_, err = m.resumeChatController(ctx, "awake reconnect", rec, project, workspaceInfo(rec), false, true, "", domain.SessionInterfaceTransitionHistoryStrict, target)
+	_, err = m.resumeChatController(ctx, "awake reconnect", rec, project, workspaceInfo(rec), false, false, true, "", domain.SessionInterfaceTransitionHistoryStrict, target)
 	return err
 }

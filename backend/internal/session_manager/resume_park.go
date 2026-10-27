@@ -71,7 +71,13 @@ func (m *Manager) workspaceExists(path string) bool {
 		return m.workspaceExistsFn(path)
 	}
 	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	if err != nil {
+		// Only "not there" means missing. Any other stat error (permissions, a slow
+		// volume) says nothing about the worktree, so the resume goes ahead and fails
+		// or succeeds on its own terms instead of abandoning the session for good.
+		return !os.IsNotExist(err)
+	}
+	return info.IsDir()
 }
 
 // sessionParker is the optional part of the store that parks a session.
