@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 )
@@ -1400,5 +1401,223 @@ func TestSecurePairingMarkerSurvivesEnableAndRotation(t *testing.T) {
 	}
 	if !loadState(t, b).SecurePairingAutoEnabledV1 {
 		t.Error("marker lost across enable/regenerate")
+	}
+}
+
+// --- ownership, funnel and caching, through a stateful fake tailscale CLI ---
+
+// fakeTailscale is a tiny stand-in for the CLI: it keeps the node-global :443
+// config in memory so tests can see what AO read, wrote and left alone.
+type fakeTailscale struct {
+	cfg    string // current `serve status --json` output
+	writes []string
+	reads  map[string]int
+}
+
+func (f *fakeTailscale) run(_ context.Context, args ...string) ([]byte, error) {
+	if f.reads == nil {
+		f.reads = map[string]int{}
+	}
+	key := strings.Join(args, " ")
+	switch {
+	case key == "status --json":
+		f.reads[key]++
+		return []byte(`{"Self":{"DNSName":"` + tsUp.Name + `."},"CertDomains":["` + tsUp.Name + `"]}`), nil
+	case key == "serve status --json":
+		f.reads[key]++
+		return []byte(f.cfg), nil
+	case strings.HasPrefix(key, "serve --bg --https=443 http://127.0.0.1:"):
+		f.writes = append(f.writes, key)
+		port := strings.TrimPrefix(key, "serve --bg --https=443 http://127.0.0.1:")
+		f.cfg = proxyCfg(port)
+		return nil, nil
+	case key == "serve --https=443 off":
+		f.writes = append(f.writes, key)
+		f.cfg = `{}`
+		return nil, nil
+	}
+	return nil, errors.New("unexpected tailscale call: " + key)
+}
+
+func proxyCfg(port string) string {
+	return `{"TCP":{"443":{"HTTPS":true}},"Web":{"` + tsUp.Name + `:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:` + port + `"}}}}}`
+}
+
+const (
+	staticCfg = `{"TCP":{"443":{"HTTPS":true}},"Web":{"` + "prasads-macbook-pro.tail057d04.ts.net" + `:443":{"Handlers":{"/":{"Text":"hi"}}}}}`
+	funnelCfg = `{"AllowFunnel":{"prasads-macbook-pro.tail057d04.ts.net:443":true}}`
+)
+
+// cliBridge is a bridge whose only tailscale access is the fake CLI.
+func cliBridge(t *testing.T, cfg string) (*BridgeService, *fakeTailscale) {
+	t.Helper()
+	f := &fakeTailscale{cfg: cfg}
+	b := &BridgeService{
+		LAN:                &fakeLAN{},
+		ConfigPath:         filepath.Join(t.TempDir(), "mobile", "config.json"),
+		DefaultPort:        3011,
+		PickLANHosts:       func() []string { return []string{"192.168.1.42"} },
+		PickTailscaleHosts: func() []string { return []string{"100.72.46.7"} },
+		TailscaleRun:       f.run,
+	}
+	return b, f
+}
+
+func TestSecurePairingAppliesToEmptyServeAndRecordsOwnership(t *testing.T) {
+	b, f := cliBridge(t, `{}`)
+	mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+	mustNoErr(t, func() error { _, err := b.Enable(); return err })
+	if len(f.writes) != 1 || f.writes[0] != "serve --bg --https=443 http://127.0.0.1:3011" {
+		t.Fatalf("writes = %v", f.writes)
+	}
+	if got := loadState(t, b).ServeAppliedPort; got != 3011 {
+		t.Errorf("ownership record = %d, want 3011", got)
+	}
+	if !b.Status().SecurePairing.Active {
+		t.Error("not active after a clean apply")
+	}
+}
+
+func TestSecurePairingNeverOverwritesForeignOrFunnelConfig(t *testing.T) {
+	cases := []struct {
+		name, cfg, reason string
+	}{
+		{"static site", staticCfg, "foreign_serve"},
+		{"proxy to someone else's port", proxyCfg("4999"), "foreign_serve"},
+		{"funnel flag", funnelCfg, "funnel_exposed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, f := cliBridge(t, tc.cfg)
+			mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+			if _, err := b.Enable(); err != nil {
+				t.Fatalf("Enable must keep the bridge up: %v", err)
+			}
+			if len(f.writes) != 0 {
+				t.Fatalf("modified the node's serve config: %v", f.writes)
+			}
+			if f.cfg != tc.cfg {
+				t.Error("serve config changed")
+			}
+			sp := b.Status().SecurePairing
+			if sp.Reason != tc.reason || sp.Active {
+				t.Errorf("securePairing = %+v, want reason %s and not active", sp, tc.reason)
+			}
+			for _, e := range b.AdvertisedEndpoints() {
+				if e.Secure && e.Kind == mobilebridge.KindTailscale {
+					t.Error("advertised a secure tailnet route that was never applied")
+				}
+			}
+			if got := loadState(t, b).ServeAppliedPort; got != 0 {
+				t.Errorf("ownership record = %d for a config AO did not apply", got)
+			}
+		})
+	}
+}
+
+// Port change while the mode is on: the live proxy is AO's own (recorded), so it
+// is re-pointed rather than refused.
+func TestSecurePairingRepointsItsOwnProxyAfterAPortChange(t *testing.T) {
+	b, f := cliBridge(t, `{}`)
+	mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+	mustNoErr(t, func() error { _, err := b.Enable(); return err })
+	b.LAN = &portOverrideLAN{startPort: 54014, boundPortStale: 54014} // the next start falls back to another port
+	mustNoErr(t, func() error { _, err := b.Regenerate(); return err })
+	if f.cfg != proxyCfg("54014") {
+		t.Fatalf("serve config = %s, want it re-pointed to 54014", f.cfg)
+	}
+	if got := loadState(t, b).ServeAppliedPort; got != 54014 {
+		t.Errorf("ownership record = %d, want 54014", got)
+	}
+}
+
+// A mode enabled by an earlier build has no ownership record; its live proxy
+// points at the last bound port, which is still AO's.
+func TestRestoreOnBootAdoptsLegacyProxyOnLastPort(t *testing.T) {
+	b, f := cliBridge(t, proxyCfg("3011"))
+	st := mobilebridge.State{Enabled: true, Password: "secret12", LastPort: 3011, SecurePairing: true, SecurePairingAutoEnabledV1: true}
+	mustNoErr(t, func() error { return mobilebridge.Save(b.ConfigPath, st) })
+	b.LAN = &portOverrideLAN{startPort: 54014, boundPortStale: 54014}
+	mustNoErr(t, func() error { return b.RestoreOnBoot(st) })
+	if f.cfg != proxyCfg("54014") {
+		t.Fatalf("serve config = %s, want legacy proxy re-pointed to the bound port", f.cfg)
+	}
+}
+
+func TestSecurePairingOffClearsOnlyAOsOwnRoute(t *testing.T) {
+	t.Run("own route", func(t *testing.T) {
+		b, f := cliBridge(t, `{}`)
+		mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+		mustNoErr(t, func() error { _, err := b.Enable(); return err })
+		mustNoErr(t, func() error { _, err := b.SetSecurePairing(false); return err })
+		if f.cfg != `{}` {
+			t.Errorf("serve config = %s, want cleared", f.cfg)
+		}
+		if got := loadState(t, b).ServeAppliedPort; got != 0 {
+			t.Errorf("ownership record = %d after clear", got)
+		}
+	})
+	t.Run("config replaced by the user since", func(t *testing.T) {
+		b, f := cliBridge(t, `{}`)
+		mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+		mustNoErr(t, func() error { _, err := b.Enable(); return err })
+		f.cfg = staticCfg // the user took :443 over after AO applied
+		f.writes = nil
+		mustNoErr(t, func() error { _, err := b.SetSecurePairing(false); return err })
+		if len(f.writes) != 0 || f.cfg != staticCfg {
+			t.Errorf("removed a config AO does not own: writes=%v", f.writes)
+		}
+		if r := b.Status().SecurePairing.Reason; r == "clear_failed" {
+			t.Error("reported clear_failed for a route that is no longer AO's")
+		}
+	})
+	t.Run("disable and shutdown", func(t *testing.T) {
+		b, f := cliBridge(t, `{}`)
+		mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+		mustNoErr(t, func() error { _, err := b.Enable(); return err })
+		f.cfg = staticCfg
+		f.writes = nil
+		b.ShutdownServe()
+		mustNoErr(t, b.Disable)
+		if len(f.writes) != 0 || f.cfg != staticCfg {
+			t.Errorf("shutdown/disable removed a foreign config: %v", f.writes)
+		}
+	})
+}
+
+// The phone triggers Status-equivalent work on every connect; the two CLI reads
+// behind it are cached briefly, and any transition drops the cache.
+func TestSecurePairingStatusIsCached(t *testing.T) {
+	b, f := cliBridge(t, `{}`)
+	now := time.Unix(1_000, 0)
+	b.now = func() time.Time { return now }
+	mustNoErr(t, func() error { _, err := b.SetSecurePairing(true); return err })
+	mustNoErr(t, func() error { _, err := b.Enable(); return err })
+
+	_ = b.AdvertisedEndpoints()
+	f.reads = map[string]int{}
+	for i := 0; i < 5; i++ {
+		_ = b.AdvertisedEndpoints()
+		_ = b.Status()
+	}
+	if f.reads["status --json"] != 0 || f.reads["serve status --json"] != 0 {
+		t.Fatalf("cli reads within the TTL = %v, want none", f.reads)
+	}
+	now = now.Add(31 * time.Second)
+	_ = b.AdvertisedEndpoints()
+	if f.reads["status --json"] != 1 || f.reads["serve status --json"] != 1 {
+		t.Errorf("cli reads after the TTL = %v, want one refresh", f.reads)
+	}
+	// A transition (apply/clear) invalidates immediately, no waiting for the TTL.
+	mustNoErr(t, func() error { _, err := b.SetSecurePairing(false); return err })
+	if b.Status().SecurePairing.Active {
+		t.Error("stale cached Active after turning the mode off")
+	}
+}
+
+func mustNoErr(t *testing.T, f func() error) {
+	t.Helper()
+	if err := f(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -257,6 +257,9 @@ type BridgeService struct {
 	// ServeInUse reports whether tailnet :443 already has any config. Nil means
 	// the real CLI. An error is treated as "in use": unprovable is not empty.
 	ServeInUse func() (bool, error)
+	// TailscaleRun runs the tailscale CLI for every production serve/status
+	// call. Nil means the real binary; tests inject a fake CLI here.
+	TailscaleRun mobilebridge.TailscaleRunner
 
 	// HostID is this machine's stable identity, echoed into the pairing code so
 	// the phone can verify every endpoint it races against the machine it
@@ -303,6 +306,29 @@ type BridgeService struct {
 	// autoEnableRefused is set when the boot migration declined to take over a
 	// :443 config it does not own, so Status can say why secure pairing is off.
 	autoEnableRefused bool
+	// spCache holds the last securePairingStatus so GET /api/v1/endpoints (hit on
+	// every phone connect) and the polled Status do not each shell out twice.
+	spCache secureStatusCache
+	// now is the clock for spCache; nil means time.Now.
+	now func() time.Time
+}
+
+// secureStatusTTL bounds how stale a cached secure-pairing status may be. Every
+// transition (apply, clear, error change) invalidates it earlier.
+const secureStatusTTL = 20 * time.Second
+
+type secureStatusKey struct {
+	on, bridgeUp bool
+	port         int
+	serveErr     string
+	refused      bool
+}
+
+type secureStatusCache struct {
+	valid bool
+	key   secureStatusKey
+	at    time.Time
+	val   SecurePairingStatus
 }
 
 func (b *BridgeService) lanHosts() []string {
@@ -510,35 +536,98 @@ func (b *BridgeService) queryTS() mobilebridge.TailscaleInfo {
 	if b.QueryTS != nil {
 		return b.QueryTS()
 	}
+	if b.TailscaleRun != nil {
+		return mobilebridge.QueryTailscaleVia(context.Background(), b.TailscaleRun)
+	}
 	return mobilebridge.QueryTailscale(context.Background())
 }
 
-func (b *BridgeService) applyServe(port int) error {
-	if b.ApplyServe != nil {
-		return b.ApplyServe(port)
-	}
-	return mobilebridge.NewServe().Apply(context.Background(), port)
+func (b *BridgeService) serve() *mobilebridge.Serve {
+	return &mobilebridge.Serve{Run: b.TailscaleRun}
 }
 
-func (b *BridgeService) clearServe() error {
-	if b.ClearServe != nil {
-		return b.ClearServe()
+// ownedServePorts are the bridge ports AO may recognise as its own :443 route:
+// the one it recorded applying, or — for a mode turned on before the record
+// existed — the last bound port.
+func ownedServePorts(st mobilebridge.State) []int {
+	if st.ServeAppliedPort > 0 {
+		return []int{st.ServeAppliedPort}
 	}
-	return mobilebridge.NewServe().Clear(context.Background())
+	if st.SecurePairing && st.LastPort > 0 {
+		return []int{st.LastPort}
+	}
+	return nil
+}
+
+// setServeApplied persists the ownership record (0 = AO holds no route). It
+// reloads first so it never overwrites a concurrent edit with a stale copy.
+func (b *BridgeService) setServeApplied(port int) error {
+	if b.ConfigPath == "" {
+		return nil
+	}
+	st, err := mobilebridge.Load(b.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if st.ServeAppliedPort == port {
+		return nil
+	}
+	st.ServeAppliedPort = port
+	return mobilebridge.Save(b.ConfigPath, st)
+}
+
+// applyServe points :443 at the bridge port, refusing a foreign or funneled
+// config, and records ownership on success. st supplies the ports AO may
+// recognise as its own previous route.
+func (b *BridgeService) applyServe(port int, st mobilebridge.State) error {
+	defer b.invalidateSecureStatus()
+	var err error
+	if b.ApplyServe != nil {
+		err = b.ApplyServe(port)
+	} else {
+		err = b.serve().Apply(context.Background(), port, ownedServePorts(st)...)
+	}
+	if err != nil {
+		return err
+	}
+	return b.setServeApplied(port)
+}
+
+// clearServe removes AO's own :443 route only; a config that is no longer AO's
+// is left alone (and counts as cleared, since AO's route is gone).
+func (b *BridgeService) clearServe(st mobilebridge.State) error {
+	defer b.invalidateSecureStatus()
+	var err error
+	if b.ClearServe != nil {
+		err = b.ClearServe()
+	} else {
+		err = b.serve().Clear(context.Background(), ownedServePorts(st)...)
+	}
+	if err != nil {
+		return err
+	}
+	_ = b.setServeApplied(0)
+	return nil
+}
+
+func (b *BridgeService) invalidateSecureStatus() {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.spCache.valid = false
 }
 
 func (b *BridgeService) serveTarget() int {
 	if b.ServeTarget != nil {
 		return b.ServeTarget()
 	}
-	return mobilebridge.NewServe().Target(context.Background())
+	return b.serve().Target(context.Background())
 }
 
 func (b *BridgeService) serveInUse() (bool, error) {
 	if b.ServeInUse != nil {
 		return b.ServeInUse()
 	}
-	return mobilebridge.NewServe().HTTPSInUse(context.Background())
+	return b.serve().HTTPSInUse(context.Background())
 }
 
 func (b *BridgeService) serveError() error {
@@ -556,6 +645,42 @@ func (b *BridgeService) setServeError(err error) {
 // securePairingStatus assembles the SecurePairing block of Status from the
 // persisted mode flag and current bridge/proxy state.
 func (b *BridgeService) securePairingStatus(on, bridgeUp bool) SecurePairingStatus {
+	if !on {
+		return b.computeSecurePairingStatus(on, bridgeUp) // no CLI calls when off
+	}
+	key := secureStatusKey{on: on, bridgeUp: bridgeUp, port: b.LAN.BoundPort(), refused: b.autoEnableRefusedNow()}
+	if err := b.serveError(); err != nil {
+		key.serveErr = err.Error()
+	}
+	now := time.Now
+	if b.now != nil {
+		now = b.now
+	}
+	b.stateMu.RLock()
+	c := b.spCache
+	b.stateMu.RUnlock()
+	if c.valid && c.key == key && now().Sub(c.at) < secureStatusTTL {
+		return c.val
+	}
+	val := b.computeSecurePairingStatus(on, bridgeUp)
+	b.stateMu.Lock()
+	b.spCache = secureStatusCache{valid: true, key: key, at: now(), val: val}
+	b.stateMu.Unlock()
+	return val
+}
+
+// serveFailureReason maps an apply failure to the fixed reason enum.
+func serveFailureReason(err error) string {
+	switch {
+	case errors.Is(err, mobilebridge.ErrForeignServe):
+		return "foreign_serve"
+	case errors.Is(err, mobilebridge.ErrFunnelExposed):
+		return "funnel_exposed"
+	}
+	return "serve_failed"
+}
+
+func (b *BridgeService) computeSecurePairingStatus(on, bridgeUp bool) SecurePairingStatus {
 	serveErr := b.serveError()
 	sp := SecurePairingStatus{Enabled: on}
 	if !on {
@@ -584,7 +709,7 @@ func (b *BridgeService) securePairingStatus(on, bridgeUp bool) SecurePairingStat
 		return sp
 	}
 	if serveErr != nil {
-		sp.Reason = "serve_failed"
+		sp.Reason = serveFailureReason(serveErr)
 		return sp
 	}
 	if b.serveTarget() != b.LAN.BoundPort() {
@@ -716,15 +841,16 @@ func (b *BridgeService) SetSecurePairing(on bool) (MobileStatusResponse, error) 
 	b.setServeError(nil)
 	if on {
 		if b.LAN.Running() {
-			b.setServeError(b.applyServe(b.LAN.BoundPort()))
+			b.setServeError(b.applyServe(b.LAN.BoundPort(), st))
 		}
 	} else if ownedServe {
 		// Persist pending cleanup before touching the node-global Serve route:
 		// a crash or failed clear must not make tunnel-only setup trust this port.
-		err := b.clearServe()
+		err := b.clearServe(st)
 		b.setServeError(err)
 		if err == nil && st.ServeCleanupPending {
 			st.ServeCleanupPending = false
+			st.ServeAppliedPort = 0
 			if err := mobilebridge.Save(b.ConfigPath, st); err != nil {
 				return MobileStatusResponse{}, err
 			}
@@ -778,7 +904,7 @@ func (b *BridgeService) enableWithPasswordLocked(pw string, noPublicTunnel, loop
 		accountToken = ""
 		accountTokenOwner = ""
 	}
-	nextSt := mobilebridge.State{Enabled: true, Password: pw, LastPort: port, RetiredPasswordHash: retired, AccountTokenHash: accountTokenHash, AccountToken: accountToken, AccountTokenOwner: accountTokenOwner, SecurePairing: prevSt.SecurePairing, SecurePairingAutoEnabledV1: prevSt.SecurePairingAutoEnabledV1, ServeCleanupPending: prevSt.ServeCleanupPending, KeepAwake: prevSt.KeepAwake, KeepAwakeLid: prevSt.KeepAwakeLid, BrowserRemoteAccess: prevSt.BrowserRemoteAccess, NoPublicTunnel: noPublicTunnel, LoopbackOnly: loopbackOnly}
+	nextSt := mobilebridge.State{Enabled: true, Password: pw, LastPort: port, RetiredPasswordHash: retired, AccountTokenHash: accountTokenHash, AccountToken: accountToken, AccountTokenOwner: accountTokenOwner, SecurePairing: prevSt.SecurePairing, SecurePairingAutoEnabledV1: prevSt.SecurePairingAutoEnabledV1, ServeAppliedPort: prevServeOwned(prevSt), ServeCleanupPending: prevSt.ServeCleanupPending, KeepAwake: prevSt.KeepAwake, KeepAwakeLid: prevSt.KeepAwakeLid, BrowserRemoteAccess: prevSt.BrowserRemoteAccess, NoPublicTunnel: noPublicTunnel, LoopbackOnly: loopbackOnly}
 	if err := mobilebridge.Save(b.ConfigPath, nextSt); err != nil {
 		// Persist failed after the listener came up. A running listener still
 		// serves the old hash; a fresh enable must tear the listener back down.
@@ -809,12 +935,25 @@ func (b *BridgeService) enableWithPasswordLocked(pw string, noPublicTunnel, loop
 	return b.Status(), nil
 }
 
+// prevServeOwned carries AO's :443 ownership record across the state rewrite
+// that an enable or rotation performs. For a mode turned on before the record
+// existed, the previous last bound port is the route AO applied.
+func prevServeOwned(prev mobilebridge.State) int {
+	if prev.ServeAppliedPort > 0 {
+		return prev.ServeAppliedPort
+	}
+	if prev.SecurePairing {
+		return prev.LastPort
+	}
+	return 0
+}
+
 // startConnectorsLocked is the shared post-Start step for fresh enables,
 // password rotations, and boot restoration. The caller owns transitionMu.
 func (b *BridgeService) startConnectorsLocked(port int, st mobilebridge.State) {
 	b.setServeError(nil)
 	if st.SecurePairing && !st.LoopbackOnly {
-		b.setServeError(b.applyServe(port))
+		b.setServeError(b.applyServe(port, st))
 	}
 	// Best-effort like the proxy: a failed caffeinate leaves the bridge up and
 	// Status reports the assertion as inactive.
@@ -1110,7 +1249,11 @@ func (b *BridgeService) Disable() error {
 	// themselves, or one owned by another AO instance, for someone who never
 	// enabled secure pairing at all.
 	if st.SecurePairing || st.ServeCleanupPending {
-		st.ServeCleanupPending = b.clearServe() != nil
+		clearErr := b.clearServe(st)
+		st.ServeCleanupPending = clearErr != nil
+		if clearErr == nil {
+			st.ServeAppliedPort = 0
+		}
 	}
 	st.Enabled = false
 	return errors.Join(stopErr, mobilebridge.Save(b.ConfigPath, st))
@@ -1166,7 +1309,7 @@ func (b *BridgeService) ShutdownServe() {
 	if !st.Enabled || (!st.SecurePairing && !st.ServeCleanupPending) {
 		return
 	}
-	_ = b.clearServe()
+	_ = b.clearServe(st)
 }
 
 // SecurePairingMigrationOutcome reports what MigrateSecurePairingV1 decided,

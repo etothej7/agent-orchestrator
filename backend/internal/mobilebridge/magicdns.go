@@ -45,6 +45,11 @@ func QueryTailscale(ctx context.Context) TailscaleInfo {
 	return queryTailscale(ctx, execTailscale)
 }
 
+// QueryTailscaleVia is QueryTailscale with an injected CLI runner.
+func QueryTailscaleVia(ctx context.Context, run TailscaleRunner) TailscaleInfo {
+	return queryTailscale(ctx, run)
+}
+
 func queryTailscale(ctx context.Context, run TailscaleRunner) TailscaleInfo {
 	ctx, cancel := context.WithTimeout(ctx, tailscaleTimeout)
 	defer cancel()

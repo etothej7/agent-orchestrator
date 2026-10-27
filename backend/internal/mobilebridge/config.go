@@ -59,6 +59,11 @@ type State struct {
 	// is decided). It lives here, not in the database, so the migration needs no
 	// schema change and an explicit "off" can never be overridden.
 	SecurePairingAutoEnabledV1 bool `json:"securePairingAutoEnabledV1,omitempty"`
+	// ServeAppliedPort is AO's ownership record for the node-global tailnet :443
+	// route: the bridge port it last pointed `tailscale serve` at, or 0 when AO
+	// holds no route. Apply and Clear only act on a :443 config whose target
+	// matches it (or, for a mode enabled before this field existed, LastPort).
+	ServeAppliedPort int `json:"serveAppliedPort,omitempty"`
 	// ServeCleanupPending survives a failed Tailscale Serve teardown so a later
 	// tunnel-only setup cannot inherit an AO-owned tailnet route.
 	ServeCleanupPending bool `json:"serveCleanupPending,omitempty"`

@@ -2612,7 +2612,8 @@ type SecurePairingStatus struct {
 	Port      int    `json:"port"`      // 443 when active, else 0
 	// Reason is a fixed enum the renderer maps to localized setup steps:
 	// no_cli, no_magicdns, no_certs, serve_failed, port_mismatch, clear_failed,
-	// foreign_serve (the boot migration found :443 in use by something else).
+	// foreign_serve (:443 holds a config AO does not own; left untouched),
+	// funnel_exposed (Tailscale Funnel is on for :443; AO refuses to use it).
 	// Empty when Available. Never a raw error string — those are untranslated
 	// and can leak paths.
 	Reason string `json:"reason"`
