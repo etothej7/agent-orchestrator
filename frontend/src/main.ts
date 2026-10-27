@@ -96,6 +96,7 @@ import {
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { createUpdateQuitWatcher } from "./main/update-quit-request";
 import { createCoordinatorBadge } from "./main/coordinator-badge";
 import { confirmFullQuit } from "./main/quit-confirmation";
 import {
@@ -962,6 +963,8 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("will-prevent-unload", (event) => {
 		if (
 			chatDraftRisks.length > 0 &&
+			// An unattended update quit never asks: doing nothing below honors the renderer's request to stay.
+			!desktopQuit.isUpdateQuitInFlight() &&
 			(desktopQuit.draftLeaveConfirmed() ||
 				chatDraftWindowCloseConfirmed ||
 				confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog))
@@ -975,6 +978,11 @@ async function createWindowInternal(): Promise<void> {
 	});
 
 	mainWindow.on("close", (event) => {
+		if (desktopQuit.isUpdateQuitInFlight() && chatDraftRisks.length > 0) {
+			// A draft appeared after an unattended update quit began: hold the window, silently.
+			event.preventDefault();
+			return;
+		}
 		const preventClose = shouldPreventUnsafeChatDraftClose(
 			chatDraftRisks,
 			desktopQuit.draftLeaveConfirmed() || chatDraftWindowCloseConfirmed,
@@ -3326,6 +3334,25 @@ function initAutoUpdates(): void {
 	void ensureUpdatePrefs(stateDir).then(() => startAutoUpdates(stateDir));
 }
 
+// The update runner's way to ask this app to quit without a dialog (see main/update-quit-request.ts and
+// frontend/docs/unattended-update.md). Only packaged builds listen; a request must name this process.
+function startUpdateQuitWatcher(): void {
+	if (!app.isPackaged) return;
+	const runFile = runFilePath();
+	if (!runFile) return;
+	const watcher = createUpdateQuitWatcher({
+		stateDir: path.dirname(runFile),
+		pid: process.pid,
+		uid: process.getuid?.() ?? -1,
+		now: Date.now,
+		draftRiskCount: () => chatDraftRisks.length,
+		quitForUpdate: () => desktopQuit.quitForUpdate(),
+		log: (message, detail) => console.info(`[update-quit] ${message}`, detail ?? ""),
+	});
+	watcher.start();
+	app.once("will-quit", () => watcher.stop());
+}
+
 // Resolve the bundle path `ao start` will later `open` and stat as a usable app.
 // On macOS process.execPath is .../Agent Orchestrator.app/Contents/MacOS/<exe>;
 // the thing `ao start` opens is the enclosing `.app` directory, so walk up three
@@ -3374,6 +3401,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 
 app.whenReady().then(async () => {
 	coordinatorBadge.start();
+	startUpdateQuitWatcher();
 	const personalBuild = isPersonalBuild(app.getVersion());
 	if (app.isPackaged && !personalBuild) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");

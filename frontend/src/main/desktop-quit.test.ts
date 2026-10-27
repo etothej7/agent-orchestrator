@@ -270,3 +270,75 @@ describe("unsaved drafts", () => {
 		expect(event.preventDefault).not.toHaveBeenCalled();
 	});
 });
+
+describe("an unattended update quit", () => {
+	it("quits without asking when nothing is unsaved, whatever the warnings would say", async () => {
+		const t = harness({ warn: [false], confirmDraft: [false] });
+		expect(t.controller.quitForUpdate()).toBe("quitting");
+		await settle();
+		expect(t.log).toEqual(["quit"]);
+		expect(t.exits()).toBe(1);
+	});
+
+	it("defers while a draft is at risk: it never asks, never quits, and can be asked again", async () => {
+		const drafts = { value: 2 };
+		const t = harness({ drafts: () => drafts.value, confirmDraft: [true] });
+		expect(t.controller.quitForUpdate()).toBe("deferred");
+		await settle();
+		expect(t.log).toEqual([]);
+		expect(t.exits()).toBe(0);
+		drafts.value = 0;
+		expect(t.controller.quitForUpdate()).toBe("quitting");
+		expect(t.exits()).toBe(1);
+	});
+
+	it("a draft that appears at the last moment holds the quit without a dialog", async () => {
+		const counts = [0, 1];
+		const t = harness({ drafts: () => counts.shift() ?? 1, confirmDraft: [true] });
+		expect(t.controller.quitForUpdate()).toBe("quitting");
+		await settle();
+		expect(t.log).toEqual(["quit"]); // the quit began, was held, and nobody was asked
+		expect(t.exits()).toBe(0);
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false);
+	});
+
+	it("after a held update quit, the person's own quit asks about drafts as usual", async () => {
+		const counts = [0, 1];
+		const drafts = { value: 1 };
+		const t = harness({ drafts: () => counts.shift() ?? drafts.value, confirmDraft: [false] });
+		t.controller.quitForUpdate();
+		await settle();
+		t.controller.requestUserQuit();
+		await settle();
+		expect(t.log).toContain("draft?");
+		expect(t.exits()).toBe(0);
+	});
+
+	it("is marked in flight while the quit runs and cleared once it can no longer be stopped", async () => {
+		const t = harness();
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false);
+		t.controller.quitForUpdate();
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false); // the quit already completed: will-quit ran
+		expect(t.exits()).toBe(1);
+	});
+
+	it("stays in flight while something else vetoes the quit, then goes stale and clears", async () => {
+		const clock = { value: 0 };
+		const t = harness({ clock });
+		t.vetoNext();
+		t.controller.quitForUpdate();
+		expect(t.log).toEqual(["quit", "vetoed"]);
+		expect(t.exits()).toBe(0);
+		expect(t.controller.isUpdateQuitInFlight()).toBe(true);
+		clock.value += QUIT_FLOW_STALE_MS + 1;
+		t.app.quit();
+		expect(t.exits()).toBe(1);
+		expect(t.controller.isUpdateQuitInFlight()).toBe(false);
+	});
+
+	it("never relaunches and never arms a relaunch", async () => {
+		const t = harness();
+		t.controller.quitForUpdate();
+		expect(t.log).not.toContain("relaunch");
+	});
+});
