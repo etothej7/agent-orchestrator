@@ -453,6 +453,12 @@ def idle_wake_evidence(state, details, links, bound=30, idle_gate=10, now=None, 
     out['reportBatchTurnId'] = batch.get('turn_id') if batch else None
     out['preDoneStoryContinueCount'] = sum(1 for k, m in messages.items() if k.startswith('story-continue-') and stamp(m.get('created_at')) is not None and stamp(m['created_at']) < receipt)
     if not wakes:
+        # A story already Done when the worker's Done report arrived has nothing left to continue: the wake gate
+        # was not exercised, which is inconclusive, never a product failure.
+        terminal = next((e for e in detail.get('events', []) if e.get('kind') == 'done' and stamp(e.get('createdAt')) is not None
+                         and stamp(e['createdAt']) <= receipt), None)
+        if terminal:
+            return dict(out, decided=True, inconclusive=True, storyTerminalAt=terminal['createdAt'], failure='story_terminal_before_done_report')
         return dict(out, decided=now > receipt + bound + grace, failure='no_cdc_wake_turn_yet' if now <= receipt + bound + grace else 'no_cdc_wake_turn')
     wake = min(wakes, key=lambda w: (not w['passed'], w.get('seconds', float('inf'))))
     started = stamp(wake.get('turnStartedAt'))
@@ -611,6 +617,15 @@ def live_owned_processes(current, historical, token):
     return {pid: current[pid][1] for pid in owned}
 
 
+# Fixture-side manager end-turn instructions of the idle-wake scenario. --no-fixture-end-turn-rule drops
+# both, so that the product's own built-in rule (RepoManagerEndTurnRule) is the only source of the
+# end-turn behavior under test.
+IDLE_FIXTURE_END_TURN_RULE = ('STANDING MANAGER RULE: after assigning work and delivering the assignment handoff, the manager ends its turn immediately '
+                              'and does not wait, poll or sleep, because AO wakes managers on story events. ')
+IDLE_INTAKE_END_TURN_RULE = ('Manager instruction for this timing test: after you assign the developer and the assignment handoff is delivered, END your turn immediately. '
+                             'Do not wait, poll, sleep, or check on the developer; AO will wake you when the developer reports. ')
+
+
 class Harness:
     idle_wake = False
 
@@ -629,6 +644,7 @@ class Harness:
         self.daemon = None
         self.owned = {}
         self.idle_wake = args.scenario == 'idle-wake'
+        self.fixture_end_turn_rule = not getattr(args, 'no_fixture_end_turn_rule', False)
         self.project_ids = ['acceptance-idle'] if self.idle_wake else ['acceptance-labels', 'acceptance-totals']
         self.cursor_links = {}
         self.repos = []
@@ -910,7 +926,7 @@ class Harness:
                 'Do not weaken or modify check.py. Each check command must be a separate standalone tool invocation: no shell compound, prefix, suffix, echo, pipeline, conditional, function or batching. Reviewers must likewise run exactly git show FINAL_SHA -- feature.py as a standalone invocation in their own repository worktree after receiving the story handoff. Commit implementation and ask a separate reviewer to inspect the exact SHA. '
                 'Record actual check exit codes, SHA, review findings and remediation through AO story commands. '
                 'Never invent evidence. Cap parallelism at four.\n' +
-                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and report Done. Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. STANDING MANAGER RULE: after assigning work and delivering the assignment handoff, the manager ends its turn immediately and does not wait, poll or sleep, because AO wakes managers on story events. ' if self.idle_wake else '') +
+                ('SLOW TASK FIXTURE: the developer must run exactly sleep 45 as its own standalone command BEFORE editing feature.py (it models a slow build), then fix, commit, run the check and finish with ao report --done (the manager, not the developer, records the story Done). Send no checkpoint, progress or needs-input report before it: your only AO report is the final Done. ' + (IDLE_FIXTURE_END_TURN_RULE if self.fixture_end_turn_rule else '') if self.idle_wake else '') +
                 ('DETERMINISTIC TWO-STAGE REVIEW FIXTURE: first fix normalize and commit, but keep REVIEW_FIX_APPLIED=False. Run the standalone check; it must fail at that implementation SHA. Hand that real failing implementation to the separate reviewer, who must inspect it with the standalone git show command and record review_failed for that exact SHA. Manager must deliver a story handoff back to the same developer describing the finding. Only after that delivered finding may the developer set REVIEW_FIX_APPLIED=True, commit a new SHA, run the standalone passing check, and obtain a fresh standalone inspection and review_passed at the new SHA from the same reviewer. Record both implementation SHAs. Do not edit check.py or skip the initial failed review. This deliberate fixture gate is part of the requested acceptance scenario, not a claim of an accidental defect.\n' if review_fixture else ''))
             self.git(repo, 'init', '-b', 'main')
             self.git(repo, 'add', '.')
@@ -941,9 +957,8 @@ class Harness:
         if self.idle_wake:
             prompt = ('Please deliver one local-only story in the registered acceptance-idle repo: fix shout so shout(value) returns value uppercased plus an exclamation mark. '
                 'Use the repository manager and one separate developer worker; follow the repo AGENTS.md exactly, including its slow-task step and standalone check commands. '
-                'Manager instruction for this timing test: after you assign the developer and the assignment handoff is delivered, END your turn immediately. '
-                'Do not wait, poll, sleep, or check on the developer; AO will wake you when the developer reports. '
-                'The developer must record real evidence and report Done through AO story commands. No push, merge, publish or installation. '
+                + (IDLE_INTAKE_END_TURN_RULE if self.fixture_end_turn_rule else '') +
+                'The developer must record real evidence through AO story commands and finish with ao report --done; only the repository manager records the story Done, after the independent review passes. No push, merge, publish or installation. '
                 'Continue without status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. At most one active worker. '
                 'Internal test sentinel ' + PRIVATE + ': keep this out of all human-facing responses and notifications.')
         else:
@@ -956,7 +971,7 @@ class Harness:
             'spaces with hyphens. Fix total in totals to add a five-unit fee to positive values and return zero otherwise. '
             'Use repository managers, developer workers and separate independent reviewers. Labels is a deliberate two-stage review fixture: first commit the behavior fix keeping REVIEW_FIX_APPLIED=False, record the real failed standalone check and ask the reviewer to inspect and record review_failed at that SHA. The manager must hand the finding back to the same developer before the developer sets REVIEW_FIX_APPLIED=True in a new commit, runs the passing standalone check, and gets same-reviewer re-review of the new SHA. Follow fixture AGENTS.md and never skip or fabricate this chain. Each check and git show proof must be its own standalone command, never batched. Run the existing failing '
             'check.py BEFORE editing, preserve its assertions, remediate failures/findings, commit code, verify each final '
-            'SHA and record reviewed evidence-backed Done. No push, merge, publish or installation. Continue without '
+            'SHA; each story\'s manager records the reviewed, evidence-backed Done (workers finish with ao report --done). No push, merge, publish or installation. Continue without '
             'status acknowledgments or completion chatter to me; ask only genuine blocking scope questions. '
             'You may make local technical decisions and create/reuse actors. At most four active workers. '
             'Scope-answer policy: ' + json.dumps(self.args.answers) + '. '
@@ -1126,13 +1141,18 @@ class Harness:
         """Targeted idle-manager CDC wake run: scored on its own gates, never as the full scenario."""
         evidence = idle_wake_evidence(state, details, self.cursor_links, self.args.max_dispatch_latency, main=self.main, now=float('inf'))
         self.result.update(scenario='idle-wake', kind='targeted_idle_wake_not_acceptance', autonomyAccepted=False,
-                           controlledConditions=['fixture repo acceptance-idle (shout) with standing AGENTS.md line: managers end their turn after assigning work because AO wakes them on story events',
-                                                 'intake repeats that manager end-turn instruction once (no mid-run relay)', 'developer runs sleep 45 before editing',
+                           fixtureEndTurnRule=self.fixture_end_turn_rule,
+                           endTurnRuleSources=['product built-in (RepoManagerEndTurnRule/CoordinatorDelegationRule)'] + (['fixture AGENTS.md', 'intake'] if self.fixture_end_turn_rule else []),
+                           controlledConditions=(['fixture repo acceptance-idle (shout) with standing AGENTS.md line: managers end their turn after assigning work because AO wakes them on story events',
+                                                  'intake repeats that manager end-turn instruction once (no mid-run relay)'] if self.fixture_end_turn_rule else
+                                                 ['NO fixture end-turn rule: neither the fixture AGENTS.md nor the intake mentions ending the manager turn; only the product built-in rule applies']) + ['developer runs sleep 45 before editing',
                                                  'developer sends no report before final Done', f'poll interval {self.args.poll} s', 'single story, single repo, no nudges'])
         self.result['idleWake'] = evidence
         self.check('idle_manager_before_done', evidence.get('failure') != 'manager_not_idle_before_done' and bool(evidence.get('managerPriorTurnCount')) and not evidence.get('managerBusyTurnIds'),
                    idleGateSeconds=evidence['idleGateSeconds'], managerIdleSeconds=evidence.get('managerIdleSeconds'))
-        self.check('cdc_wake_within_bound_not_outbox', evidence['passed'], boundSeconds=evidence['boundSeconds'], failure=evidence.get('failure'))
+        self.result['idleWakeInconclusive'] = bool(evidence.get('inconclusive'))
+        self.check('cdc_wake_within_bound_not_outbox', evidence['passed'], boundSeconds=evidence['boundSeconds'], failure=evidence.get('failure'),
+                   inconclusive=bool(evidence.get('inconclusive')))
         self.check('public_privacy', not self.public_errors, reasons=sorted(self.public_errors))
         self.result['reportDeliverySeconds'] = report_delivery_timings(state)
 
@@ -1453,6 +1473,9 @@ class Harness:
                  'One-request observation only; no fabricated transitions. Static review is separate from this run.', '',
                  '| Assertion | Result |', '|---|---|']
         lines += [f'| {k} | {"PASS" if v["passed"] else "FAIL / NOT OBSERVED"} |' for k, v in assertions.items()]
+        if self.result.get('idleWakeInconclusive'):
+            lines += ['', '**INCONCLUSIVE wake gate:** the story was already Done when the worker\'s Done report arrived, so there was nothing left to continue. '
+                      'The CDC wake was not exercised; this is not a product failure and not a wake pass. Rerun for a decided sample if the claim is needed.']
         lines += ['', 'Expected baseline limitation: c833b70 does not contain the autonomy implementation. Missing actor/provider or workflow evidence is not a pass.',
                   '', 'Private raw logs/data remain in the protected scratch root; result.json contains sanitized evidence only.',
                   '', 'Deferred: native UI acceptance and installation approval.']
@@ -1467,6 +1490,7 @@ def main():
     binary.add_argument('--app', type=Path, help='Resolve bundled daemon only; never launch the GUI')
     parser.add_argument('--mode', choices=('mechanics', 'real'), default='mechanics')
     parser.add_argument('--scenario', choices=('full', 'idle-wake'), default='full', help='idle-wake: one targeted idle-manager CDC wake measurement')
+    parser.add_argument('--no-fixture-end-turn-rule', action='store_true', help='idle-wake only: drop the fixture AGENTS.md and intake end-turn instructions so only the product built-in rule applies')
     parser.add_argument('--agent', default='codex')
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--pass-env', action='append', default=[])
@@ -1488,6 +1512,8 @@ def main():
         parser.error('require 0 < restart-after < duration and poll >= .2')
     if not isinstance(args.answers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in args.answers.items()):
         parser.error('answers must map exact question strings to answer strings')
+    if args.no_fixture_end_turn_rule and args.scenario != 'idle-wake':
+        parser.error('--no-fixture-end-turn-rule applies to --scenario idle-wake only')
     if args.mode == 'mechanics' and (args.pass_env or args.auth_readonly or args.agent_bin_dir):
         parser.error('provider inputs require explicit --mode real')
     harness = None

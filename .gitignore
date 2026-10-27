@@ -106,3 +106,7 @@ pnpm-lock.yaml
 .serena/
 
 /frontend/wake-helper/
+
+# Python bytecode
+__pycache__/
+*.pyc

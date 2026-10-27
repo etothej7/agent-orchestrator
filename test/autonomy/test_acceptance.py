@@ -317,6 +317,40 @@ class FinalEvidenceRegressionTests(unittest.TestCase):
                     self.assertEqual(h.result['assertions']['binary_commit_provenance']['passed'], expected)
 
 
+class IdleWakeFixtureRuleTests(unittest.TestCase):
+    """--no-fixture-end-turn-rule leaves only the product built-in end-turn rule as a source."""
+
+    def harness(self, directory, fixture_rule):
+        from pathlib import Path
+        h = a.Harness.__new__(a.Harness)
+        h.root = Path(directory); h.repos = []; h.result = {}
+        h.idle_wake = True; h.fixture_end_turn_rule = fixture_rule
+        h.env = {'PATH': '/usr/bin:/bin', 'HOME': directory, 'GIT_AUTHOR_NAME': 'fixture', 'GIT_AUTHOR_EMAIL': 'fixture@localhost',
+                 'GIT_COMMITTER_NAME': 'fixture', 'GIT_COMMITTER_EMAIL': 'fixture@localhost', 'PYTHONDONTWRITEBYTECODE': '1'}
+        h.sent = []
+        h.send_intake = h.sent.append
+        h.fixtures(); h.intake()
+        return h, (Path(h.repos[0]['path']) / 'AGENTS.md').read_text().lower()
+
+    def test_default_keeps_the_fixture_rule_in_agents_md_and_intake(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='ao-idle-fixture-', dir='/private/tmp') as directory:
+            h, agents = self.harness(directory, True)
+            self.assertIn('standing manager rule', agents)
+            self.assertIn('end your turn immediately', h.sent[0].lower())
+
+    def test_flag_removes_every_end_turn_instruction_but_keeps_the_slow_task(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='ao-idle-fixture-', dir='/private/tmp') as directory:
+            h, agents = self.harness(directory, False)
+            prompt = h.sent[0].lower()
+            for text, label in ((agents, 'AGENTS.md'), (prompt, 'intake')):
+                for phrase in ('end your turn', 'ends its turn', 'end its turn', 'standing manager rule', 'wakes managers', 'will wake you', 'do not wait, poll'):
+                    self.assertNotIn(phrase, text, f'{label} still carries {phrase!r}')
+            self.assertIn('sleep 45', agents)  # the developer's slow task is the fixture, not a manager rule
+            self.assertIn('at most one active worker', prompt)
+
+
 class PersistedFormatTests(unittest.TestCase):
     def test_shell_wrapped_proofs_remain_standalone(self):
         import shlex
@@ -646,6 +680,22 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
             dict(id='act', storyId='s', kind='in_review', senderSessionId='m', createdAt='2026-01-01T00:01:20Z')]}]
         links = {'story-continue-x': {'storyId': 's', 'phaseReportId': cursor}}
         return state, details, links
+
+    def test_story_already_done_before_the_report_is_inconclusive_not_a_plain_failure(self):
+        state, details, links = self.idle_case()
+        state['conversation_messages'] = []  # no wake turn
+        details[0]['events'].append(dict(id='done', storyId='s', kind='done', senderSessionId='w', createdAt='2026-01-01T00:00:56Z'))
+        out = a.idle_wake_evidence(state, details, links, now=1e12)
+        self.assertTrue(out['decided'])
+        self.assertFalse(out['passed'])
+        self.assertTrue(out['inconclusive'])
+        self.assertEqual(out['failure'], 'story_terminal_before_done_report')
+        # Without an earlier Done the same missing wake is still a plain failure.
+        state, details, links = self.idle_case()
+        state['conversation_messages'] = []
+        plain = a.idle_wake_evidence(state, details, links, now=1e12)
+        self.assertEqual(plain['failure'], 'no_cdc_wake_turn')
+        self.assertFalse(plain.get('inconclusive'))
 
     def test_idle_manager_cdc_wake_requires_idle_gate_link_and_bound(self):
         out = a.idle_wake_evidence(*self.idle_case(), now=1e12)
