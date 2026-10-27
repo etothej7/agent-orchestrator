@@ -356,7 +356,8 @@ type sessionAutoResumeResponse struct {
 }
 
 func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
-	return &cobra.Command{
+	var human bool
+	cmd := &cobra.Command{
 		Use:   "set-auto-resume <id> allowed|never",
 		Short: "Set whether AO may resume, replace or tear down a session on its own",
 		Long: "allowed lets AO resume the session after a reboot. never protects it: AO will not resume it,\n" +
@@ -374,6 +375,10 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 			}
 			var res sessionAutoResumeResponse
 			req := sessionAutoResumeRequest{Policy: policy, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
+			if human {
+				// The person at the keyboard, in a shell that inherited an agent's session id.
+				req.SenderSessionID = ""
+			}
 			if err := ctx.putJSON(cmd.Context(), "sessions/"+url.PathEscape(id)+"/auto-resume", req, &res); err != nil {
 				return err
 			}
@@ -381,6 +386,8 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&human, "human", false, "Act as the person, ignoring AO_SESSION_ID (needed to lift never from a shell inside AO)")
+	return cmd
 }
 
 func newSessionCleanupCommand(ctx *commandContext) *cobra.Command {

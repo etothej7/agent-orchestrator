@@ -1485,9 +1485,14 @@ func mapSessionError(err error) error {
 			"AO cannot link this account's folder to this computer's history. On Windows, turn on Developer Mode.", nil)
 	case errors.Is(err, sessionmanager.ErrNotRestorable):
 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
+	case errors.Is(err, sessionmanager.ErrAutoResumeAuthorityUnavailable):
+		return apierr.Unavailable("AUTO_RESUME_AUTHORITY_UNAVAILABLE",
+			"Could not determine who may change this policy right now; try again")
 	case errors.Is(err, sessionmanager.ErrAutoResumeNotPermitted):
 		return apierr.Forbidden("AUTO_RESUME_NOT_PERMITTED",
-			"Only the human can lift an auto-resume protection; the coordinator can only set never")
+			"Only the human can lift an auto-resume protection; the coordinator can only set never. "+
+				"If you are the human running this from a shell inside AO (it inherits AO_SESSION_ID), "+
+				"add --human to `ao session set-auto-resume`.")
 	case errors.Is(err, sessionmanager.ErrSessionProtected):
 		return apierr.Conflict("SESSION_PROTECTED",
 			"This session is protected from replacement and teardown. Run `ao session set-auto-resume <session> allowed` first if you really mean it.", nil)

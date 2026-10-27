@@ -24,6 +24,10 @@ var ErrStoppedOnPurpose = errors.New("agent was stopped on purpose")
 // resume never recreates it (that is a restore, and a person's call).
 var ErrWorkspaceMissing = errors.New("session workspace is missing")
 
+// ErrAutoResumeAuthorityUnavailable means who may change the policy could not be
+// determined (the coordination config could not be read). The change is refused.
+var ErrAutoResumeAuthorityUnavailable = errors.New("cannot determine who may change the auto-resume policy")
+
 // autoResumePolicyStore is the optional part of the store that answers the policy.
 // AutoResumeAllowed fails closed: a read error is "not allowed".
 type autoResumePolicyStore interface {
@@ -88,14 +92,31 @@ func (m *Manager) SetAutoResumePolicy(ctx context.Context, id domain.SessionID, 
 		}
 		isCoordinator, err := m.isMainCoordinator(ctx, sender)
 		if err != nil {
-			return fmt.Errorf("set auto-resume %s: %w", id, err)
+			return fmt.Errorf("set auto-resume %s: %w: %w", id, ErrAutoResumeAuthorityUnavailable, err)
 		}
 		if !isCoordinator {
 			return fmt.Errorf("set auto-resume %s: %w", id, ErrAutoResumeNotPermitted)
 		}
 	}
+	previous := domain.AutoResumePolicy("unknown")
+	if reader, ok := m.store.(autoResumePolicyReader); ok {
+		if p, err := reader.AutoResumePolicy(ctx, id); err == nil {
+			previous = p
+		}
+	}
 	if err := writer.SetAutoResumePolicy(ctx, id, policy, m.clock()); err != nil {
 		return fmt.Errorf("set auto-resume %s: %w", id, err)
+	}
+	// Every change is audited (lifting a protection most of all): who asked, and from what to what.
+	byWhom := string(sender)
+	if byWhom == "" {
+		byWhom = "human"
+	}
+	m.logger.Info("auto-resume policy changed", "sessionID", id, "from", previous, "to", policy, "by", byWhom)
+	if !policy.Allows() {
+		// A policy change takes effect at once: a pending resume intent for a session that
+		// just became protected is dropped (the resumer re-checks the policy anyway).
+		m.clearAutoResumeIntent(ctx, id)
 	}
 	return nil
 }

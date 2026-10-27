@@ -82,6 +82,7 @@ type fakeStore struct {
 	interrupted      map[domain.SessionID][]domain.InterruptedTurn
 	stories          []domain.Story
 	coordination     domain.CoordinationConfig
+	coordinationErr  error
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
@@ -167,6 +168,9 @@ func (s *fakeStore) ListStories(context.Context) ([]domain.Story, error) { retur
 
 // GetCoordination is the optional coordination reader part of the store.
 func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
+	if s.coordinationErr != nil {
+		return domain.CoordinationConfig{}, s.coordinationErr
+	}
 	return s.coordination, nil
 }
 

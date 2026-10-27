@@ -2,6 +2,8 @@ package sessionmanager
 
 import (
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -82,5 +84,56 @@ func TestSetAutoResumePolicyWithoutACoordinatorRefusesEveryAgent(t *testing.T) {
 	st.coordination = domain.CoordinationConfig{}
 	if err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeNever, "coord-1"); !errors.Is(err, ErrAutoResumeNotPermitted) {
 		t.Fatalf("agent sender with no coordinator = %v, want ErrAutoResumeNotPermitted", err)
+	}
+}
+
+// A policy change takes effect at once: setting never drops a pending resume intent,
+// and every change leaves an audit line with who asked and from what to what.
+func TestSettingNeverClearsThePendingIntentAndEveryChangeIsAudited(t *testing.T) {
+	m, st := autoResumeAuthorityFixture()
+	var logs strings.Builder
+	m.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	st.intents = map[domain.SessionID]domain.ResumeIntent{"target-1": {SessionID: "target-1", State: domain.ResumePending}}
+
+	if err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeNever, "coord-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := st.intents["target-1"]; kept {
+		t.Fatal("a session that just became protected kept its pending resume intent")
+	}
+	if err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeAllowed, ""); err != nil {
+		t.Fatal(err)
+	}
+	out := logs.String()
+	for _, want := range []string{"auto-resume policy changed", "by=coord-1", "by=human", "to=never", "to=allowed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("audit log missing %q:\n%s", want, out)
+		}
+	}
+	// Lifting never must not clear an intent (there is nothing to resume yet).
+	st.intents = map[domain.SessionID]domain.ResumeIntent{"target-1": {SessionID: "target-1", State: domain.ResumePending}}
+	if err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeAllowed, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := st.intents["target-1"]; !kept {
+		t.Fatal("lifting a protection dropped a pending intent")
+	}
+}
+
+// If who may change the policy cannot be determined, the change is refused with a
+// distinct (retryable) error, not a generic failure.
+func TestSetAutoResumePolicyWhenTheCoordinatorConfigIsUnreadableIsUnavailable(t *testing.T) {
+	m, st := autoResumeAuthorityFixture()
+	st.coordinationErr = errors.New("coordination table locked")
+	err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeNever, "coord-1")
+	if !errors.Is(err, ErrAutoResumeAuthorityUnavailable) {
+		t.Fatalf("error = %v, want ErrAutoResumeAuthorityUnavailable", err)
+	}
+	if len(st.policies) != 0 {
+		t.Fatalf("an undetermined authority wrote the policy: %v", st.policies)
+	}
+	// The human needs no authority lookup, so an unreadable config does not block them.
+	if err := m.SetAutoResumePolicy(ctx, "target-1", domain.AutoResumeAllowed, ""); err != nil {
+		t.Fatalf("the human was blocked by an unreadable coordinator config: %v", err)
 	}
 }
