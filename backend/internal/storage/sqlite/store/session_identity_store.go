@@ -59,7 +59,7 @@ func (s *Store) DeleteSessionProof(ctx context.Context, id domain.SessionID) err
 
 // SetReviewProofHash issues or replaces a reviewer's identity proof, stored as its SHA-256 hex
 // only. A replacement makes the previous proof stop verifying at once.
-func (s *Store) SetReviewProofHash(ctx context.Context, reviewID string, hash string, now time.Time) error {
+func (s *Store) SetReviewProofHash(ctx context.Context, reviewID, hash string, now time.Time) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := s.qw.UpsertReviewIdentity(ctx, gen.UpsertReviewIdentityParams{ReviewID: reviewID, ProofSha256: hash, IssuedAt: now.UTC()}); err != nil {
@@ -69,7 +69,7 @@ func (s *Store) SetReviewProofHash(ctx context.Context, reviewID string, hash st
 }
 
 // ReviewIdentityByProofHash finds the reviewer a proof hash was issued to.
-func (s *Store) ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID string, storedHash string, found bool, err error) {
+func (s *Store) ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID, storedHash string, found bool, err error) {
 	row, err := s.qr.GetReviewIdentityByProofHash(ctx, hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, nil

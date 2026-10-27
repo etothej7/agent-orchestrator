@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
@@ -100,4 +101,26 @@ func seedReviewRow(t *testing.T, db *sqlite.Store, session domain.SessionID) str
 		t.Fatal(err)
 	}
 	return "review-1"
+}
+
+// The real store, issuer and resolver together: a reviewer proof resolves to its review and
+// worker, and ends with the worker.
+func TestReviewerProofResolvesThroughTheRealStore(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	review := seedReviewRow(t, db, session)
+	issuer := identity.NewIssuer(db, nil).WithReviews(db)
+	resolver := identity.NewResolver(db, db).WithReviews(db, db)
+
+	proof, err := issuer.IssueReview(ctx, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := resolver.Resolve(ctx, proof)
+	if err != nil || !caller.IsReviewer() || caller.Review != review || caller.Worker != session {
+		t.Fatalf("resolved %+v, %v; want the reviewer of %s reviewing %s", caller, err, review, session)
+	}
+	if caller.IsAgent() {
+		t.Fatal("a reviewer resolved as an agent session")
+	}
 }

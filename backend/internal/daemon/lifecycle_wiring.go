@@ -328,7 +328,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Browser:             browserLifecycle,
 		BrowserCapabilities: browserCapabilities,
 		// Every launch and relaunch gives the session a new identity proof (ED8).
-		Identity:           identity.NewIssuer(store, nil),
+		Identity:           identity.NewIssuer(store, nil).WithReviews(store),
 		DataDir:            cfg.DataDir,
 		RunFilePath:        cfg.RunFilePath,
 		BackgroundContext:  ctx,
@@ -384,7 +384,9 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
 			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness}),
-			reviewcore.WithReviewerChat(reviewerChat)),
+			reviewcore.WithReviewerChat(reviewerChat),
+			// Every reviewer launch carries its own identity proof (ED8).
+			reviewcore.WithReviewerProofs(identity.NewIssuer(store, nil).WithReviews(store))),
 
 		ChatRecoveryDone: reviewerRecoveryDone,
 	})
@@ -753,7 +755,7 @@ func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.Review
 		return "", err
 	}
 	owner := domain.ReviewConversationOwner(cfg.ReviewID)
-	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
+	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, PrepareControllerEnv: reviewerControllerEnv(cfg), Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
 	if err != nil {
 		return "", err
 	}
@@ -765,6 +767,18 @@ func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.Review
 		return "", err
 	}
 	return started.ProviderConversationID, nil
+}
+
+// reviewerControllerEnv adapts a reviewer's PrepareEnv (which mints its identity proof) to the
+// chat service's launch-time hook, so the proof is issued only when the provider is really
+// launched and never when a live provider is merely reconnected. nil when the reviewer has none.
+func reviewerControllerEnv(cfg reviewcore.ReviewerChatStart) func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
+	if cfg.PrepareEnv == nil {
+		return nil
+	}
+	return func(ctx context.Context, _ domain.SessionControllerOwner) (map[string]string, error) {
+		return cfg.PrepareEnv(ctx)
+	}
 }
 
 func (c chatLauncher) SendReviewChat(ctx context.Context, reviewID, message, batchID string) error {

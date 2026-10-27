@@ -175,29 +175,34 @@ func TestNoIssuerMeansNoProof(t *testing.T) {
 func TestOnlyLaunchEnvironmentBuildersIssueAProof(t *testing.T) {
 	allowed := map[string]bool{"prepareWorkerLaunchEnv": true, "prepareChatControllerEnv": true}
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var offenders []string
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil || fn.Name.Name == "launchRuntimeEnv" {
-					continue
-				}
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "launchRuntimeEnv" && !allowed[fn.Name.Name] {
-						offenders = append(offenders, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
-					}
-					return true
-				})
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, entry.Name(), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Name.Name == "launchRuntimeEnv" {
+				continue
 			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "launchRuntimeEnv" && !allowed[fn.Name.Name] {
+					offenders = append(offenders, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
+				}
+				return true
+			})
 		}
 	}
 	if len(offenders) != 0 {

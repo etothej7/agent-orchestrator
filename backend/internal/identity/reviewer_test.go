@@ -14,7 +14,7 @@ type fakeReviewStore struct {
 	fail   bool
 }
 
-func (f *fakeReviewStore) SetReviewProofHash(_ context.Context, id string, hash string, _ time.Time) error {
+func (f *fakeReviewStore) SetReviewProofHash(_ context.Context, id, hash string, _ time.Time) error {
 	f.hashes[id] = hash
 	return nil
 }

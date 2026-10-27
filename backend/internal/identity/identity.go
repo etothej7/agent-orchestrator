@@ -9,6 +9,10 @@
 // about who sent it (a senderSessionId field, AO_SESSION_ID, a session id in a path) is a claim
 // that must agree with the verified identity, never the identity itself.
 //
+// A native reviewer (the pane or chat reviewing one worker's pull request) is a third kind of
+// caller: it is a review row rather than a session, holds its own proof (see Issuer.IssueReview)
+// and resolves to KindReviewer bound to its review and the worker it reviews.
+//
 // The goal is cooperative agents that cannot impersonate the person or each other through
 // normal tooling. A same-user process that can read another process's environment can still
 // read that process's proof; the human capability never travels through an environment.
@@ -189,8 +193,8 @@ type SessionReader interface {
 
 // ReviewStore is what the daemon keeps about native reviewers' proofs.
 type ReviewStore interface {
-	SetReviewProofHash(ctx context.Context, reviewID string, hash string, now time.Time) error
-	ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID string, storedHash string, found bool, err error)
+	SetReviewProofHash(ctx context.Context, reviewID, hash string, now time.Time) error
+	ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID, storedHash string, found bool, err error)
 	DeleteReviewProof(ctx context.Context, reviewID string) error
 }
 
