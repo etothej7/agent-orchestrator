@@ -5410,10 +5410,12 @@ export interface components {
             payload?: {
                 [key: string]: unknown;
             };
+            /** @description The project the action is about, for a request about a project. Exactly one of sessionId and projectId is given, matching the kind. */
+            projectId?: string;
             /** @description The session filing the request, if any. Attribution only. */
             requesterSessionId?: string;
-            /** @description The session the action is about. */
-            sessionId: string;
+            /** @description The session the action is about, for a request about a session. */
+            sessionId?: string;
         };
         ControllersFileHumanRequestResponse: {
             message: string;
@@ -5443,9 +5445,12 @@ export interface components {
             id: string;
             kind: string;
             payloadHash: string;
+            /** @description The project the request is about; empty for a request about a session. */
+            projectId?: string;
             requester: components["schemas"]["ControllersHumanRequestRequesterResponse"];
             result?: string;
-            sessionId: string;
+            /** @description The session the request is about; empty for a request about a project. */
+            sessionId?: string;
             /** @enum {string} */
             state: "pending" | "approved" | "denied" | "expired" | "applied" | "failed";
             summary: string;

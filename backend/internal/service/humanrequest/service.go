@@ -47,6 +47,7 @@ const (
 // Store is the persistence the service needs; *sqlite.Store satisfies it.
 type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
+	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 	InsertHumanRequest(ctx context.Context, req domain.HumanRequest) (domain.HumanRequest, bool, error)
 	GetHumanRequest(ctx context.Context, id string) (domain.HumanRequest, bool, error)
 	FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, targetKey, payloadHash string) (domain.HumanRequest, bool, error)
@@ -113,8 +114,10 @@ func New(cfg Config) *Service {
 
 // FileInput is what a requester supplies. Everything the card shows is derived from it by the daemon.
 type FileInput struct {
-	Kind      domain.HumanRequestKind
+	Kind domain.HumanRequestKind
+	// SessionID or ProjectID names what the request is about: exactly one, matching the kind.
 	SessionID domain.SessionID
+	ProjectID string
 	Payload   json.RawMessage
 	Requester domain.HumanRequestRequester
 }
@@ -122,29 +125,51 @@ type FileInput struct {
 // File records a request for the person and returns it. Filing the same thing again while it is
 // still open returns the open request.
 func (s *Service) File(ctx context.Context, in FileInput) (domain.HumanRequest, error) {
-	handler, ok := kinds[in.Kind]
-	if !ok {
+	sessionKind, isSession := kinds[in.Kind]
+	projectKind, isProject := projectKinds[in.Kind]
+	if !isSession && !isProject {
 		return domain.HumanRequest{}, apierr.Invalid("HUMAN_REQUEST_KIND_UNKNOWN", fmt.Sprintf("unknown request kind %q", in.Kind), nil)
+	}
+	// A kind is about one sort of thing, and the request must name that and nothing else.
+	if isSession && (in.SessionID == "" || in.ProjectID != "") || isProject && (in.ProjectID == "" || in.SessionID != "") {
+		what := "a sessionId (and no projectId)"
+		if isProject {
+			what = "a projectId (and no sessionId)"
+		}
+		return domain.HumanRequest{}, apierr.Invalid("HUMAN_REQUEST_TARGET_INVALID", fmt.Sprintf("a %s request needs %s", in.Kind, what), nil)
 	}
 	requester, err := s.requester(ctx, in.Requester)
 	if err != nil {
 		return domain.HumanRequest{}, err
 	}
-	target, found, err := s.store.GetSession(ctx, in.SessionID)
-	if err != nil {
-		return domain.HumanRequest{}, err
-	}
-	if !found {
-		return domain.HumanRequest{}, apierr.NotFound("SESSION_NOT_FOUND", "no such session")
-	}
-	prepared, err := handler.prepare(ctx, s, target, in.Payload)
-	if err != nil {
-		return domain.HumanRequest{}, err
+	var prep prepared
+	if isProject {
+		target, found, err := s.store.GetProject(ctx, in.ProjectID)
+		if err != nil {
+			return domain.HumanRequest{}, err
+		}
+		if !found {
+			return domain.HumanRequest{}, apierr.NotFound("PROJECT_NOT_FOUND", "no such project")
+		}
+		if prep, err = projectKind.prepareProject(ctx, s, target, in.Payload); err != nil {
+			return domain.HumanRequest{}, err
+		}
+	} else {
+		target, found, err := s.store.GetSession(ctx, in.SessionID)
+		if err != nil {
+			return domain.HumanRequest{}, err
+		}
+		if !found {
+			return domain.HumanRequest{}, apierr.NotFound("SESSION_NOT_FOUND", "no such session")
+		}
+		if prep, err = sessionKind.prepare(ctx, s, target, in.Payload); err != nil {
+			return domain.HumanRequest{}, err
+		}
 	}
 	now := s.now().UTC()
 	req := domain.HumanRequest{
-		ID: s.newID(), Kind: in.Kind, SessionID: in.SessionID, Requester: requester,
-		Payload: prepared.payload, Summary: prepared.summary, Changes: prepared.changes,
+		ID: s.newID(), Kind: in.Kind, SessionID: in.SessionID, ProjectID: in.ProjectID, Requester: requester,
+		Payload: prep.payload, Summary: prep.summary, Changes: prep.changes,
 		State: domain.HumanRequestPending, CreatedAt: now, ExpiresAt: now.Add(RequestTTL),
 	}
 	req.PayloadHash = hashOf(req)
@@ -156,7 +181,7 @@ func (s *Service) File(ctx context.Context, in FileInput) (domain.HumanRequest, 
 		return domain.HumanRequest{}, err
 	}
 	if inserted {
-		s.log.InfoContext(ctx, "human request filed", "request", stored.ID, "kind", stored.Kind, "session", stored.SessionID, "requester", requesterLabel(stored.Requester))
+		s.log.InfoContext(ctx, "human request filed", "request", stored.ID, "kind", stored.Kind, "target", stored.TargetKey(), "requester", requesterLabel(stored.Requester))
 	}
 	return stored, nil
 }
@@ -261,7 +286,7 @@ func (s *Service) Approve(ctx context.Context, id, payloadHash string) (domain.H
 	if finishErr != nil {
 		s.log.ErrorContext(ctx, "human request outcome not recorded", "request", id, "error", finishErr)
 	}
-	s.log.InfoContext(ctx, "human request decided", "request", id, "kind", req.Kind, "session", req.SessionID, "decision", "approved", "outcome", state)
+	s.log.InfoContext(ctx, "human request decided", "request", id, "kind", req.Kind, "target", req.TargetKey(), "decision", "approved", "outcome", state)
 	finished, _, _ := s.store.GetHumanRequest(ctx, id)
 	if finished.ID == "" {
 		finished = req
@@ -275,18 +300,37 @@ func (s *Service) Approve(ctx context.Context, id, payloadHash string) (domain.H
 }
 
 func (s *Service) apply(ctx context.Context, req domain.HumanRequest) (domain.HumanRequestState, string, error) {
-	handler, ok := kinds[req.Kind]
-	if !ok {
-		return domain.HumanRequestFailed, "unknown request kind", apierr.Conflict("HUMAN_REQUEST_FAILED", "unknown request kind", nil)
+	var (
+		result string
+		err    error
+	)
+	if req.TargetKind() == domain.HumanTargetProject {
+		handler, ok := projectKinds[req.Kind]
+		if !ok {
+			return domain.HumanRequestFailed, "unknown request kind", apierr.Conflict("HUMAN_REQUEST_FAILED", "unknown request kind", nil)
+		}
+		target, found, readErr := s.store.GetProject(ctx, req.ProjectID)
+		if readErr != nil {
+			return domain.HumanRequestFailed, "could not read the project", readErr
+		}
+		if !found {
+			return domain.HumanRequestFailed, "the project no longer exists", apierr.Conflict("HUMAN_REQUEST_FAILED", "the project no longer exists", nil)
+		}
+		result, err = handler.applyProject(ctx, s, req, target)
+	} else {
+		handler, ok := kinds[req.Kind]
+		if !ok {
+			return domain.HumanRequestFailed, "unknown request kind", apierr.Conflict("HUMAN_REQUEST_FAILED", "unknown request kind", nil)
+		}
+		target, found, readErr := s.store.GetSession(ctx, req.SessionID)
+		if readErr != nil {
+			return domain.HumanRequestFailed, "could not read the session", readErr
+		}
+		if !found {
+			return domain.HumanRequestFailed, "the session no longer exists", apierr.Conflict("HUMAN_REQUEST_FAILED", "the session no longer exists", nil)
+		}
+		result, err = handler.apply(ctx, s, req, target)
 	}
-	target, found, err := s.store.GetSession(ctx, req.SessionID)
-	if err != nil {
-		return domain.HumanRequestFailed, "could not read the session", err
-	}
-	if !found {
-		return domain.HumanRequestFailed, "the session no longer exists", apierr.Conflict("HUMAN_REQUEST_FAILED", "the session no longer exists", nil)
-	}
-	result, err := handler.apply(ctx, s, req, target)
 	switch {
 	case err == nil:
 		return domain.HumanRequestApplied, result, nil
@@ -319,7 +363,7 @@ func (s *Service) Deny(ctx context.Context, id string) (domain.HumanRequest, err
 	if !denied {
 		return domain.HumanRequest{}, apierr.Conflict("HUMAN_REQUEST_DECIDED", "this request was just decided; reload", nil)
 	}
-	s.log.InfoContext(ctx, "human request decided", "request", id, "kind", req.Kind, "session", req.SessionID, "decision", "denied")
+	s.log.InfoContext(ctx, "human request decided", "request", id, "kind", req.Kind, "target", req.TargetKey(), "decision", "denied")
 	req, _, _ = s.store.GetHumanRequest(ctx, id)
 	s.tell(ctx, req)
 	return req, nil
@@ -368,7 +412,7 @@ func (s *Service) tell(ctx context.Context, req domain.HumanRequest) {
 func hashOf(req domain.HumanRequest) string {
 	changes, _ := json.Marshal(req.Changes)
 	h := sha256.New()
-	for _, part := range [][]byte{[]byte(req.Kind), []byte(req.SessionID), req.Payload, []byte(req.Summary), changes} {
+	for _, part := range [][]byte{[]byte(req.Kind), []byte(req.TargetKey()), req.Payload, []byte(req.Summary), changes} {
 		_, _ = fmt.Fprintf(h, "%d:", len(part))
 		_, _ = h.Write(part)
 	}

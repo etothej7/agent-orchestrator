@@ -53,7 +53,8 @@ type ListHumanRequestsQuery struct {
 // writes is shown to the person: the daemon renders the summary and diff from payload.
 type FileHumanRequestRequest struct {
 	Kind      string         `json:"kind" enum:"auto_resume_lift,conversation_settings,provider_switch" description:"What is being asked."`
-	SessionID string         `json:"sessionId" description:"The session the action is about."`
+	SessionID string         `json:"sessionId,omitempty" description:"The session the action is about, for a request about a session."`
+	ProjectID string         `json:"projectId,omitempty" description:"The project the action is about, for a request about a project. Exactly one of sessionId and projectId is given, matching the kind."`
 	Payload   map[string]any `json:"payload,omitempty" description:"The structured action; its shape depends on kind."`
 	// RequesterSessionID is attribution only until per-session proofs exist: the card says who the
 	// caller claims to be, never more. Empty is a terminal with no identity.
@@ -82,7 +83,8 @@ type HumanRequestRequesterResponse struct {
 type HumanRequestResponse struct {
 	ID          string                        `json:"id"`
 	Kind        string                        `json:"kind"`
-	SessionID   string                        `json:"sessionId"`
+	SessionID   string                        `json:"sessionId,omitempty" description:"The session the request is about; empty for a request about a project."`
+	ProjectID   string                        `json:"projectId,omitempty" description:"The project the request is about; empty for a request about a session."`
 	Requester   HumanRequestRequesterResponse `json:"requester"`
 	Summary     string                        `json:"summary"`
 	Changes     []HumanRequestChangeResponse  `json:"changes"`
@@ -116,7 +118,7 @@ func humanRequestResponse(req domain.HumanRequest) HumanRequestResponse {
 		changes = append(changes, HumanRequestChangeResponse{Field: change.Field, From: change.From, To: change.To})
 	}
 	out := HumanRequestResponse{
-		ID: req.ID, Kind: string(req.Kind), SessionID: string(req.SessionID),
+		ID: req.ID, Kind: string(req.Kind), SessionID: string(req.SessionID), ProjectID: req.ProjectID,
 		Requester: HumanRequestRequesterResponse{Kind: string(req.Requester.Kind), SessionID: string(req.Requester.SessionID)},
 		Summary:   req.Summary, Changes: changes, PayloadHash: req.PayloadHash, State: string(req.State), Result: req.Result,
 		CreatedAt: req.CreatedAt, ExpiresAt: req.ExpiresAt,
@@ -160,7 +162,7 @@ func (c *HumanRequestsController) file(w http.ResponseWriter, r *http.Request) {
 		requester = domain.HumanRequestRequester{Kind: domain.HumanRequesterSession, SessionID: domain.SessionID(id)}
 	}
 	req, err := c.Svc.File(r.Context(), humanrequestsvc.FileInput{
-		Kind: domain.HumanRequestKind(in.Kind), SessionID: domain.SessionID(strings.TrimSpace(in.SessionID)), Payload: payload, Requester: requester,
+		Kind: domain.HumanRequestKind(in.Kind), SessionID: domain.SessionID(strings.TrimSpace(in.SessionID)), ProjectID: strings.TrimSpace(in.ProjectID), Payload: payload, Requester: requester,
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)

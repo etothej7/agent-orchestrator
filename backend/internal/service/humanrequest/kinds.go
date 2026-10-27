@@ -37,10 +37,24 @@ var kinds = map[domain.HumanRequestKind]kindHandler{
 	domain.HumanRequestProviderSwitch:       providerSwitch{},
 }
 
+// projectKindHandler is a kind that is about a project rather than a session (a protected change to a
+// project's configuration, removing a project). It renders and applies exactly as a session kind does.
+type projectKindHandler interface {
+	prepareProject(ctx context.Context, s *Service, target domain.ProjectRecord, raw json.RawMessage) (prepared, error)
+	applyProject(ctx context.Context, s *Service, req domain.HumanRequest, target domain.ProjectRecord) (string, error)
+}
+
+// projectKinds is empty until the project-level kinds land; the plumbing for them (storage, filing, hashing,
+// approval, expiry) is exercised by a kind registered in the tests.
+var projectKinds = map[domain.HumanRequestKind]projectKindHandler{}
+
 // KnownKinds lists the kinds a requester may file.
 func KnownKinds() []domain.HumanRequestKind {
-	out := make([]domain.HumanRequestKind, 0, len(kinds))
+	out := make([]domain.HumanRequestKind, 0, len(kinds)+len(projectKinds))
 	for kind := range kinds {
+		out = append(out, kind)
+	}
+	for kind := range projectKinds {
 		out = append(out, kind)
 	}
 	slices.Sort(out)
@@ -69,6 +83,16 @@ func sessionLabel(rec domain.SessionRecord) string {
 	name := cleanLabel(rec.DisplayName, maxNameRunes)
 	if name == "" {
 		return string(rec.ID)
+	}
+	return fmt.Sprintf("%s (named %q)", rec.ID, name)
+}
+
+// projectLabel names a project as sessionLabel names a session: the id first, then the display name as a
+// quoted, cleaned, bounded label. A project's display name is as agent-writable as a session's.
+func projectLabel(rec domain.ProjectRecord) string {
+	name := cleanLabel(rec.DisplayName, maxNameRunes)
+	if name == "" || name == rec.ID {
+		return rec.ID
 	}
 	return fmt.Sprintf("%s (named %q)", rec.ID, name)
 }

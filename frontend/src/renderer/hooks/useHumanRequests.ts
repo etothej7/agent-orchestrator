@@ -47,8 +47,8 @@ export function useDecideHumanRequest() {
 		onSettled: async (_data, _error, { request }) => {
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: humanRequestsQueryKey }),
-				// What an approval may have changed.
-				queryClient.invalidateQueries({ queryKey: sessionAutoResumeQueryKey(request.sessionId) }),
+				// What an approval may have changed: a session's policy, and the workspace (sessions and projects).
+				request.sessionId ? queryClient.invalidateQueries({ queryKey: sessionAutoResumeQueryKey(request.sessionId) }) : undefined,
 				queryClient.invalidateQueries({ queryKey: ["workspace"] }),
 			]);
 		},

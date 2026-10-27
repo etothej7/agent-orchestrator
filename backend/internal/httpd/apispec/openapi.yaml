@@ -15878,15 +15878,18 @@ components:
           additionalProperties: {}
           description: The structured action; its shape depends on kind.
           type: object
+        projectId:
+          description: The project the action is about, for a request about a project.
+            Exactly one of sessionId and projectId is given, matching the kind.
+          type: string
         requesterSessionId:
           description: The session filing the request, if any. Attribution only.
           type: string
         sessionId:
-          description: The session the action is about.
+          description: The session the action is about, for a request about a session.
           type: string
       required:
       - kind
-      - sessionId
       type: object
     ControllersFileHumanRequestResponse:
       properties:
@@ -15953,11 +15956,17 @@ components:
           type: string
         payloadHash:
           type: string
+        projectId:
+          description: The project the request is about; empty for a request about
+            a session.
+          type: string
         requester:
           $ref: '#/components/schemas/ControllersHumanRequestRequesterResponse'
         result:
           type: string
         sessionId:
+          description: The session the request is about; empty for a request about
+            a project.
           type: string
         state:
           enum:
@@ -15973,7 +15982,6 @@ components:
       required:
       - id
       - kind
-      - sessionId
       - requester
       - summary
       - changes
