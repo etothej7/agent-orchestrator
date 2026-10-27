@@ -35,8 +35,25 @@ type autoResumePolicyStore interface {
 // allowance, so an unreadable policy protects. A store that keeps no policy (the
 // test fakes) protects nothing.
 func (m *Manager) SessionProtected(ctx context.Context, id domain.SessionID) bool {
+	if reader, ok := m.store.(autoResumePolicyReader); ok {
+		policy, err := reader.AutoResumePolicy(ctx, id)
+		if err != nil {
+			// Fail closed, and say why once per session so an unreadable policy table is
+			// visible instead of silently protecting everything.
+			if _, logged := m.policyErrLogged.LoadOrStore(id, struct{}{}); !logged {
+				m.logger.Warn("auto-resume policy unreadable; treating the session as protected", "sessionID", id, "error", err)
+			}
+			return true
+		}
+		return !policy.Allows()
+	}
 	store, ok := m.store.(autoResumePolicyStore)
 	return ok && !store.AutoResumeAllowed(ctx, id)
+}
+
+// autoResumePolicyReader is the store's policy read that reports its error.
+type autoResumePolicyReader interface {
+	AutoResumePolicy(ctx context.Context, id domain.SessionID) (domain.AutoResumePolicy, error)
 }
 
 // ErrAutoResumeNotPermitted means the caller may not set that policy. The human
