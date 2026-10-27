@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 )
 
 const (
@@ -48,6 +50,7 @@ const (
 type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
+	GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error)
 	InsertHumanRequest(ctx context.Context, req domain.HumanRequest) (domain.HumanRequest, bool, error)
 	GetHumanRequest(ctx context.Context, id string) (domain.HumanRequest, bool, error)
 	FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, targetKey, payloadHash string) (domain.HumanRequest, bool, error)
@@ -74,9 +77,16 @@ type Chat interface {
 	SwitchProvider(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest) error
 }
 
+// PRMerger merges a pull request exactly as the app's Merge button does: it re-reads the provider's
+// state and merges only the head it is given, and only when the merge preconditions hold.
+type PRMerger interface {
+	Merge(ctx context.Context, request prsvc.MergeRequest) (prsvc.MergeResult, error)
+}
+
 // Config wires a Service.
 type Config struct {
 	Store      Store
+	PRs        PRMerger
 	AutoResume AutoResume
 	Chat       Chat
 	Messenger  ports.AgentMessenger
@@ -88,6 +98,8 @@ type Config struct {
 // Service files, decides and sweeps requests.
 type Service struct {
 	store      Store
+	prsMu      sync.RWMutex
+	prs        PRMerger
 	autoResume AutoResume
 	chat       Chat
 	messenger  ports.AgentMessenger
@@ -99,7 +111,7 @@ type Service struct {
 // New builds a Service. Any of AutoResume, Chat and Messenger may be nil: the kinds that need
 // the missing one are then refused, and a requester is simply not messaged.
 func New(cfg Config) *Service {
-	s := &Service{store: cfg.Store, autoResume: cfg.AutoResume, chat: cfg.Chat, messenger: cfg.Messenger, log: cfg.Log, now: cfg.Now, newID: cfg.NewID}
+	s := &Service{store: cfg.Store, prs: cfg.PRs, autoResume: cfg.AutoResume, chat: cfg.Chat, messenger: cfg.Messenger, log: cfg.Log, now: cfg.Now, newID: cfg.NewID}
 	if s.log == nil {
 		s.log = slog.Default()
 	}
@@ -110,6 +122,20 @@ func New(cfg Config) *Service {
 		s.newID = func() string { return "hr-" + uuid.NewString() }
 	}
 	return s
+}
+
+// SetPRMerger gives the service the pull request merge action once the daemon has built it (the action
+// service is created after this one). Without it the pr_merge kind is refused as unavailable.
+func (s *Service) SetPRMerger(m PRMerger) {
+	s.prsMu.Lock()
+	defer s.prsMu.Unlock()
+	s.prs = m
+}
+
+func (s *Service) prMerger() PRMerger {
+	s.prsMu.RLock()
+	defer s.prsMu.RUnlock()
+	return s.prs
 }
 
 // FileInput is what a requester supplies. Everything the card shows is derived from it by the daemon.

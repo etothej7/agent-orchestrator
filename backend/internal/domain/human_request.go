@@ -17,6 +17,8 @@ const (
 	HumanRequestConversationSettings HumanRequestKind = "conversation_settings"
 	// HumanRequestProviderSwitch asks to move a conversation to another agent harness.
 	HumanRequestProviderSwitch HumanRequestKind = "provider_switch"
+	// HumanRequestPRMerge asks to merge a pull request on a project that has not let agents merge.
+	HumanRequestPRMerge HumanRequestKind = "pr_merge"
 )
 
 // HumanRequestTargetKind says what a request is about.

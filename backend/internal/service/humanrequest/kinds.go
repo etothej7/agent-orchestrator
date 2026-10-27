@@ -44,9 +44,12 @@ type projectKindHandler interface {
 	applyProject(ctx context.Context, s *Service, req domain.HumanRequest, target domain.ProjectRecord) (string, error)
 }
 
-// projectKinds is empty until the project-level kinds land; the plumbing for them (storage, filing, hashing,
-// approval, expiry) is exercised by a kind registered in the tests.
-var projectKinds = map[domain.HumanRequestKind]projectKindHandler{}
+// projectKinds are the kinds about a project: merging a pull request on a project that has not let agents merge.
+// More (protected project-config fields, removing a project) land here; the plumbing is also exercised by a
+// stand-in kind registered in the tests.
+var projectKinds = map[domain.HumanRequestKind]projectKindHandler{
+	domain.HumanRequestPRMerge: prMerge{},
+}
 
 // KnownKinds lists the kinds a requester may file.
 func KnownKinds() []domain.HumanRequestKind {

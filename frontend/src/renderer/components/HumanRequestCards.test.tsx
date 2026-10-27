@@ -27,6 +27,20 @@ function request(overrides: Partial<HumanRequestDTO> = {}): HumanRequestDTO {
 	};
 }
 
+const merge = () =>
+	request({
+		id: "hr-3",
+		kind: "pr_merge",
+		sessionId: undefined,
+		projectId: "repo",
+		summary: "Merge pull request #7 (titled \"Fix the login bug\") of project repo at commit 0123456789ab.",
+		changes: [
+			{ field: "pullRequest", from: "open", to: "merged" },
+			{ field: "headCommit", from: "", to: "0123456789ab" },
+		],
+		payloadHash: "hash-3",
+	});
+
 const lift = () =>
 	request({
 		id: "hr-2",
@@ -60,13 +74,24 @@ describe("HumanRequestCards", () => {
 		expect(container).toBeEmptyDOMElement();
 	});
 
+	it("shows a request about a project, with no session", () => {
+		mount([merge()]);
+		const card = document.querySelector('[data-request-id="hr-3"]') as HTMLElement;
+		expect(within(card).getByText("Merge a pull request")).toBeInTheDocument();
+		expect(within(card).getByText(/Merge pull request #7/)).toBeInTheDocument();
+		expect(within(card).getByText("Pull request")).toBeInTheDocument();
+		expect(within(card).getByText("open → merged")).toBeInTheDocument();
+		expect(within(card).getByText("Commit")).toBeInTheDocument();
+		expect(within(card).getByText("0123456789ab")).toBeInTheDocument();
+	});
+
 	it("shows what the daemon rendered, who asked, and the before and after of each change", () => {
 		mount([request(), lift()]);
 		const section = screen.getByRole("region", { name: "Requests waiting for your approval" });
 		expect(within(section).getByText("2 requests need your approval")).toBeInTheDocument();
 		const first = section.querySelector('[data-request-id="hr-1"]') as HTMLElement;
 		expect(within(first).getByText("Change model or settings")).toBeInTheDocument();
-		expect(within(first).getByText("Claims to be repo-2 (not verified)")).toBeInTheDocument();
+		expect(within(first).getByText("Requested by session repo-2")).toBeInTheDocument();
 		expect(within(first).getByText("Change Fix the bug (repo-1): model to m-b, reasoning effort to medium.")).toBeInTheDocument();
 		expect(within(first).getByText("Model")).toBeInTheDocument();
 		expect(within(first).getByText("m-a → m-b")).toBeInTheDocument();

@@ -1204,7 +1204,7 @@ describe("NotificationCenter human requests", () => {
 		await clickOpen();
 		const section = screen.getByRole("region", { name: "Requests waiting for your approval" });
 		expect(section).toHaveTextContent("Change Checkout flow (sess-1): model to m-b.");
-		expect(section).toHaveTextContent("Claims to be sess-9 (not verified)");
+		expect(section).toHaveTextContent("Requested by session sess-9");
 		const dialog = screen.getByRole("dialog", { name: "Notifications" });
 		expect(dialog.firstElementChild?.nextElementSibling).toBe(section);
 	});

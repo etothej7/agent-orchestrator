@@ -5405,15 +5405,13 @@ export interface components {
              * @description What is being asked.
              * @enum {string}
              */
-            kind: "auto_resume_lift" | "conversation_settings" | "provider_switch";
+            kind: "auto_resume_lift" | "conversation_settings" | "provider_switch" | "pr_merge";
             /** @description The structured action; its shape depends on kind. */
             payload?: {
                 [key: string]: unknown;
             };
             /** @description The project the action is about, for a request about a project. Exactly one of sessionId and projectId is given, matching the kind. */
             projectId?: string;
-            /** @description The session filing the request, if any. Attribution only. */
-            requesterSessionId?: string;
             /** @description The session the action is about, for a request about a session. */
             sessionId?: string;
         };

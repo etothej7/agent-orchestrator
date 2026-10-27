@@ -497,14 +497,19 @@ func TestAKindWhoseServiceIsMissingIsRefusedInsteadOfSilentlyDoingNothing(t *tes
 	f := newFixture(t)
 	bare := New(Config{Store: f.store, Now: f.clock, NewID: func() string { return "hr-x" }})
 	for _, kind := range KnownKinds() {
-		if _, err := bare.File(context.Background(), FileInput{Kind: kind, SessionID: target, Payload: json.RawMessage(`{}`), Requester: agentRequester(agent)}); err == nil || codeOf(t, err) != "HUMAN_REQUEST_KIND_UNAVAILABLE" {
+		in := FileInput{Kind: kind, SessionID: target, Payload: json.RawMessage(`{}`), Requester: agentRequester(agent)}
+		if _, isProject := projectKinds[kind]; isProject {
+			in.SessionID, in.ProjectID = "", "repo"
+			in.Payload = json.RawMessage(prPayload("7", prURL, prHead))
+		}
+		if _, err := bare.File(context.Background(), in); err == nil || codeOf(t, err) != "HUMAN_REQUEST_KIND_UNAVAILABLE" {
 			t.Errorf("%s without its service: %v", kind, err)
 		}
 	}
 }
 
-func TestKnownKindsAreTheThreeThisPieceShips(t *testing.T) {
-	if got := fmt.Sprint(KnownKinds()); got != "[auto_resume_lift conversation_settings provider_switch]" {
+func TestKnownKindsAreTheOnesShipped(t *testing.T) {
+	if got := fmt.Sprint(KnownKinds()); got != "[auto_resume_lift conversation_settings pr_merge provider_switch]" {
 		t.Fatalf("kinds = %s", got)
 	}
 }

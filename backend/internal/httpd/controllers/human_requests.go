@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	humanrequestsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/humanrequest"
 )
 
@@ -52,13 +53,10 @@ type ListHumanRequestsQuery struct {
 // FileHumanRequestRequest asks the person to confirm a human-only action. Nothing the requester
 // writes is shown to the person: the daemon renders the summary and diff from payload.
 type FileHumanRequestRequest struct {
-	Kind      string         `json:"kind" enum:"auto_resume_lift,conversation_settings,provider_switch" description:"What is being asked."`
+	Kind      string         `json:"kind" enum:"auto_resume_lift,conversation_settings,provider_switch,pr_merge" description:"What is being asked."`
 	SessionID string         `json:"sessionId,omitempty" description:"The session the action is about, for a request about a session."`
 	ProjectID string         `json:"projectId,omitempty" description:"The project the action is about, for a request about a project. Exactly one of sessionId and projectId is given, matching the kind."`
 	Payload   map[string]any `json:"payload,omitempty" description:"The structured action; its shape depends on kind."`
-	// RequesterSessionID is attribution only until per-session proofs exist: the card says who the
-	// caller claims to be, never more. Empty is a terminal with no identity.
-	RequesterSessionID string `json:"requesterSessionId,omitempty" description:"The session filing the request, if any. Attribution only."`
 }
 
 // ApproveHumanRequestRequest names the exact request the person was shown.
@@ -130,6 +128,16 @@ func humanRequestResponse(req domain.HumanRequest) HumanRequestResponse {
 	return out
 }
 
+// requesterOf is who a request is attributed to: the session whose identity proof the daemon verified, and
+// otherwise "terminal (unauthenticated)". Nothing in the request body names a requester, so nothing a caller
+// writes can make a request look like another session's.
+func requesterOf(caller identity.Caller) domain.HumanRequestRequester {
+	if caller.IsAgent() {
+		return domain.HumanRequestRequester{Kind: domain.HumanRequesterSession, SessionID: caller.Session}
+	}
+	return domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}
+}
+
 func (c *HumanRequestsController) available(w http.ResponseWriter, r *http.Request) bool {
 	if c.Svc != nil {
 		return true
@@ -157,10 +165,7 @@ func (c *HumanRequestsController) file(w http.ResponseWriter, r *http.Request) {
 		}
 		payload = raw
 	}
-	requester := domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}
-	if id := strings.TrimSpace(in.RequesterSessionID); id != "" {
-		requester = domain.HumanRequestRequester{Kind: domain.HumanRequesterSession, SessionID: domain.SessionID(id)}
-	}
+	requester := requesterOf(identity.FromContext(r.Context()))
 	req, err := c.Svc.File(r.Context(), humanrequestsvc.FileInput{
 		Kind: domain.HumanRequestKind(in.Kind), SessionID: domain.SessionID(strings.TrimSpace(in.SessionID)), ProjectID: strings.TrimSpace(in.ProjectID), Payload: payload, Requester: requester,
 	})

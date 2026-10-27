@@ -11,10 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	humanrequestsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/humanrequest"
 	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
@@ -107,7 +111,7 @@ func TestFilingARequestReturnsTheDaemonRenderedCardAndWhatToRelay(t *testing.T) 
 	svc := &fakeHumanRequests{request: sampleHumanRequest()}
 	srv := humanRequestServer(t, svc, uicapability.New(humanRequestKey))
 
-	status, body := hrDo(t, srv, http.MethodPost, "/api/v1/human-requests", `{"kind":"conversation_settings","sessionId":"repo-1","payload":{"model":"m-b"},"requesterSessionId":"repo-2"}`, "")
+	status, body := hrDo(t, srv, http.MethodPost, "/api/v1/human-requests", `{"kind":"conversation_settings","sessionId":"repo-1","payload":{"model":"m-b"}}`, "")
 	if status != http.StatusAccepted {
 		t.Fatalf("status = %d, body %v", status, body)
 	}
@@ -120,8 +124,8 @@ func TestFilingARequestReturnsTheDaemonRenderedCardAndWhatToRelay(t *testing.T) 
 	}
 	got := svc.filed[0]
 	if got.Kind != domain.HumanRequestConversationSettings || got.SessionID != "repo-1" || string(got.Payload) != `{"model":"m-b"}` ||
-		got.Requester.Kind != domain.HumanRequesterSession || got.Requester.SessionID != "repo-2" {
-		t.Fatalf("service got %+v", got)
+		got.Requester.Kind != domain.HumanRequesterTerminal || got.Requester.SessionID != "" {
+		t.Fatalf("service got %+v; an unidentified caller must be a terminal", got)
 	}
 
 	if status, _ = hrDo(t, srv, http.MethodPost, "/api/v1/human-requests", `{"kind":"auto_resume_lift","sessionId":"repo-1"}`, ""); status != http.StatusAccepted {
@@ -130,6 +134,46 @@ func TestFilingARequestReturnsTheDaemonRenderedCardAndWhatToRelay(t *testing.T) 
 	got = svc.filed[1]
 	if got.Requester.Kind != domain.HumanRequesterTerminal || got.Requester.SessionID != "" || string(got.Payload) != `{}` {
 		t.Fatalf("a caller naming no session must be a terminal with an empty payload: %+v", got)
+	}
+}
+
+func TestTheRequesterIsTheVerifiedCallerAndNeverAClaimInTheBody(t *testing.T) {
+	svc := &fakeHumanRequests{request: sampleHumanRequest()}
+	var current identity.Caller
+	router := chi.NewRouter()
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(identity.WithCaller(r.Context(), current)))
+		})
+	})
+	(&controllers.HumanRequestsController{Svc: svc}).Register(router)
+	file := func(caller identity.Caller, body string) int {
+		current = caller
+		req := httptest.NewRequest(http.MethodPost, "/human-requests", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	const body = `{"kind":"auto_resume_lift","sessionId":"repo-1"}`
+	for name, tc := range map[string]struct {
+		caller identity.Caller
+		want   domain.HumanRequestRequester
+	}{
+		"a verified agent": {identity.Caller{Kind: identity.KindAgent, Session: "repo-2"}, domain.HumanRequestRequester{Kind: domain.HumanRequesterSession, SessionID: "repo-2"}},
+		"nobody":           {identity.Anonymous(), domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}},
+		"a reviewer":       {identity.Caller{Kind: identity.KindReviewer, Review: "rev-1", Worker: "repo-1"}, domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}},
+		"the person's app": {identity.Human(), domain.HumanRequestRequester{Kind: domain.HumanRequesterTerminal}},
+	} {
+		if status := file(tc.caller, body); status != http.StatusAccepted {
+			t.Fatalf("%s: status %d", name, status)
+		}
+		if got := svc.filed[len(svc.filed)-1].Requester; got != tc.want {
+			t.Errorf("%s: requester = %+v, want %+v", name, got, tc.want)
+		}
+	}
+	// A claim in the body is not a field of the request at all.
+	if status := file(identity.Caller{Kind: identity.KindAgent, Session: "repo-2"}, `{"kind":"auto_resume_lift","sessionId":"repo-1","requesterSessionId":"coord-1"}`); status != http.StatusBadRequest {
+		t.Errorf("a body that names a requester: status %d, want 400", status)
 	}
 }
 

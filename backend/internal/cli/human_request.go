@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,8 +15,6 @@ type humanRequestAPIRequest struct {
 	Kind      string         `json:"kind"`
 	SessionID string         `json:"sessionId"`
 	Payload   map[string]any `json:"payload,omitempty"`
-	// RequesterSessionID is attribution only: the card says who the caller claims to be.
-	RequesterSessionID string `json:"requesterSessionId,omitempty"`
 }
 
 type humanRequestAPIResponse struct {
@@ -31,7 +28,7 @@ type humanRequestAPIResponse struct {
 
 // fileHumanRequest asks the person to confirm a human-only action and prints what the daemon rendered.
 func (c *commandContext) fileHumanRequest(cmd *cobra.Command, kind, sessionID string, payload map[string]any) error {
-	req := humanRequestAPIRequest{Kind: kind, SessionID: sessionID, Payload: payload, RequesterSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
+	req := humanRequestAPIRequest{Kind: kind, SessionID: sessionID, Payload: payload}
 	var res humanRequestAPIResponse
 	if err := c.postJSON(cmd.Context(), "human-requests", req, &res); err != nil {
 		return err

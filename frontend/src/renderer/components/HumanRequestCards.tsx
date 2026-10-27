@@ -9,6 +9,7 @@ const KIND_KEYS = {
 	auto_resume_lift: "humanRequest.kind.auto_resume_lift",
 	conversation_settings: "humanRequest.kind.conversation_settings",
 	provider_switch: "humanRequest.kind.provider_switch",
+	pr_merge: "humanRequest.kind.pr_merge",
 } as const;
 
 const FIELD_KEYS = {
@@ -18,6 +19,8 @@ const FIELD_KEYS = {
 	planMode: "humanRequest.field.planMode",
 	harness: "humanRequest.field.harness",
 	autoResume: "humanRequest.field.autoResume",
+	pullRequest: "humanRequest.field.pullRequest",
+	headCommit: "humanRequest.field.headCommit",
 } as const;
 
 function isKnown<T extends object>(map: T, key: string): key is Extract<keyof T, string> {

@@ -15873,6 +15873,7 @@ components:
           - auto_resume_lift
           - conversation_settings
           - provider_switch
+          - pr_merge
           type: string
         payload:
           additionalProperties: {}
@@ -15881,9 +15882,6 @@ components:
         projectId:
           description: The project the action is about, for a request about a project.
             Exactly one of sessionId and projectId is given, matching the kind.
-          type: string
-        requesterSessionId:
-          description: The session filing the request, if any. Attribution only.
           type: string
         sessionId:
           description: The session the action is about, for a request about a session.

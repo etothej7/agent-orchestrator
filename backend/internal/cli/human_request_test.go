@@ -64,13 +64,12 @@ func TestSetAutoResumeAllowedFilesARequestAndNeverLiftsDirectly(t *testing.T) {
 			t.Fatalf("%s: calls = %+v; a lift must only ever file a request", name, seen)
 		}
 		body := seen[0].body
-		if body["kind"] != "auto_resume_lift" || body["sessionId"] != "demo-1" || (env != "" && body["requesterSessionId"] != env) {
+		if body["kind"] != "auto_resume_lift" || body["sessionId"] != "demo-1" {
 			t.Fatalf("%s: request body = %v", name, body)
 		}
-		if env == "" {
-			if _, set := body["requesterSessionId"]; set {
-				t.Fatalf("%s: a terminal named a requester: %v", name, body)
-			}
+		// Who is asking is the daemon's to know from the session proof; the CLI never claims an identity in the body.
+		if _, set := body["requesterSessionId"]; set {
+			t.Fatalf("%s: the body names a requester: %v", name, body)
 		}
 		if !strings.Contains(out, "filed request hr-7") || !strings.Contains(out, "approve it in the AO app") {
 			t.Fatalf("%s: output = %q", name, out)
@@ -98,7 +97,7 @@ func TestSetModelFilesOnlyTheFieldsNamed(t *testing.T) {
 	}
 	body := seen[0].body
 	payload, _ := body["payload"].(map[string]any)
-	if body["kind"] != "conversation_settings" || body["sessionId"] != "demo-1" || body["requesterSessionId"] != "mgr-1" ||
+	if body["kind"] != "conversation_settings" || body["sessionId"] != "demo-1" ||
 		payload["model"] != "m-b" || payload["reasoningEffort"] != "medium" || payload["planMode"] != false {
 		t.Fatalf("body = %v", body)
 	}

@@ -3562,7 +3562,7 @@
 	"humanRequest.kind.auto_resume_lift": "Allow automatic resume",
 	"humanRequest.kind.conversation_settings": "Change model or settings",
 	"humanRequest.kind.provider_switch": "Switch agent",
-	"humanRequest.requestedBy": "Claims to be {{requester}} (not verified)",
+	"humanRequest.requestedBy": "Requested by session {{requester}}",
 	"humanRequest.requestedByTerminal": "Requested from a terminal, not identified",
 	"humanRequest.field.model": "Model",
 	"humanRequest.field.reasoningEffort": "Reasoning effort",
@@ -3578,5 +3578,8 @@
 	"humanRequest.denied": "Denied",
 	"humanRequest.failed": "Could not complete the request",
 	"humanRequest.confirmLiftTitle": "Allow automatic resume?",
-	"humanRequest.confirmLift": "Allow"
+	"humanRequest.confirmLift": "Allow",
+	"humanRequest.kind.pr_merge": "Merge a pull request",
+	"humanRequest.field.pullRequest": "Pull request",
+	"humanRequest.field.headCommit": "Commit"
 }

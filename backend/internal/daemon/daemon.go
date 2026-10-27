@@ -871,6 +871,7 @@ func Run(buildVersion string) error {
 			Lifecycle:    lcStack.LCM,
 			Logger:       log,
 		})
+		humanRequestSvc.SetPRMerger(prActions)
 	} else {
 		log.Warn("pr action service disabled: no usable SCM provider")
 	}
