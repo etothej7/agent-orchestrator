@@ -1,4 +1,5 @@
 import { isPersonalBuild } from "./main/personal-build";
+import { shouldUseMockKeychain } from "./main/keychain-policy";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
@@ -233,8 +234,10 @@ const APP_DISPLAY_NAME = "Orchestrator.inc";
 app.setName(app.isPackaged ? APP_DISPLAY_NAME : `${APP_DISPLAY_NAME} (dev)`);
 
 // An unsigned dev Electron is a new app to macOS whenever its binary changes, so Chromium's
-// keychain-held cookie key prompted on start. Dev runs use the stand-in key; packaged keep the keychain.
-if (!app.isPackaged && process.platform === "darwin") {
+// keychain-held cookie key prompted on start. Dev runs and personal (ad-hoc signed) builds use the stand-in key,
+// so no build ever reads, writes or asks about the keychain; stock packaged builds keep it. See
+// main/keychain-policy.ts and frontend/docs/personal-build-keychain.md. Must run before app ready.
+if (shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform })) {
 	app.commandLine.appendSwitch("use-mock-keychain");
 }
 
