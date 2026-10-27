@@ -1,23 +1,23 @@
 -- name: InsertHumanRequest :execrows
--- A retried filing finds the open request with the same (kind, session, payload hash) instead.
-INSERT INTO human_requests (id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+-- A retried filing finds the open request with the same (kind, target, payload hash) instead.
+INSERT INTO human_requests (id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 ON CONFLICT DO NOTHING;
 
 -- name: GetHumanRequest :one
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests WHERE id = ?;
 
 -- name: GetOpenHumanRequest :one
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
-FROM human_requests WHERE kind = ? AND session_id = ? AND payload_hash = ? AND state = 'pending';
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+FROM human_requests WHERE kind = sqlc.arg(kind) AND COALESCE(session_id, 'project:' || project_id) = CAST(sqlc.arg(target_key) AS TEXT) AND payload_hash = sqlc.arg(payload_hash) AND state = 'pending';
 
 -- name: ListHumanRequestsByState :many
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?;
 
 -- name: ListRecentHumanRequests :many
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests ORDER BY created_at DESC, id DESC LIMIT ?;
 
 -- name: CountPendingHumanRequestsByRequester :one
@@ -48,7 +48,7 @@ SET state = CASE WHEN state = 'pending' THEN 'expired' ELSE 'failed' END,
     decided_at = COALESCE(decided_at, sqlc.arg(now))
 WHERE (state = 'pending' AND expires_at <= sqlc.arg(now))
    OR (state = 'approved' AND decided_at <= sqlc.arg(stale_before))
-RETURNING id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at;
+RETURNING id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at;
 
 -- name: CountAllPendingHumanRequests :one
 SELECT COUNT(*) FROM human_requests WHERE state = 'pending';

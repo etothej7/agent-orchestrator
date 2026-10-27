@@ -445,7 +445,8 @@ type DaemonRun struct {
 type HumanRequest struct {
 	ID                 string
 	Kind               string
-	SessionID          string
+	SessionID          sql.NullString
+	ProjectID          sql.NullString
 	RequesterKind      string
 	RequesterSessionID string
 	Payload            string

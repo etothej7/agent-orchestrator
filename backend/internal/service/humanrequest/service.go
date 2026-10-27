@@ -49,7 +49,7 @@ type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
 	InsertHumanRequest(ctx context.Context, req domain.HumanRequest) (domain.HumanRequest, bool, error)
 	GetHumanRequest(ctx context.Context, id string) (domain.HumanRequest, bool, error)
-	FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, session domain.SessionID, payloadHash string) (domain.HumanRequest, bool, error)
+	FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, targetKey, payloadHash string) (domain.HumanRequest, bool, error)
 	CountAllPendingHumanRequests(ctx context.Context) (int, error)
 	ListHumanRequests(ctx context.Context, state domain.HumanRequestState, limit int) ([]domain.HumanRequest, error)
 	CountPendingHumanRequests(ctx context.Context, requester domain.HumanRequestRequester) (int, error)
@@ -194,7 +194,7 @@ func (s *Service) checkLimits(ctx context.Context, req domain.HumanRequest, now 
 	if open < MaxOpenPerRequester && recent < MaxFiledPerMinute && total < MaxOpenTotal {
 		return nil
 	}
-	if _, found, err := s.store.FindOpenHumanRequest(ctx, req.Kind, req.SessionID, req.PayloadHash); err != nil {
+	if _, found, err := s.store.FindOpenHumanRequest(ctx, req.Kind, req.TargetKey(), req.PayloadHash); err != nil {
 		return err
 	} else if found {
 		return nil

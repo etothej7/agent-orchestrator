@@ -186,3 +186,53 @@ func TestHumanRequestCountsAndListingFollowRequesterAndState(t *testing.T) {
 		t.Fatalf("limit = %+v", limited)
 	}
 }
+
+func projectHumanRequest(id, project, hash string) domain.HumanRequest {
+	req := humanRequest(id, "", hash)
+	req.ProjectID = project
+	req.Kind = "project_probe"
+	return req
+}
+
+func TestAProjectRequestIsStoredFiledOnceAndKeptApartFromASessionRequest(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+
+	first, inserted, err := db.InsertHumanRequest(ctx, projectHumanRequest("hr-p1", "repo", "h"))
+	if err != nil || !inserted {
+		t.Fatalf("first filing = %+v, inserted %v, %v", first, inserted, err)
+	}
+	if first.ProjectID != "repo" || first.SessionID != "" || first.TargetKind() != domain.HumanTargetProject || first.TargetKey() != "project:repo" {
+		t.Fatalf("stored target = session %q project %q (%s)", first.SessionID, first.ProjectID, first.TargetKind())
+	}
+	again, inserted, err := db.InsertHumanRequest(ctx, projectHumanRequest("hr-p2", "repo", "h"))
+	if err != nil || inserted || again.ID != "hr-p1" {
+		t.Fatalf("a retried filing = %+v, inserted %v, %v; want the open hr-p1 back", again, inserted, err)
+	}
+	// The same kind and hash aimed at a session is a different request.
+	sessionReq := humanRequest("hr-s1", session, "h")
+	sessionReq.Kind = "project_probe"
+	if _, inserted, err := db.InsertHumanRequest(ctx, sessionReq); err != nil || !inserted {
+		t.Fatalf("a session request with the same kind and hash = inserted %v, %v", inserted, err)
+	}
+	found, ok, err := db.FindOpenHumanRequest(ctx, "project_probe", "project:repo", "h")
+	if err != nil || !ok || found.ID != "hr-p1" {
+		t.Fatalf("find by project key = %+v, %v, %v", found, ok, err)
+	}
+	found, ok, err = db.FindOpenHumanRequest(ctx, "project_probe", string(session), "h")
+	if err != nil || !ok || found.ID != "hr-s1" {
+		t.Fatalf("find by session key = %+v, %v, %v", found, ok, err)
+	}
+}
+
+func TestARequestNeedsExactlyOneTarget(t *testing.T) {
+	db, session := autoResumeSession(t)
+	both := humanRequest("hr-both", session, "h")
+	both.ProjectID = "repo"
+	if _, _, err := db.InsertHumanRequest(context.Background(), both); err == nil {
+		t.Fatal("a request about a session and a project was stored")
+	}
+	if _, _, err := db.InsertHumanRequest(context.Background(), humanRequest("hr-none", "", "h")); err == nil {
+		t.Fatal("a request about nothing was stored")
+	}
+}

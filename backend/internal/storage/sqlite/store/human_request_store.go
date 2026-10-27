@@ -12,6 +12,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
+func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
 func humanRequestTime(t time.Time) sql.NullTime { return sql.NullTime{Time: t.UTC(), Valid: true} }
 
 func humanRequestFromRow(row gen.HumanRequest) (domain.HumanRequest, error) {
@@ -20,7 +22,7 @@ func humanRequestFromRow(row gen.HumanRequest) (domain.HumanRequest, error) {
 		return domain.HumanRequest{}, fmt.Errorf("human request %s has unreadable changes: %w", row.ID, err)
 	}
 	req := domain.HumanRequest{
-		ID: row.ID, Kind: domain.HumanRequestKind(row.Kind), SessionID: domain.SessionID(row.SessionID),
+		ID: row.ID, Kind: domain.HumanRequestKind(row.Kind), SessionID: domain.SessionID(row.SessionID.String), ProjectID: row.ProjectID.String,
 		Requester: domain.HumanRequestRequester{Kind: domain.HumanRequestRequesterKind(row.RequesterKind), SessionID: domain.SessionID(row.RequesterSessionID)},
 		Payload:   json.RawMessage(row.Payload), PayloadHash: row.PayloadHash, Summary: row.Summary, Changes: changes,
 		State: domain.HumanRequestState(row.State), Result: row.Result, CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC(),
@@ -47,6 +49,9 @@ func humanRequestsFromRows(rows []gen.HumanRequest) ([]domain.HumanRequest, erro
 // target and payload hash already exists the new one is not stored and the existing one is
 // returned with inserted false, so a retried filing never creates a second card.
 func (s *Store) InsertHumanRequest(ctx context.Context, req domain.HumanRequest) (domain.HumanRequest, bool, error) {
+	if (req.SessionID == "") == (req.ProjectID == "") {
+		return domain.HumanRequest{}, false, errors.New("a human request is about a session or a project, not both or neither")
+	}
 	changes, err := json.Marshal(req.Changes)
 	if err != nil {
 		return domain.HumanRequest{}, false, fmt.Errorf("encode human request changes: %w", err)
@@ -54,7 +59,7 @@ func (s *Store) InsertHumanRequest(ctx context.Context, req domain.HumanRequest)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.InsertHumanRequest(ctx, gen.InsertHumanRequestParams{
-		ID: req.ID, Kind: string(req.Kind), SessionID: string(req.SessionID),
+		ID: req.ID, Kind: string(req.Kind), SessionID: nullString(string(req.SessionID)), ProjectID: nullString(req.ProjectID),
 		RequesterKind: string(req.Requester.Kind), RequesterSessionID: string(req.Requester.SessionID),
 		Payload: string(req.Payload), PayloadHash: req.PayloadHash, Summary: req.Summary, Changes: string(changes),
 		CreatedAt: req.CreatedAt.UTC(), ExpiresAt: req.ExpiresAt.UTC(),
@@ -70,7 +75,7 @@ func (s *Store) InsertHumanRequest(ctx context.Context, req domain.HumanRequest)
 		out, err := humanRequestFromRow(stored)
 		return out, true, err
 	}
-	existing, err := s.qw.GetOpenHumanRequest(ctx, gen.GetOpenHumanRequestParams{Kind: string(req.Kind), SessionID: string(req.SessionID), PayloadHash: req.PayloadHash})
+	existing, err := s.qw.GetOpenHumanRequest(ctx, gen.GetOpenHumanRequestParams{Kind: string(req.Kind), TargetKey: req.TargetKey(), PayloadHash: req.PayloadHash})
 	if err != nil {
 		return domain.HumanRequest{}, false, fmt.Errorf("find the open human request: %w", err)
 	}
@@ -165,9 +170,10 @@ func (s *Store) ExpireHumanRequests(ctx context.Context, now, staleBefore time.T
 	return humanRequestsFromRows(rows)
 }
 
-// FindOpenHumanRequest returns the open request with this kind, target and payload hash, if there is one.
-func (s *Store) FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, session domain.SessionID, payloadHash string) (domain.HumanRequest, bool, error) {
-	row, err := s.qr.GetOpenHumanRequest(ctx, gen.GetOpenHumanRequestParams{Kind: string(kind), SessionID: string(session), PayloadHash: payloadHash})
+// FindOpenHumanRequest returns the open request with this kind, target (domain.HumanRequest.TargetKey) and
+// payload hash, if there is one.
+func (s *Store) FindOpenHumanRequest(ctx context.Context, kind domain.HumanRequestKind, targetKey, payloadHash string) (domain.HumanRequest, bool, error) {
+	row, err := s.qr.GetOpenHumanRequest(ctx, gen.GetOpenHumanRequestParams{Kind: string(kind), TargetKey: targetKey, PayloadHash: payloadHash})
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.HumanRequest{}, false, nil
 	}

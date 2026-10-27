@@ -19,6 +19,16 @@ const (
 	HumanRequestProviderSwitch HumanRequestKind = "provider_switch"
 )
 
+// HumanRequestTargetKind says what a request is about.
+type HumanRequestTargetKind string
+
+const (
+	// HumanTargetSession is a request about one session.
+	HumanTargetSession HumanRequestTargetKind = "session"
+	// HumanTargetProject is a request about one project.
+	HumanTargetProject HumanRequestTargetKind = "project"
+)
+
 // HumanRequestState is where a request is in its life.
 type HumanRequestState string
 
@@ -76,9 +86,12 @@ type HumanRequestChange struct {
 // daemon from Payload when the request is filed and never edited; PayloadHash covers the
 // kind, the target and the payload, and an approval must name it.
 type HumanRequest struct {
-	ID          string
-	Kind        HumanRequestKind
+	ID   string
+	Kind HumanRequestKind
+	// SessionID is the session a session-targeted request is about; ProjectID is the project a
+	// project-targeted one is about. Exactly one is set.
 	SessionID   SessionID
+	ProjectID   string
 	Requester   HumanRequestRequester
 	Payload     json.RawMessage
 	PayloadHash string
@@ -90,4 +103,27 @@ type HumanRequest struct {
 	ExpiresAt   time.Time
 	// DecidedAt is zero until someone approved, denied or the request expired.
 	DecidedAt time.Time
+}
+
+// TargetKind says whether the request is about a session or a project.
+func (r HumanRequest) TargetKind() HumanRequestTargetKind {
+	if r.ProjectID != "" {
+		return HumanTargetProject
+	}
+	return HumanTargetSession
+}
+
+// TargetKey names what the request is about in one string: the session id, or "project:" and the project id.
+// A session id never contains a colon, so the two cannot collide; the open-request uniqueness and the payload
+// hash both use it.
+func (r HumanRequest) TargetKey() string {
+	return HumanRequestTargetKey(r.SessionID, r.ProjectID)
+}
+
+// HumanRequestTargetKey is TargetKey for a target not yet in a request.
+func HumanRequestTargetKey(session SessionID, project string) string {
+	if project != "" {
+		return "project:" + project
+	}
+	return string(session)
 }

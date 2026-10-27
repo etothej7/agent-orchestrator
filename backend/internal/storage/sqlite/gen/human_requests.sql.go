@@ -99,7 +99,7 @@ SET state = CASE WHEN state = 'pending' THEN 'expired' ELSE 'failed' END,
     decided_at = COALESCE(decided_at, ?1)
 WHERE (state = 'pending' AND expires_at <= ?1)
    OR (state = 'approved' AND decided_at <= ?2)
-RETURNING id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+RETURNING id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 `
 
 type ExpireHumanRequestsParams struct {
@@ -122,6 +122,7 @@ func (q *Queries) ExpireHumanRequests(ctx context.Context, arg ExpireHumanReques
 			&i.ID,
 			&i.Kind,
 			&i.SessionID,
+			&i.ProjectID,
 			&i.RequesterKind,
 			&i.RequesterSessionID,
 			&i.Payload,
@@ -173,7 +174,7 @@ func (q *Queries) FinishHumanRequest(ctx context.Context, arg FinishHumanRequest
 }
 
 const getHumanRequest = `-- name: GetHumanRequest :one
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests WHERE id = ?
 `
 
@@ -184,6 +185,7 @@ func (q *Queries) GetHumanRequest(ctx context.Context, id string) (HumanRequest,
 		&i.ID,
 		&i.Kind,
 		&i.SessionID,
+		&i.ProjectID,
 		&i.RequesterKind,
 		&i.RequesterSessionID,
 		&i.Payload,
@@ -200,23 +202,24 @@ func (q *Queries) GetHumanRequest(ctx context.Context, id string) (HumanRequest,
 }
 
 const getOpenHumanRequest = `-- name: GetOpenHumanRequest :one
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
-FROM human_requests WHERE kind = ? AND session_id = ? AND payload_hash = ? AND state = 'pending'
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+FROM human_requests WHERE kind = ?1 AND COALESCE(session_id, 'project:' || project_id) = CAST(?2 AS TEXT) AND payload_hash = ?3 AND state = 'pending'
 `
 
 type GetOpenHumanRequestParams struct {
 	Kind        string
-	SessionID   string
+	TargetKey   string
 	PayloadHash string
 }
 
 func (q *Queries) GetOpenHumanRequest(ctx context.Context, arg GetOpenHumanRequestParams) (HumanRequest, error) {
-	row := q.db.QueryRowContext(ctx, getOpenHumanRequest, arg.Kind, arg.SessionID, arg.PayloadHash)
+	row := q.db.QueryRowContext(ctx, getOpenHumanRequest, arg.Kind, arg.TargetKey, arg.PayloadHash)
 	var i HumanRequest
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
 		&i.SessionID,
+		&i.ProjectID,
 		&i.RequesterKind,
 		&i.RequesterSessionID,
 		&i.Payload,
@@ -233,15 +236,16 @@ func (q *Queries) GetOpenHumanRequest(ctx context.Context, arg GetOpenHumanReque
 }
 
 const insertHumanRequest = `-- name: InsertHumanRequest :execrows
-INSERT INTO human_requests (id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+INSERT INTO human_requests (id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 ON CONFLICT DO NOTHING
 `
 
 type InsertHumanRequestParams struct {
 	ID                 string
 	Kind               string
-	SessionID          string
+	SessionID          sql.NullString
+	ProjectID          sql.NullString
 	RequesterKind      string
 	RequesterSessionID string
 	Payload            string
@@ -252,12 +256,13 @@ type InsertHumanRequestParams struct {
 	ExpiresAt          time.Time
 }
 
-// A retried filing finds the open request with the same (kind, session, payload hash) instead.
+// A retried filing finds the open request with the same (kind, target, payload hash) instead.
 func (q *Queries) InsertHumanRequest(ctx context.Context, arg InsertHumanRequestParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertHumanRequest,
 		arg.ID,
 		arg.Kind,
 		arg.SessionID,
+		arg.ProjectID,
 		arg.RequesterKind,
 		arg.RequesterSessionID,
 		arg.Payload,
@@ -274,7 +279,7 @@ func (q *Queries) InsertHumanRequest(ctx context.Context, arg InsertHumanRequest
 }
 
 const listHumanRequestsByState = `-- name: ListHumanRequestsByState :many
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?
 `
 
@@ -296,6 +301,7 @@ func (q *Queries) ListHumanRequestsByState(ctx context.Context, arg ListHumanReq
 			&i.ID,
 			&i.Kind,
 			&i.SessionID,
+			&i.ProjectID,
 			&i.RequesterKind,
 			&i.RequesterSessionID,
 			&i.Payload,
@@ -322,7 +328,7 @@ func (q *Queries) ListHumanRequestsByState(ctx context.Context, arg ListHumanReq
 }
 
 const listRecentHumanRequests = `-- name: ListRecentHumanRequests :many
-SELECT id, kind, session_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
+SELECT id, kind, session_id, project_id, requester_kind, requester_session_id, payload, payload_hash, summary, changes, state, result, created_at, expires_at, decided_at
 FROM human_requests ORDER BY created_at DESC, id DESC LIMIT ?
 `
 
@@ -339,6 +345,7 @@ func (q *Queries) ListRecentHumanRequests(ctx context.Context, limit int64) ([]H
 			&i.ID,
 			&i.Kind,
 			&i.SessionID,
+			&i.ProjectID,
 			&i.RequesterKind,
 			&i.RequesterSessionID,
 			&i.Payload,
