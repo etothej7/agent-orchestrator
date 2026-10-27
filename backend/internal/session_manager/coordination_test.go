@@ -43,6 +43,17 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 			t.Fatalf("repo manager lacks the built-in end-turn rule %q", want)
 		}
 	}
+	// Done is the assigned manager's decision; workers finish with ao report --done.
+	for _, want := range []string{"you, the story's assigned manager, record Done, never a worker or reviewer", "ao report --done, and a worker's story Done is rejected"} {
+		if !strings.Contains(manager, want) {
+			t.Fatalf("repo manager prompt lacks the Done-authority rule %q", want)
+		}
+	}
+	for _, want := range []string{"Only a story's assigned manager can record Done", "assign a new manager first (--kind assignment --role manager)", "tell Ed it needs completing from the board"} {
+		if !strings.Contains(overall, want) {
+			t.Fatalf("overall coordinator prompt lacks the Done-authority rule %q", want)
+		}
+	}
 	for _, want := range []string{"files a done, needs-input or stuck report", "five-minute settlement window"} {
 		if !strings.Contains(manager, want) {
 			t.Fatalf("repo manager end-turn rule lacks %q", want)
