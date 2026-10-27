@@ -2526,6 +2526,11 @@ type TelemetryIdentityResponse struct {
 	OptedOut    bool   `json:"optedOut"`
 }
 
+// IdentityObservationsQuery bounds the top-offenders lists of GET /api/v1/identity/observations.
+type IdentityObservationsQuery struct {
+	Top int `query:"top" description:"How many of the most-called routes, claimed sessions and processes to return (default 20, at most 100)."`
+}
+
 // LinkPreviewQuery selects the external page to unfurl.
 type LinkPreviewQuery struct {
 	URL string `query:"url" description:"Absolute http(s) URL of the page to preview."`

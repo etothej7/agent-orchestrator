@@ -76,12 +76,19 @@ type APIDeps struct {
 	// human-authored writes. Nil marks no request as human (a daemon the app did not
 	// start, so nothing human-only can be done through it).
 	UICapability *uicapability.Verifier
+	// IdentityObservations records the calls that reach the daemon without an identity, for the
+	// top-offenders view. Nil: the view reports not implemented.
+	IdentityObservations controllers.ObservationsSource
+	// IdentityMode reports the identity enforcement mode name for that view.
+	IdentityMode func() string
 	// SessionIdentity resolves a session's identity proof (X-AO-Session-Proof) into the
 	// session that holds it. Nil identifies no agent (embedders and tests without identity).
 	SessionIdentity *identity.Resolver
-	// RouteClassMode is how strictly each route's caller class is applied (zero = observe).
-	RouteClassMode RouteClassMode
-	SystemChecks   controllers.SystemChecker
+	// RouteGuard configures the route-class guard (human-only enforcement, identity observe or
+	// enforce, the coordinator's proof state, re-proof and observations hooks). Zero value: no
+	// human enforcement, identity in observe mode.
+	RouteGuard   GuardConfig
+	SystemChecks controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.
@@ -163,6 +170,7 @@ type API struct {
 	system        *controllers.SystemController
 	identity      *controllers.IdentityController
 	endpoints     *controllers.EndpointsController
+	identityObs   *controllers.IdentityObservationsController
 	telemetryID   *controllers.TelemetryIdentityController
 	systemInstall *controllers.SystemInstallController
 	agentAuth     *controllers.AgentAuthController
@@ -227,6 +235,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		system:        &controllers.SystemController{Checks: deps.SystemChecks},
 		identity:      &controllers.IdentityController{HostID: deps.HostID},
 		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
+		identityObs:   &controllers.IdentityObservationsController{Source: deps.IdentityObservations, Mode: deps.IdentityMode},
 		telemetryID:   &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
 		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
 		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
@@ -342,6 +351,7 @@ func (a *API) Register(root chi.Router) {
 			a.system.Register(r)
 			a.identity.Register(r)
 			a.endpoints.Register(r)
+			a.identityObs.Register(r)
 			a.telemetryID.Register(r)
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)

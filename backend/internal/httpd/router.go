@@ -63,7 +63,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
 	// Deny by default: a mutating route with no class is refused; classes are enforced per mode.
-	r.Use(routeClassGuard(r, deps.RouteClassMode, log))
+	r.Use(routeClassGuard(r, deps.RouteGuard, log))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are

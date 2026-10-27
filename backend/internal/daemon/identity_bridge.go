@@ -23,13 +23,28 @@ type bridgeSessions interface {
 // in. It returns nil, and the daemon simply has no bridge, when the platform lookup is unavailable
 // (it self-tests at startup, is macOS-only, and needs no cgo) or AO_PROCESS_ANCESTRY=off.
 func newAncestryBridge(log *slog.Logger, sessions bridgeSessions, paneRoots func(ctx context.Context, handle string) ([]int, error), dataDir string) identity.Ancestry {
+	procs, peer := newProcessLookup(log)
+	return ancestryBridge(log, procs, peer, sessions, paneRoots, dataDir)
+}
+
+// newProcessLookup returns the kernel-backed process table and socket lookup, or nils (with a log
+// line) when the platform has none or its self-test fails. The same lookup feeds the identity
+// bridge and the anonymous-call observations.
+func newProcessLookup(log *slog.Logger) (procidentity.ProcTable, procidentity.PeerLookup) {
+	procs, peer, err := procidentity.NewSystem()
+	if err != nil {
+		log.Info("process lookup unavailable", "reason", err.Error())
+		return nil, nil
+	}
+	return procs, peer
+}
+
+func ancestryBridge(log *slog.Logger, procs procidentity.ProcTable, peer procidentity.PeerLookup, sessions bridgeSessions, paneRoots func(ctx context.Context, handle string) ([]int, error), dataDir string) identity.Ancestry {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("AO_PROCESS_ANCESTRY")), "off") {
 		log.Info("process ancestry identity bridge disabled by AO_PROCESS_ANCESTRY=off")
 		return nil
 	}
-	procs, peer, err := procidentity.NewSystem()
-	if err != nil {
-		log.Info("process ancestry identity bridge unavailable", "reason", err.Error())
+	if procs == nil || peer == nil {
 		return nil
 	}
 	roots := procidentity.NewSessionRoots(procidentity.SessionRootsDeps{

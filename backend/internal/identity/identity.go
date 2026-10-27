@@ -39,6 +39,10 @@ import (
 const (
 	// HeaderProof carries a session proof on a request.
 	HeaderProof = "X-AO-Session-Proof"
+	// HeaderClaim carries the session id a proof-less `ao` process says it is (its AO_SESSION_ID).
+	// It is a CLAIM, only ever used to say which session an anonymous call should be counted
+	// against and which session to relaunch for a proof. It never identifies anyone.
+	HeaderClaim = "X-AO-Session-Claim"
 	// EnvProof is the environment variable a session's proof lives in. Its name contains none of
 	// TOKEN, KEY, SECRET, AUTH or CRED: several harnesses drop environment variables whose names
 	// look like secrets, and the proof must reach the ao subprocesses an agent runs.
@@ -426,4 +430,11 @@ func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort
 		return Anonymous(), ErrSessionEnded
 	}
 	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaAncestry}, nil
+}
+
+// CoordinatorState says who the active overall coordinator is and whether it holds a proof.
+// Session is empty when there is no active coordinator.
+type CoordinatorState struct {
+	Session    domain.SessionID
+	HoldsProof bool
 }

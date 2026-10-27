@@ -622,6 +622,11 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"MobilebridgeTunnelStatus":                 "MobileTunnelStatus",
 	"ControllersIdentityResponse":              "IdentityResponse",
 	"ControllersEndpointsResponse":             "EndpointsResponse",
+	"ControllersIdentityObservationsQuery":     "IdentityObservationsQuery",
+	"ControllersIdentityObservationsResponse":  "IdentityObservationsResponse",
+	"ControllersIdentityRouteObservation":      "IdentityRouteObservation",
+	"ControllersIdentitySessionObservation":    "IdentitySessionObservation",
+	"ControllersIdentityProcessObservation":    "IdentityProcessObservation",
 	"ControllersLinkPreviewQuery":              "LinkPreviewQuery",
 	"ControllersLinkPreviewResponse":           "LinkPreviewResponse",
 	"ControllersMobileDeviceResponse":          "MobileDeviceResponse",
@@ -772,6 +777,7 @@ func operations() []operation {
 	ops = append(ops, systemOperations()...)
 	ops = append(ops, identityOperations()...)
 	ops = append(ops, endpointsOperations()...)
+	ops = append(ops, identityObservationsOperations()...)
 	ops = append(ops, telemetryIdentityOperations()...)
 	ops = append(ops, linkPreviewOperations()...)
 	return ops
@@ -825,6 +831,22 @@ func endpointsOperations() []operation {
 			summary: "List the ways this daemon can currently be reached",
 			resps: []respUnit{
 				{http.StatusOK, controllers.EndpointsResponse{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// identityObservationsOperations declares the top-offenders view of calls that arrive without an
+// identity (ED8 observe mode). Loopback only: the LAN listener blocks the prefix.
+func identityObservationsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/identity/observations", id: "getIdentityObservations", tag: "identity",
+			summary:    "Top offenders among calls that arrived without an identity proof",
+			pathParams: []any{controllers.IdentityObservationsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.IdentityObservationsResponse{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},

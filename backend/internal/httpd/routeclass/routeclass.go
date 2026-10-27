@@ -44,6 +44,27 @@ func (c Class) Valid() bool {
 	return false
 }
 
+// Observe says when an anonymous caller may use an A-class route while identity is only
+// observed (the guard's observe mode). It is a fixed per-route flag, never derived from the
+// caller.
+type Observe string
+
+const (
+	// ObserveNone means an anonymous caller is refused in every mode (a predicate or authority route:
+	// merge, review submit, kill, spawning an orchestrator).
+	ObserveNone Observe = ""
+	// ObserveOK means ed.7 needed no identity here; an anonymous caller passes in observe mode and is
+	// counted.
+	ObserveOK Observe = "ok"
+	// ObserveKinds means anonymous passes only for the request kinds listed in Entry.Kinds (the body's
+	// "kind"); every other kind refuses anonymous.
+	ObserveKinds Observe = "kinds"
+	// ObserveUntilCoordinatorProof means a coordinator-only route. An anonymous caller passes only
+	// while NO coordinator session holds a proof; once one does, only the coordinator's own
+	// identity passes.
+	ObserveUntilCoordinatorProof Observe = "until-coordinator-proof"
+)
+
 // Entry is one classified route.
 type Entry struct {
 	Method string
@@ -51,6 +72,10 @@ type Entry struct {
 	Pattern string
 	Class   Class
 	Note    string
+	// Observe, for an A-class route, says what an anonymous caller may do in observe mode.
+	Observe Observe
+	// Kinds lists the observe-allowed request kinds of an ObserveKinds route.
+	Kinds []string
 	// Future names the branch whose route this entry is waiting for. The entry is not required
 	// to be mounted yet, and the build fails once it is, so the marker is removed on merge.
 	Future string
