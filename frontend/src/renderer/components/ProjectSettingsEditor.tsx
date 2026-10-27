@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import type { ProjectSettingsSaveState, ProjectSettingsSection as SettingsSection } from "./ProjectSettingsForm";
 import { deriveRepoHost, deriveRepoPath, IntakeFields, intakeNeedsRule } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
-import { AgentModelField, ProjectAutoReviewToggle, ProjectWorkersRequestReviewToggle } from "./settings/ProjectAgentRoleControls";
+import { AgentModelField, ProjectAgentMayMergeToggle, ProjectAutoReviewToggle, ProjectWorkersRequestReviewToggle } from "./settings/ProjectAgentRoleControls";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
 
@@ -32,6 +32,8 @@ export type ProjectSettingsDraft = {
 	autoReview: boolean;
 	/** Local-only: workers may ask AO to review their own PRs. */
 	workersRequestReview?: boolean;
+	/** Local-only: agents may merge reviewed pull requests; otherwise the person approves each one. */
+	agentMayMerge?: boolean;
 	intakeEnabled: boolean;
 	intakeRepo: string;
 	intakeAssignee: string;
@@ -54,6 +56,7 @@ type Capabilities = {
 	reviewer: boolean;
 	requiredAgents: boolean;
 	workersRequestReview?: boolean;
+	agentMayMerge?: boolean;
 	nameLimit?: number;
 	requiredBranch?: boolean;
 	/** Cloud defaults and tuning belong to its runtime, rather than the local catalog. */
@@ -183,6 +186,7 @@ export function ProjectSettingsEditor({ initialValues, section, capabilities, de
 					<ProjectSettingsSection title={t("settings.project.pullRequests")} grouped>
 						<ProjectAutoReviewToggle description={autoReviewDescription} checked={draft.autoReview} onCheckedChange={(autoReview) => patch({ autoReview })} />
 						{capabilities.workersRequestReview && <ProjectWorkersRequestReviewToggle checked={draft.workersRequestReview ?? false} onCheckedChange={(workersRequestReview) => patch({ workersRequestReview })} />}
+						{capabilities.agentMayMerge && <ProjectAgentMayMergeToggle checked={draft.agentMayMerge ?? false} onCheckedChange={(agentMayMerge) => patch({ agentMayMerge })} />}
 					</ProjectSettingsSection>
 				</>}
 				{generalExtra}

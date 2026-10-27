@@ -3583,5 +3583,7 @@
 	"humanRequest.field.pullRequest": "Pull request",
 	"humanRequest.field.headCommit": "Commit",
 	"inspector.identityRelaunch": "Needs relaunch for identity",
-	"inspector.identityRelaunchDescription": "This session started before identity proofs, so it cannot prove who it is yet. AO relaunches it automatically when it is idle."
+	"inspector.identityRelaunchDescription": "This session started before identity proofs, so it cannot prove who it is yet. AO relaunches it automatically when it is idle.",
+	"settings.project.agentMayMergeToggle": "Agents may merge pull requests",
+	"settings.project.agentMayMergeDescription": "When enabled, a worker may merge its own reviewed pull request and the project manager may merge any pull request of this project, once the review and checks pass. When disabled, an agent that tries to merge files a request for you to approve instead."
 }
