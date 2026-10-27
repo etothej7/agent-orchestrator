@@ -136,6 +136,41 @@ func WithCaller(ctx context.Context, c Caller) context.Context {
 	return context.WithValue(ctx, callerKey{}, c)
 }
 
+type claimKey struct{}
+
+// ParseClaim reads the session id a caller says it is from an X-AO-Session-Claim value: trimmed,
+// non-empty and of sane length, else "". It is a CLAIM, never an identity.
+func ParseClaim(raw string) domain.SessionID {
+	id := strings.TrimSpace(raw)
+	if id == "" || len(id) > 128 {
+		return ""
+	}
+	return domain.SessionID(id)
+}
+
+// WithClaim records the session id a request CLAIMS to be (its X-AO-Session-Claim). Only the
+// daemon's own identity middleware may call it.
+func WithClaim(ctx context.Context, id domain.SessionID) context.Context {
+	return context.WithValue(ctx, claimKey{}, id)
+}
+
+// ClaimFromContext is the session an UNPROVEN caller is attributed to, for routing a refusal to
+// that session's re-proof and for counting: the session the daemon matched by process ancestry
+// (from the kernel), else the session the request claims in X-AO-Session-Claim (unauthenticated:
+// it may only affect counting and queue order, never an authority decision). Empty for the person,
+// a proven agent, a reviewer, and an anonymous caller that claims nothing.
+func ClaimFromContext(ctx context.Context) domain.SessionID {
+	c := FromContext(ctx)
+	switch {
+	case c.IsBridged():
+		return c.Session
+	case c.Kind == KindAnonymous:
+		id, _ := ctx.Value(claimKey{}).(domain.SessionID)
+		return id
+	}
+	return ""
+}
+
 // FromContext returns the verified caller of a request; a context nothing verified yields the
 // anonymous caller, so an unmarked request can never be mistaken for anyone.
 func FromContext(ctx context.Context) Caller {

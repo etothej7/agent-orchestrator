@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -138,5 +140,34 @@ func TestACallerKnownOnlyByAncestryFailsEveryPredicate(t *testing.T) {
 	proven := Caller{Kind: KindAgent, Session: "s-1", SessionKind: domain.KindWorker, Project: "repo", Via: ViaProof}
 	if !proven.IsAgent() || !proven.IsSession("s-1") || proven.IsBridged() {
 		t.Fatal("a proven agent lost its predicates")
+	}
+}
+
+func TestClaimFromContextAttributesOnlyUnprovenCallers(t *testing.T) {
+	ctx := WithClaim(context.Background(), "worker-9")
+	if got := ClaimFromContext(WithCaller(ctx, Anonymous())); got != "worker-9" {
+		t.Fatalf("anonymous claim = %q, want worker-9", got)
+	}
+	if got := ClaimFromContext(context.Background()); got != "" {
+		t.Fatalf("an unmarked context claims %q", got)
+	}
+	// a caller the kernel matched is attributed to the MATCHED session, not to what the header says
+	bridged := Caller{Kind: KindAgent, Session: "worker-1", SessionKind: domain.KindWorker, Via: ViaAncestry}
+	if got := ClaimFromContext(WithCaller(ctx, bridged)); got != "worker-1" {
+		t.Fatalf("bridged claim = %q, want the matched worker-1", got)
+	}
+	// proven callers and the person are never "claimants"
+	for name, c := range map[string]Caller{
+		"human": Human(), "proven agent": {Kind: KindAgent, Session: "w", Via: ViaProof},
+		"reviewer": {Kind: KindReviewer, Review: "r", Worker: "w"},
+	} {
+		if got := ClaimFromContext(WithCaller(ctx, c)); got != "" {
+			t.Errorf("%s: claim %q, want none", name, got)
+		}
+	}
+	for raw, want := range map[string]domain.SessionID{"  mer-1 ": "mer-1", "": "", "   ": "", strings.Repeat("x", 129): ""} {
+		if got := ParseClaim(raw); got != want {
+			t.Errorf("ParseClaim(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }

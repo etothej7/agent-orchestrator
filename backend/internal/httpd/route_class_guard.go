@@ -273,11 +273,7 @@ func claimOf(r *http.Request, caller identity.Caller) domain.SessionID {
 
 // claimedSession is the session the caller says it is (a claim, never an identity).
 func claimedSession(r *http.Request) domain.SessionID {
-	id := strings.TrimSpace(r.Header.Get(identity.HeaderClaim))
-	if id == "" || len(id) > 128 {
-		return ""
-	}
-	return domain.SessionID(id)
+	return identity.ParseClaim(r.Header.Get(identity.HeaderClaim))
 }
 
 // kindAllowed reports whether the request body's "kind" is one the route's Observe list allows.
