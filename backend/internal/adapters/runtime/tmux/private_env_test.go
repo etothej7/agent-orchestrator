@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -107,5 +108,65 @@ func TestLaunchWithAMissingHandoffExitsInsteadOfRunning(t *testing.T) {
 	out, _ := exec.Command("sh", "-c", cmd).CombinedOutput() //nolint:gosec // the command is built by this test
 	if strings.Contains(string(out), "AGENT-RAN") {
 		t.Fatalf("the agent ran although its identity handoff was missing: %q", out)
+	}
+}
+
+// P3: the handoff file is the FIRST thing the pane does, before the working-directory guard. If the
+// guard failed first the shell would exit and the file (with the proof) would sit in the temp
+// directory until something swept it.
+func TestThePaneSourcesTheHandoffBeforeTheWorkingDirectoryGuard(t *testing.T) {
+	cfg := proofConfig(t)
+	cmd := buildLaunchCommandWithHandoff(cfg, "/tmp/ao-launch-x/env")
+	source := strings.Index(cmd, ". '/tmp/ao-launch-x/env' || exit; rm -rf '/tmp/ao-launch-x';")
+	cd := strings.Index(cmd, "cd ")
+	if source < 0 || cd < 0 || source > cd {
+		t.Fatalf("handoff is not sourced (and removed) before the cd guard: %q", cmd)
+	}
+}
+
+// A launch that died before its pane ever sourced the file leaves a private directory behind; the
+// next launch sweeps the stale ones (and only those: ours by name and age, never a fresh one that
+// a concurrent launch is about to use, never anything else in the temp directory).
+func TestStaleLaunchDirectoriesAreSweptAndFreshOnesKept(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	mk := func(name string, age time.Duration) string {
+		dir := filepath.Join(tmp, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "env"), []byte("export X=1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-age)
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale := mk("ao-launch-stale", 3*time.Hour)
+	fresh := mk("ao-launch-fresh", time.Minute)
+	other := mk("something-else", 3*time.Hour)
+	file := filepath.Join(tmp, "ao-launch-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(file, time.Now().Add(-3*time.Hour), time.Now().Add(-3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := proofConfig(t)
+	path, cleanup, err := writeLaunchHandoff(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a stale launch directory was not swept")
+	}
+	for name, p := range map[string]string{"a fresh launch directory": fresh, "an unrelated directory": other, "a plain file": file, "this launch's own file": path} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was removed: %v", name, err)
+		}
 	}
 }
