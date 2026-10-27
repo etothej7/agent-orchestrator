@@ -211,14 +211,14 @@ func processTree(pid int) []int {
 
 // killMachine is the power-loss half of a reboot: every chat host and provider of the
 // given sessions dies with no chance to write anything.
-func killMachine(t *testing.T, dataDir string, sessions ...string) {
+func killMachine(t *testing.T, dataDir string, sig syscall.Signal, sessions ...string) {
 	t.Helper()
 	var all []int
 	for _, session := range sessions {
 		all = append(all, processTree(persistentHostPID(t, dataDir, session))...)
 	}
 	for _, pid := range all {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, sig)
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	for _, pid := range all {
@@ -246,85 +246,138 @@ func (d *daemon) setAutoResume(session, policy string) {
 	d.mustCall("PUT", "/sessions/"+session+"/auto-resume", http.StatusOK, map[string]any{"policy": policy}, nil)
 }
 
-func TestAutoResumeAfterRebootKillingEverything(t *testing.T) {
+// autoResumeFixture is a daemon with one session mid-turn, one idle, and one that must
+// never be resumed (it also carries uncommitted work in its worktree).
+type autoResumeFixture struct {
+	w                     *autoResumeWorld
+	d                     *daemon
+	project               string
+	busy, idle, protected string
+	protectedTree, digest string
+}
+
+func newAutoResumeFixture(t *testing.T) *autoResumeFixture {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("boots real daemons and waits out the resume settle delay")
 	}
 	w := newAutoResumeWorld(t)
 	d := startDaemon(t, w.dataDir)
-	project := seedProject(t, d, "auto-resume")
-
-	busy := w.spawnWorker(t, d, project, "HANG while you work on this")
-	idle := w.spawnWorker(t, d, project, "Say done")
-	protected := w.spawnWorker(t, d, project, "Say done")
-	d.awaitConversation(busy, 30*time.Second, "the busy turn to run", func(s snapshot) bool {
+	f := &autoResumeFixture{w: w, d: d, project: seedProject(t, d, "auto-resume")}
+	f.busy = w.spawnWorker(t, d, f.project, "HANG while you work on this")
+	f.idle = w.spawnWorker(t, d, f.project, "Say done")
+	f.protected = w.spawnWorker(t, d, f.project, "Say done")
+	d.awaitConversation(f.busy, 30*time.Second, "the busy turn to run", func(s snapshot) bool {
 		return len(s.Turns) == 1 && s.Turns[0].State == "running"
 	})
-	for _, id := range []string{idle, protected} {
+	for _, id := range []string{f.idle, f.protected} {
 		d.awaitConversation(id, 30*time.Second, "the idle turn to finish", func(s snapshot) bool {
 			return len(s.Turns) == 1 && s.Turns[0].State == "completed"
 		})
 	}
-	d.setAutoResume(protected, "never")
-	protectedTree := w.worktreeOf(t, protected)
-	if err := os.WriteFile(filepath.Join(protectedTree, "uncommitted.txt"), []byte("do not lose me\n"), 0o600); err != nil {
+	d.setAutoResume(f.protected, "never")
+	f.protectedTree = w.worktreeOf(t, f.protected)
+	if err := os.WriteFile(filepath.Join(f.protectedTree, "uncommitted.txt"), []byte("do not lose me\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	beforeTree := treeDigest(t, protectedTree)
+	f.digest = treeDigest(t, f.protectedTree)
+	return f
+}
 
-	// The machine goes away: the daemon and every host and provider die at once.
-	d.kill()
-	killMachine(t, w.dataDir, busy, idle, protected)
-
-	d2 := startDaemon(t, w.dataDir)
-
-	// The session that was mid-turn comes back by itself, on the SAME provider
-	// conversation (session/resume), and gets exactly one hidden continue turn.
-	d2.awaitLiveController(busy, 120*time.Second)
-	after := d2.awaitConversation(busy, 60*time.Second, "the continue turn to finish", func(s snapshot) bool {
-		turns := continueTurns(s)
-		return len(turns) == 1 && s.Controller != "stopped"
+// assertRecovered checks the outcome every reboot flavour must reach on `d`: the busy
+// session is back on the same provider conversation with ONE hidden continue turn, the
+// idle one is parked and wakes on a message, and the protected one was never touched.
+func (f *autoResumeFixture) assertRecovered(t *testing.T, d *daemon, wantResumes int) {
+	t.Helper()
+	w := f.w
+	d.awaitLiveController(f.busy, 120*time.Second)
+	after := d.awaitConversation(f.busy, 60*time.Second, "the continue turn", func(s snapshot) bool {
+		return len(continueTurns(s)) >= 1
 	})
-	if got := continueTurns(after); len(got) != 1 || got[0].Origin != "automation" {
-		t.Fatalf("continue turns = %+v, want exactly one automation turn\n%s", got, describe(after))
+	time.Sleep(3 * time.Second) // a duplicate would have shown up by now
+	after = d.conversation(f.busy)
+	turns := continueTurns(after)
+	if len(turns) != wantResumes || turns[0].Origin != "automation" {
+		t.Fatalf("continue turns = %+v, want %d automation turn(s)\n%s", turns, wantResumes, describe(after))
 	}
-	if got := len(w.callsFor(busy, "session/resume")); got != 1 {
-		t.Fatalf("provider saw %d session/resume for the busy session, want 1:\n%v", got, w.callsFor(busy, ""))
+	if got := len(w.callsFor(f.busy, "session/resume")); got != wantResumes {
+		t.Fatalf("provider saw %d session/resume for the busy session, want %d:\n%v", got, wantResumes, w.callsFor(f.busy, ""))
 	}
-	if got := len(w.callsFor(busy, "session/new")); got != 1 {
-		t.Fatalf("provider saw %d session/new for the busy session (a fresh conversation?), want only the original: %v", got, w.callsFor(busy, ""))
+	if got := len(w.callsFor(f.busy, "session/new")); got != 1 {
+		t.Fatalf("provider saw %d session/new for the busy session (a fresh conversation?), want only the original: %v", got, w.callsFor(f.busy, ""))
 	}
-
-	// The idle session is parked, not launched: nothing ran for it.
-	parked := d2.awaitConversation(idle, 90*time.Second, "the idle session to be parked", func(s snapshot) bool {
+	parked := d.awaitConversation(f.idle, 90*time.Second, "the idle session to be parked", func(s snapshot) bool {
 		return s.Controller == "hibernated"
 	})
-	if got := len(w.callsFor(idle, "session/resume")); got != 0 {
+	if got := len(w.callsFor(f.idle, "session/resume")); got != 0 {
 		t.Fatalf("an idle session was launched at boot (%d session/resume): %s", got, describe(parked))
 	}
-
-	// Never means never: still stopped, nothing launched, worktree byte-for-byte as it was.
-	time.Sleep(5 * time.Second)
 	var read struct {
 		Session struct {
-			Status       string `json:"status"`
-			IsTerminated bool   `json:"isTerminated"`
+			IsTerminated bool `json:"isTerminated"`
 		} `json:"session"`
 	}
-	d2.mustCall("GET", "/sessions/"+protected, http.StatusOK, nil, &read)
-	if read.Session.IsTerminated || len(w.callsFor(protected, "session/resume")) != 0 {
-		t.Fatalf("a protected session was touched: terminated=%v calls=%v", read.Session.IsTerminated, w.callsFor(protected, ""))
+	d.mustCall("GET", "/sessions/"+f.protected, http.StatusOK, nil, &read)
+	if read.Session.IsTerminated || len(w.callsFor(f.protected, "session/resume")) != 0 {
+		t.Fatalf("a protected session was touched: terminated=%v calls=%v", read.Session.IsTerminated, w.callsFor(f.protected, ""))
 	}
-	if got := treeDigest(t, protectedTree); got != beforeTree {
-		t.Fatalf("a protected session's worktree changed across the reboot:\nbefore:\n%s\nafter:\n%s", beforeTree, got)
+	if got := treeDigest(t, f.protectedTree); got != f.digest {
+		t.Fatalf("a protected session's worktree changed across the reboot:\nbefore:\n%s\nafter:\n%s", f.digest, got)
 	}
-
-	// The parked session wakes on the next message through the ordinary path.
-	send(t, d2, idle, "Say done again", "wake-1")
-	d2.awaitConversation(idle, 60*time.Second, "the woken session to answer", func(s snapshot) bool {
-		return len(s.Turns) == 2 && s.Turns[1].State == "completed"
+	send(t, d, f.idle, "Say done again", fmt.Sprintf("wake-%d", wantResumes))
+	d.awaitConversation(f.idle, 60*time.Second, "the woken session to answer", func(s snapshot) bool {
+		return len(s.Turns) >= 2 && s.Turns[len(s.Turns)-1].State == "completed"
 	})
-	if got := len(w.callsFor(idle, "session/resume")); got != 1 {
+	if got := len(w.callsFor(f.idle, "session/resume")); got != 1 {
 		t.Fatalf("waking the parked session made %d session/resume calls, want 1", got)
 	}
+}
+
+func (f *autoResumeFixture) sessions() []string { return []string{f.busy, f.idle, f.protected} }
+
+// Power loss: the daemon and every host and provider die at once.
+func TestAutoResumeAfterRebootKillingEverything(t *testing.T) {
+	f := newAutoResumeFixture(t)
+	f.d.kill()
+	killMachine(t, f.w.dataDir, syscall.SIGKILL, f.sessions()...)
+	d2 := startDaemon(t, f.w.dataDir)
+	f.assertRecovered(t, d2, 1)
+}
+
+// A graceful quit with the daemon going first leaves the hosts running; the machine
+// then goes down. Nothing wrote "exited", so capture must come from the prior activity.
+func TestAutoResumeAfterGracefulShutdownDaemonFirst(t *testing.T) {
+	f := newAutoResumeFixture(t)
+	f.d.stop()
+	killMachine(t, f.w.dataDir, syscall.SIGTERM, f.sessions()...)
+	d2 := startDaemon(t, f.w.dataDir)
+	f.assertRecovered(t, d2, 1)
+}
+
+// A graceful shutdown where the hosts and providers go first: the still-running daemon
+// records the exits and fails the in-flight turns during its own shutdown window, and
+// the next boot must still bring the session back (and not the one stopped on purpose).
+func TestAutoResumeAfterGracefulShutdownHostsFirst(t *testing.T) {
+	f := newAutoResumeFixture(t)
+	killMachine(t, f.w.dataDir, syscall.SIGTERM, f.sessions()...)
+	// The daemon notices the provider is gone and records the exit; the cut-off turn
+	// may be left running or failed depending on the host kind, and capture covers both.
+	f.d.awaitConversation(f.busy, 30*time.Second, "the daemon to notice the lost host", func(s snapshot) bool {
+		return s.Controller == "stopped"
+	})
+	f.d.stop()
+	d2 := startDaemon(t, f.w.dataDir)
+	f.assertRecovered(t, d2, 1)
+}
+
+// Flapping: the daemon is killed again before the first resume ran. The captured intent
+// is kept, so the session is resumed once and gets one continue turn, not two.
+func TestAutoResumeFlappingRestartsDoNotDuplicate(t *testing.T) {
+	f := newAutoResumeFixture(t)
+	f.d.kill()
+	killMachine(t, f.w.dataDir, syscall.SIGKILL, f.sessions()...)
+	d2 := startDaemon(t, f.w.dataDir)
+	d2.kill() // inside the settle delay: nothing resumed yet
+	d3 := startDaemon(t, f.w.dataDir)
+	f.assertRecovered(t, d3, 1)
 }
