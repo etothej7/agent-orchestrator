@@ -169,8 +169,16 @@ func (m *Manager) parkedByAutoResume(ctx context.Context, id domain.SessionID) b
 
 // clearAutoResumeIntent drops the intent once its session is awake again, so a later
 // ordinary hibernation and wake is not treated as an auto-parked one.
+//
+// Only an intent that still has work or is parked is dropped. A finished one (resumed,
+// failed, abandoned) stays: capture carries its recent-resume timestamps into the next
+// intent, so deleting it would reset the flap guard's memory of this session.
 func (m *Manager) clearAutoResumeIntent(ctx context.Context, id domain.SessionID) {
 	if store, ok := m.store.(resumeIntentStore); ok {
+		intent, found, err := store.GetResumeIntent(ctx, id)
+		if err != nil || !found || (!intent.State.Live() && intent.State != domain.ResumeHibernated) {
+			return
+		}
 		if err := store.DeleteResumeIntent(ctx, id); err != nil {
 			m.logger.Warn("auto-resume: could not clear the parked intent", "sessionID", id, "error", err)
 		}

@@ -268,3 +268,26 @@ func TestAnUnreadableParkedIntentFailsClosedToTheNeverFreshWake(t *testing.T) {
 		t.Fatal("a session with no intent read as parked")
 	}
 }
+
+// A manual resume drops an intent that still has work (or is parked), but keeps a finished
+// one so its recent-resume timestamps survive for the flap guard.
+func TestManualResumeKeepsAFinishedIntentForTheFlapGuard(t *testing.T) {
+	for state, wantKept := range map[domain.ResumeState]bool{
+		domain.ResumePending: false, domain.ResumeResuming: false, domain.ResumeHibernated: false,
+		domain.ResumeResumed: true, domain.ResumeFailed: true, domain.ResumeAbandoned: true,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			m, st, _ := newChatManager(&recordingLauncher{})
+			seedChatResumeSession(st, domain.ActivityExited)
+			recent := []time.Time{time.Now().Add(-5 * time.Minute)}
+			st.intents = map[domain.SessionID]domain.ResumeIntent{"mer-1": {SessionID: "mer-1", State: state, RecentResumes: recent}}
+			if _, err := m.ResumeAgentWithMode(ctx, "mer-1"); err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			got, kept := st.intents["mer-1"]
+			if kept != wantKept || (kept && len(got.RecentResumes) != 1) {
+				t.Fatalf("state %s: kept=%v recentResumes=%d, want kept=%v", state, kept, len(got.RecentResumes), wantKept)
+			}
+		})
+	}
+}
