@@ -285,6 +285,9 @@ func (m *Service) Add(ctx context.Context, in AddInput) (Project, error) {
 		}
 		projectConfig = *in.Config
 	}
+	if err := confineAgentMerge(ctx, false, &projectConfig); err != nil {
+		return Project{}, err
+	}
 
 	registeredAt := time.Now()
 	row := domain.ProjectRecord{
@@ -728,6 +731,9 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
+	if err := confineAgentMerge(ctx, row.Config.AgentMayMerge, &in.Config); err != nil {
+		return Project{}, err
+	}
 	updated, err := m.store.UpdateProjectSettings(ctx, string(id), inDisplayName, in.Config)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_SETTINGS_UPDATE_FAILED", "Failed to update project settings")
@@ -763,6 +769,9 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	}
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+	}
+	if err := confineAgentMerge(ctx, row.Config.AgentMayMerge, &in.Config); err != nil {
+		return Project{}, err
 	}
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
