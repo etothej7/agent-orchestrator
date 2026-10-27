@@ -1012,6 +1012,12 @@ func Run(buildVersion string) error {
 	identityObs := newIdentityObservations(log, procLookup, peerLookup)
 	guardConfig := routeGuardConfig(store)
 	guardConfig.Observer = guardObserver{rec: identityObs}
+	// Rolling re-proof: idle sessions without an identity proof are relaunched (coordinator
+	// first); a session refused for lack of one is moved to the front of that queue.
+	if reproofSvc := newReproof(log, wiredSessMgr, store); reproofSvc != nil {
+		guardConfig.Reproof = reproofSvc
+		go reproofSvc.Run(ctx)
+	}
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		UICapability: uiCapabilityVerifier,
 		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store).WithAncestry(
