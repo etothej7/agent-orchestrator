@@ -62,6 +62,12 @@ func (m *Manager) captureResumeIntent(ctx context.Context, rec domain.SessionRec
 		(rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil) {
 		return
 	}
+	// An untouched chat (a reserved provider id the provider never persisted, and no
+	// conversation activity) has nothing to resume. An unattended resume would fail it
+	// rather than start fresh, and a failure notice for an empty chat is noise.
+	if m.providerNeverPersisted(ctx, rec) {
+		return
+	}
 	window := capture.window
 	prior := rec.Activity.State
 	ruleA := prior != domain.ActivityExited

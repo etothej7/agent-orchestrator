@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,8 @@ func TestKillOfAProtectedWorkspaceProjectKeepsEveryRepo(t *testing.T) {
 		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api"},
 	}
 	st.protected = map[domain.SessionID]bool{"mer-1": true}
+	closer := &fakeShellTerminalCloser{}
+	m.SetShellTerminalCloser(closer)
 
 	freed, err := m.Kill(ctx, "mer-1")
 	if err != nil || freed {
@@ -124,6 +127,26 @@ func TestKillOfAProtectedWorkspaceProjectKeepsEveryRepo(t *testing.T) {
 	}
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("the protected session was not terminated")
+	}
+	// The per-repo rows stay as non-restorable inventory, so the unlock can reclaim them.
+	if got := len(st.worktrees["mer-1"]); got != 2 {
+		t.Fatalf("the protected workspace project's inventory rows were deleted: %d left, want 2", got)
+	}
+	if closer.ended == nil || len(closer.began) != 1 {
+		t.Fatalf("scoped shell terminals were not shut with the protected session: began=%v ended=%v", closer.began, closer.ended)
+	}
+
+	// While protected, cleanup skips it; after the unlock it reclaims every repo.
+	if res, err := m.Cleanup(ctx, "mer"); err != nil || len(res.Cleaned) != 0 || len(ws.calls) != 0 {
+		t.Fatalf("cleanup touched a protected session: %+v err=%v calls=%v", res, err, ws.calls)
+	}
+	delete(st.protected, "mer-1")
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil || len(res.Cleaned) != 1 {
+		t.Fatalf("cleanup after the unlock = %+v err=%v, want the session reclaimed", res, err)
+	}
+	if want := "Destroy:api,Destroy:__root__"; strings.Join(ws.calls, ",") != want {
+		t.Fatalf("destroy order after the unlock = %v, want %s", ws.calls, want)
 	}
 }
 
@@ -163,5 +186,52 @@ func TestAnUnreadablePolicyProtectsTheSession(t *testing.T) {
 	}
 	if freed, err := m.Kill(ctx, rec.ID); err != nil || freed || ws.destroyed != 0 || markerRan(rec) {
 		t.Fatalf("an unreadable policy let a kill remove the worktree: freed=%v err=%v destroyed=%d", freed, err, ws.destroyed)
+	}
+}
+
+// An unreadable policy fails closed and is logged once per session.
+type failingPolicyStore struct {
+	*fakeStore
+	reads int
+}
+
+func (s *failingPolicyStore) AutoResumePolicy(context.Context, domain.SessionID) (domain.AutoResumePolicy, error) {
+	s.reads++
+	return domain.AutoResumeNever, errors.New("policy table unreadable")
+}
+
+func TestSessionProtectedLogsAnUnreadablePolicyOncePerSession(t *testing.T) {
+	var logs strings.Builder
+	m, st, _, _ := newManager()
+	m.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	m.store = &failingPolicyStore{fakeStore: st}
+	for range 3 {
+		if !m.SessionProtected(ctx, "mer-1") {
+			t.Fatal("an unreadable policy must protect")
+		}
+	}
+	if got := strings.Count(logs.String(), "policy unreadable"); got != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", got, logs.String())
+	}
+	m.SessionProtected(ctx, "mer-2")
+	if got := strings.Count(logs.String(), "policy unreadable"); got != 2 {
+		t.Fatalf("a second session was not logged: %d", got)
+	}
+}
+
+// The shutdown save path force-removes worktrees, so it must skip a protected session.
+func TestSaveAndTeardownAllSkipsAProtectedSession(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer",
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+	st.protected = map[domain.SessionID]bool{"mer-1": true}
+	if err := m.SaveAndTeardownAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.calls) != 0 || ws.destroyed != 0 {
+		t.Fatalf("a protected worktree was captured or force-removed: calls=%v destroyed=%d", ws.calls, ws.destroyed)
 	}
 }

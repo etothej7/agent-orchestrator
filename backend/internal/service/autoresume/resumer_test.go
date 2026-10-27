@@ -334,7 +334,8 @@ func TestOutcomesOfAResumeAttempt(t *testing.T) {
 		{"already running counts as resumed", sessionmanager.ErrAgentNotExited, domain.ResumeResumed, 1, ""},
 		{"sign-in needs a person: no retry", ports.ErrChatAuthRequired, domain.ResumeFailed, 1, string(sessionmanager.ResumeReasonSignIn)},
 		{"unresumable history needs a person", sessionmanager.ErrNotResumable, domain.ResumeFailed, 1, string(sessionmanager.ResumeReasonHistory)},
-		{"a missing provider session needs a person", ports.ErrChatResumeFailed, domain.ResumeFailed, 1, string(sessionmanager.ResumeReasonHistory)},
+		{"a provider resume failure is retried twice then reported", ports.ErrChatResumeFailed, domain.ResumeFailed, 3, string(sessionmanager.ResumeReasonHistory)},
+		{"unsettled provider history is retried twice then reported", ports.ErrChatHistoryUnsettled, domain.ResumeFailed, 3, string(sessionmanager.ResumeReasonHistory)},
 		{"no workspace is permanent", sessionmanager.ErrIncompleteHandle, domain.ResumeAbandoned, 1, ReasonWorktreeMissing},
 		{"a missing worktree is permanent and named", sessionmanager.ErrWorkspaceMissing, domain.ResumeAbandoned, 1, ReasonWorktreeMissing},
 		{"terminated is permanent", sessionmanager.ErrTerminated, domain.ResumeAbandoned, 1, string(sessionmanager.ResumeReasonUnresumable)},
@@ -343,7 +344,10 @@ func TestOutcomesOfAResumeAttempt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld()
 			w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
-			w.resumeErrs["w"] = []error{fmt.Errorf("resume agent w: %w", tc.err)}
+			// The same failure on every attempt the case expects.
+			for range tc.wantCalls {
+				w.resumeErrs["w"] = append(w.resumeErrs["w"], fmt.Errorf("resume agent w: %w", tc.err))
+			}
 			if err := w.resumer(Config{}).Run(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -451,7 +455,7 @@ func TestAnIntentLeftResumingByACrashIsResumedAgain(t *testing.T) {
 	}
 }
 
-func TestIdleSessionsArePausedOnlyOnProofAndOtherwiseResumedActively(t *testing.T) {
+func TestIdleSessionsAreParkedUnlessTheirConversationIsProvenMissing(t *testing.T) {
 	w := newWorld()
 	w.add("proven", domain.KindWorker, "repo", domain.ResumeIdle, domain.ActivityIdle, 0)
 	w.add("gone", domain.KindWorker, "repo", domain.ResumeIdle, domain.ActivityIdle, 0)
@@ -469,19 +473,18 @@ func TestIdleSessionsArePausedOnlyOnProofAndOtherwiseResumedActively(t *testing.
 	if w.state("proven") != domain.ResumeHibernated || slices.Contains(w.resumeCalls, "proven") {
 		t.Fatalf("a session with proven history must be parked, not launched: state=%s calls=%v", w.state("proven"), w.resumeCalls)
 	}
+	if w.state("noprobe") != domain.ResumeHibernated || !slices.Contains(w.parkCalls, "noprobe") || slices.Contains(w.resumeCalls, "noprobe") {
+		t.Fatalf("an idle session on a harness with no probe must be parked, not launched: state=%s calls=%v", w.state("noprobe"), w.resumeCalls)
+	}
 	if w.state("gone") != domain.ResumeFailed || slices.Contains(w.resumeCalls, "gone") || slices.Contains(w.parkCalls, "gone") {
 		t.Fatalf("a missing conversation must fail, never park or launch: state=%s", w.state("gone"))
 	}
 	if want := "gone|" + string(sessionmanager.ResumeReasonHistory) + "|boot-1"; !slices.Contains(w.notices, want) {
 		t.Fatalf("notices = %v, want %q", w.notices, want)
 	}
-	if slices.Contains(w.parkCalls, "noprobe") {
-		t.Fatal("a session with unproven history was parked")
-	}
-	for _, id := range []domain.SessionID{"noprobe", "contended"} {
-		if w.state(id) != domain.ResumeResumed || !slices.Contains(w.resumeCalls, id) {
-			t.Fatalf("%s: unprovable history must resume actively (strict), state=%s calls=%v", id, w.state(id), w.resumeCalls)
-		}
+	// Parking that never succeeds falls back to an active (never-fresh) resume.
+	if w.state("contended") != domain.ResumeResumed || !slices.Contains(w.resumeCalls, "contended") {
+		t.Fatalf("contended: a park that cannot be written must resume actively, state=%s calls=%v", w.state("contended"), w.resumeCalls)
 	}
 }
 
@@ -712,5 +715,67 @@ func TestLosingThePromotionRaceStillResumesTheSession(t *testing.T) {
 	}
 	if w.state("w") != domain.ResumeResumed {
 		t.Fatalf("state=%s, want resumed after losing the promotion race", w.state("w"))
+	}
+}
+
+// A provider resume failure that clears on a retry ends resumed with no notice; the
+// retries are the bounded backoff steps, and a failure that also says sign-in is
+// reported at once (it is classified before the limited retry).
+func TestAProviderResumeFailureThatClearsIsResumedSilently(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	w.resumeErrs["w"] = []error{ports.ErrChatResumeFailed, ports.ErrChatHistoryUnsettled}
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w.state("w") != domain.ResumeResumed || len(w.resumeCalls) != 3 || len(w.notices) != 0 {
+		t.Fatalf("state=%s calls=%d notices=%v; want resumed on the 3rd attempt, silent", w.state("w"), len(w.resumeCalls), w.notices)
+	}
+
+	w2 := newWorld()
+	w2.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	w2.resumeErrs["w"] = []error{fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, ports.ErrChatAuthRequired)}
+	if err := w2.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w2.resumeCalls) != 1 || w2.state("w") != domain.ResumeFailed || len(w2.notices) != 1 {
+		t.Fatalf("a sign-in failure was retried: calls=%d state=%s notices=%v", len(w2.resumeCalls), w2.state("w"), w2.notices)
+	}
+}
+
+// What the resumer does for each harness class: an adapter whose probe says the
+// conversation is there, one whose probe says it is gone, and one with no probe (or a
+// probe that failed). Idle sessions park unless the conversation is proven gone;
+// working sessions are always resumed (never fresh), and a missing conversation on a
+// working session surfaces from the resume itself.
+func TestPerHarnessClassIdleAndWorkingDecisions(t *testing.T) {
+	cases := []struct {
+		class         string
+		proof         sessionmanager.NativeHistoryProof
+		idleState     domain.ResumeState
+		idleNotices   int
+		workingState  domain.ResumeState
+		workingCalled bool
+	}{
+		{"probe present", sessionmanager.NativeHistoryPresent, domain.ResumeHibernated, 0, domain.ResumeResumed, true},
+		{"probe says missing", sessionmanager.NativeHistoryMissing, domain.ResumeFailed, 1, domain.ResumeResumed, true},
+		{"no probe or probe failed", sessionmanager.NativeHistoryUnproven, domain.ResumeHibernated, 0, domain.ResumeResumed, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.class, func(t *testing.T) {
+			w := newWorld()
+			w.add("idle", domain.KindWorker, "repo", domain.ResumeIdle, domain.ActivityIdle, 0)
+			w.add("working", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, time.Second)
+			w.proof["idle"], w.parkOK["idle"] = tc.proof, true
+			if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if w.state("idle") != tc.idleState || len(w.notices) != tc.idleNotices || slices.Contains(w.resumeCalls, "idle") {
+				t.Fatalf("idle: state=%s notices=%v resumeCalls=%v, want %s with %d notice(s) and no launch", w.state("idle"), w.notices, w.resumeCalls, tc.idleState, tc.idleNotices)
+			}
+			if w.state("working") != tc.workingState || slices.Contains(w.resumeCalls, "working") != tc.workingCalled {
+				t.Fatalf("working: state=%s calls=%v", w.state("working"), w.resumeCalls)
+			}
+		})
 	}
 }

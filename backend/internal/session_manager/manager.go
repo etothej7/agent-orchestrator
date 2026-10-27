@@ -439,7 +439,9 @@ type Manager struct {
 	// failed transiently; their last attempt may capture a resume intent minutes in.
 	startupRetries sync.WaitGroup
 	// workspaceExistsFn replaces the on-disk worktree check in tests.
-	workspaceExistsFn              func(string) bool
+	workspaceExistsFn func(string) bool
+	// policyErrLogged remembers sessions whose unreadable policy was already logged.
+	policyErrLogged                sync.Map
 	startupBackgroundReconcileOnce sync.Once
 	// A cold Chat resume must not launch a new persistent host while startup's
 	// orphan-host sweep is using its earlier snapshot of sleeping sessions.
@@ -2614,7 +2616,18 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	// before the worktree goes), the workspace-project rows and workspace.Destroy.
 	if ws.Path != "" && m.SessionProtected(ctx, id) {
 		m.logger.Info("kill: protected session terminated; its worktree is preserved", "sessionID", id)
-		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, true)
+		// Shell terminals scoped to the session still close with it (they must not
+		// linger on a terminated session), though the worktree stays. The gate is only
+		// held for the termination write.
+		if release, err := m.beginShellTerminalTeardown(ctx, id); err != nil {
+			m.logger.Warn("kill: protected session's shell terminals could not be confirmed closed", "sessionID", id, "error", err)
+		} else if release != nil {
+			defer release()
+		}
+		// A workspace project's per-repo rows stay as non-restorable inventory, exactly
+		// as for any preserved workspace project, so `ao session cleanup` can reclaim
+		// the repos after the unlock.
+		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, !workspaceProject)
 	}
 	var releaseTerminals func()
 	defer func() {
@@ -3270,7 +3283,18 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
 			return nil
 		}
-		_, err = m.ResumeAgentWithMode(ctx, id)
+		parkedByReboot := m.parkedByAutoResume(ctx, id)
+		if parkedByReboot {
+			// A session auto-resume parked at boot wakes on the saved provider
+			// conversation or not at all: never a fresh start in its place, even for a
+			// conversation AO can prove never persisted.
+			_, err = m.resumeAgent(ctx, id, resumeOptions{neverFresh: true})
+			if err == nil {
+				m.clearAutoResumeIntent(ctx, id)
+			}
+		} else {
+			_, err = m.ResumeAgentWithMode(ctx, id)
+		}
 		if errors.Is(err, ErrResumeInProgress) {
 			m.agentOpMu.Lock()
 			operation = m.agentOperations[id]
@@ -3957,6 +3981,11 @@ func (m *Manager) SaveAndTeardownAll(ctx context.Context) error {
 			continue
 		}
 		if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
+			continue
+		}
+		// ForceDestroy below must never reach a protected session's worktree.
+		if m.SessionProtected(ctx, rec.ID) {
+			m.logger.Info("save-teardown-all: protected session skipped; its worktree is preserved", "sessionID", rec.ID)
 			continue
 		}
 		if err := m.saveAndTeardownOne(ctx, rec); err != nil {

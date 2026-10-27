@@ -78,6 +78,9 @@ type Config struct {
 	// number of attempts per intent.
 	Backoff     []time.Duration
 	MaxAttempts int
+	// LimitedAttempts is the number of attempts (so LimitedAttempts-1 retries) for a
+	// provider resume or history failure that may be transient.
+	LimitedAttempts int
 	// MaxResumes successful resumes of one session within ResumeWindow is the most
 	// the flap guard allows.
 	MaxResumes   int
@@ -121,6 +124,7 @@ func (c Config) withDefaults() Config {
 		c.Backoff = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute}
 	}
 	setInt(&c.MaxAttempts, 5)
+	setInt(&c.LimitedAttempts, 3)
 	setInt(&c.MaxResumes, 3)
 	setDuration(&c.ResumeWindow, 30*time.Minute)
 	setInt(&c.ProbeConcurrency, 3)
@@ -347,9 +351,11 @@ func (r *Resumer) parkIdle(ctx context.Context, live []domain.ResumeIntent) {
 	wg.Wait()
 }
 
-// parkOne parks one idle session once its saved conversation is proven present.
-// Anything short of proof resumes it actively instead, which fails safe: a missing
-// conversation ends in a notice, never in a fresh start.
+// parkOne parks one idle session unless its saved conversation is proven missing.
+// A conversation the adapter positively reports gone fails with one notice; anything
+// else (proven present, or not provable) parks, because the wake of a parked session
+// never starts fresh. Contention that never clears falls back to an active resume,
+// which is also never fresh.
 func (r *Resumer) parkOne(ctx context.Context, intent domain.ResumeIntent) {
 	if why := r.obsolete(ctx, intent.SessionID); why != "" {
 		r.settle(ctx, &intent, domain.ResumeAbandoned, why)
@@ -359,7 +365,11 @@ func (r *Resumer) parkOne(ctx context.Context, intent domain.ResumeIntent) {
 	case sessionmanager.NativeHistoryMissing:
 		r.fail(ctx, &intent, domain.ResumeFailed, string(sessionmanager.ResumeReasonHistory))
 		return
-	case sessionmanager.NativeHistoryPresent:
+	default:
+		// Present, or unproven (the harness has no history probe, the probe failed, or
+		// there is no handle to probe): park either way. Launching an idle provider at
+		// boot buys nothing, and the wake of a parked session is never-fresh, so a
+		// conversation that turns out to be gone fails the wake instead of starting over.
 		for range 3 {
 			parked, err := r.manager.ParkResumeSession(ctx, intent.SessionID)
 			if err != nil {
@@ -560,6 +570,12 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 		r.settle(ctx, intent, domain.ResumeAbandoned, "refused")
 	case sessionmanager.ResumeFailureNeedsPerson:
 		r.fail(ctx, intent, domain.ResumeFailed, string(sessionmanager.ResumeFailureReason(err)))
+	case sessionmanager.ResumeFailureLimited:
+		if intent.Attempts >= r.cfg.LimitedAttempts {
+			r.fail(ctx, intent, domain.ResumeFailed, string(sessionmanager.ResumeFailureReason(err)))
+			return
+		}
+		r.retryLater(ctx, intent, now)
 	case sessionmanager.ResumeFailurePermanent:
 		reason := string(sessionmanager.ResumeReasonUnresumable)
 		if errors.Is(err, sessionmanager.ErrIncompleteHandle) || errors.Is(err, sessionmanager.ErrWorkspaceMissing) {
@@ -571,11 +587,16 @@ func (r *Resumer) finishAttempt(ctx context.Context, intent *domain.ResumeIntent
 			r.fail(ctx, intent, domain.ResumeFailed, string(sessionmanager.ResumeReasonUnresumable))
 			return
 		}
-		wait := r.cfg.Backoff[min(intent.Attempts-1, len(r.cfg.Backoff)-1)]
-		at := now.Add(wait)
-		intent.State, intent.NextAttemptAt, intent.LastError = domain.ResumePending, &at, "will retry"
-		r.save(ctx, intent)
+		r.retryLater(ctx, intent, now)
 	}
+}
+
+// retryLater puts an intent back to pending with the next backoff step.
+func (r *Resumer) retryLater(ctx context.Context, intent *domain.ResumeIntent, now time.Time) {
+	wait := r.cfg.Backoff[min(intent.Attempts-1, len(r.cfg.Backoff)-1)]
+	at := now.Add(wait)
+	intent.State, intent.NextAttemptAt, intent.LastError = domain.ResumePending, &at, "will retry"
+	r.save(ctx, intent)
 }
 
 // needsContinue: a resumed session that was mid-turn (a human prompt the provider

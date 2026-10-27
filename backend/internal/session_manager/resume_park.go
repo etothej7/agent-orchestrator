@@ -144,3 +144,29 @@ func (m *Manager) WaitStartupChecks(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+// resumeIntentStore is the optional part of the store that keeps resume intents.
+type resumeIntentStore interface {
+	GetResumeIntent(ctx context.Context, id domain.SessionID) (domain.ResumeIntent, bool, error)
+	DeleteResumeIntent(ctx context.Context, id domain.SessionID) error
+}
+
+// parkedByAutoResume reports whether boot auto-resume parked this session asleep.
+func (m *Manager) parkedByAutoResume(ctx context.Context, id domain.SessionID) bool {
+	store, ok := m.store.(resumeIntentStore)
+	if !ok {
+		return false
+	}
+	intent, found, err := store.GetResumeIntent(ctx, id)
+	return err == nil && found && intent.State == domain.ResumeHibernated
+}
+
+// clearAutoResumeIntent drops the intent once its session is awake again, so a later
+// ordinary hibernation and wake is not treated as an auto-parked one.
+func (m *Manager) clearAutoResumeIntent(ctx context.Context, id domain.SessionID) {
+	if store, ok := m.store.(resumeIntentStore); ok {
+		if err := store.DeleteResumeIntent(ctx, id); err != nil {
+			m.logger.Warn("auto-resume: could not clear the parked intent", "sessionID", id, "error", err)
+		}
+	}
+}

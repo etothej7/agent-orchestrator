@@ -27,6 +27,11 @@ const (
 	ResumeFailureNeedsPerson
 	// ResumeFailurePermanent means the session cannot be resumed at all.
 	ResumeFailurePermanent
+	// ResumeFailureLimited is a provider-side resume or history failure that may be
+	// transient (a provider that was slow to come up, a thread that had not settled) or
+	// may be a conversation that is simply gone. Retried a couple of times, never fresh,
+	// then reported.
+	ResumeFailureLimited
 	// ResumeFailureRefused means AO must not resume it on its own (protected, or
 	// stopped on purpose). Silent: a person chose this, so there is nothing to report.
 	ResumeFailureRefused
@@ -60,6 +65,10 @@ func ClassifyResumeFailure(err error) ResumeFailure {
 	case errors.Is(err, ErrTerminated), errors.Is(err, ErrNotFound), errors.Is(err, ErrIncompleteHandle), errors.Is(err, ErrWorkspaceMissing),
 		errors.Is(err, ports.ErrSessionNotFound), errors.Is(err, ports.ErrChatUnsupported):
 		return ResumeFailurePermanent
+	case errors.Is(err, ports.ErrChatResumeFailed), errors.Is(err, ports.ErrChatHistoryUnsettled):
+		// After needsPerson: sign-in, account, binary and incompatible-driver failures
+		// that also wrap ErrChatResumeFailed are never retried.
+		return ResumeFailureLimited
 	case errors.Is(err, ErrResumeInProgress), errors.Is(err, ErrOperationInProgress),
 		errors.Is(err, ErrInterfaceTransitionInProgress),
 		errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled),
@@ -75,8 +84,8 @@ func needsPerson(err error) bool {
 	return errors.Is(err, ports.ErrChatAuthRequired) || errors.Is(err, ports.ErrAgentAccountChanged) ||
 		errors.Is(err, ports.ErrAgentBinaryNotFound) || errors.Is(err, ports.ErrChatDriverIncompatible) ||
 		errors.Is(err, ErrNotResumable) || errors.Is(err, ports.ErrNativeHistoryUnavailable) ||
-		errors.Is(err, ports.ErrChatHistoryUnavailable) || errors.Is(err, ports.ErrChatHistoryUnsettled) ||
-		errors.Is(err, ports.ErrChatHistoryLoadFailed) || errors.Is(err, ports.ErrChatResumeFailed)
+		errors.Is(err, ports.ErrChatHistoryUnavailable) ||
+		errors.Is(err, ports.ErrChatHistoryLoadFailed)
 }
 
 // ResumeFailureReason is the public phrase for a failure that needs a person. Any
