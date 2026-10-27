@@ -27,6 +27,8 @@ type ConfirmDialogProps = {
 	/** Defaults to "Cancel"; reversible actions can soften it to "No". */
 	cancelLabel?: string;
 	destructive?: boolean;
+	/** Which button takes focus when the dialog opens; destructive confirms always start on Cancel. */
+	initialFocus?: "confirm" | "cancel";
 	/** Options shown between the description and the buttons. */
 	children?: React.ReactNode;
 	busy?: boolean;
@@ -48,6 +50,7 @@ export function ConfirmDialog({
 	confirmAriaLabel,
 	cancelLabel,
 	destructive,
+	initialFocus = "confirm",
 	children,
 	busy,
 	confirmDisabled,
@@ -77,8 +80,8 @@ export function ConfirmDialog({
 				// its own clicks. Radix still dismisses on the native pointerdown.
 				onClick={(event) => event.stopPropagation()}
 				onOpenAutoFocus={(event) => {
-					// Destructive confirms start on the safe choice, not the close X.
-					const target = destructive ? cancelRef.current : confirmRef.current;
+					// Destructive confirms (and any that asks for it) start on the safe choice, not the close X.
+					const target = destructive || initialFocus === "cancel" ? cancelRef.current : confirmRef.current;
 					if (!target) return;
 					event.preventDefault();
 					target.focus();

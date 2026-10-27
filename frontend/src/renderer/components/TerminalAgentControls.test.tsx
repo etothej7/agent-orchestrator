@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { apiClient } from "../lib/api-client";
+import { apiClient, setApiBaseUrl } from "../lib/api-client";
 import { sessionAutoResumeQueryKey } from "../hooks/useSessionAutoResume";
 import { useUiStore } from "../stores/ui-store";
 import { useConversationAudienceStore } from "../stores/conversation-audience-store";
@@ -87,6 +87,43 @@ it("does not offer it for a remote host's session even when it reads never", () 
 it("does not offer it before the policy is known", () => {
 	mount(worker);
 	expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
+});
+
+it("opens on Cancel, so a repeated Enter or Space cannot confirm, and shows the session id beside the title", async () => {
+	const put = putAutoResume();
+	mount(worker, { autoResume: "never" });
+	await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
+	await userEvent.click(await screen.findByRole("menuitem", { name: "Allow automatic resume…" }));
+	const dialog = await screen.findByRole("dialog", { name: "Allow automatic resume for Fix the bug?" });
+	expect(dialog).toHaveTextContent("Session ID: w-1");
+	await vi.waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+	await userEvent.keyboard("{Enter}");
+	expect(put).not.toHaveBeenCalled();
+	expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("reads the policy once for several menus and does not refetch on window focus", async () => {
+	setApiBaseUrl("http://127.0.0.1:9");
+	try {
+		const get = vi.spyOn(apiClient, "GET").mockResolvedValue({ data: { sessionId: "w-1", policy: "never" }, response: { status: 200 } } as never);
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const view = (
+			<QueryClientProvider client={client}>
+				<TooltipProvider>
+					<SessionTabMenu session={worker} blocked={false} switchTarget="tui" />
+				</TooltipProvider>
+			</QueryClientProvider>
+		);
+		const first = render(view);
+		await screen.findByRole("button", { name: "Session actions" });
+		first.unmount();
+		render(view);
+		await screen.findByRole("button", { name: "Session actions" });
+		window.dispatchEvent(new Event("focus"));
+		expect(get).toHaveBeenCalledTimes(1);
+	} finally {
+		setApiBaseUrl(null);
+	}
 });
 
 it("asks first, names the session and what allowing means, and sends nothing on cancel", async () => {

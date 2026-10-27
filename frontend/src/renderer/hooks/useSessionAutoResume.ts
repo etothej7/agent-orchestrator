@@ -10,6 +10,9 @@ export function useSessionAutoResumePolicy(sessionId: string, enabled = true) {
 	return useQuery({
 		queryKey: sessionAutoResumeQueryKey(sessionId),
 		enabled: enabled && hasTrustedApiBaseUrl(),
+		// Every session tab menu asks; the policy changes rarely and the lift refreshes it itself.
+		staleTime: 30_000,
+		refetchOnWindowFocus: false,
 		queryFn: async (): Promise<AutoResumePolicy> => {
 			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/auto-resume", {
 				params: { path: { sessionId } },

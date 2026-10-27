@@ -26,6 +26,9 @@ export function AllowAutoResumeDialog({
 			busy={allow.isPending}
 			confirmLabel={t("session.allowAutoResumeConfirm")}
 			description={t("session.allowAutoResumeBody", { name: sessionName })}
+			// Titles repeat (several "Main conversation", the repo orchestrators), so the id names the session exactly.
+			// Cancel takes the first focus: the menu item opens on Enter/Space, and a repeated key press must not confirm.
+			initialFocus="cancel"
 			error={allow.isError ? allow.error.message || t("session.allowAutoResumeFailed") : null}
 			onConfirm={() =>
 				allow.mutate(undefined, {
@@ -41,6 +44,8 @@ export function AllowAutoResumeDialog({
 			}}
 			open={open}
 			title={t("session.allowAutoResumeTitle", { name: sessionName })}
-		/>
+		>
+			<p className="font-mono text-caption leading-4 text-settings-muted">{t("session.allowAutoResumeSessionId", { id: sessionId })}</p>
+		</ConfirmDialog>
 	);
 }

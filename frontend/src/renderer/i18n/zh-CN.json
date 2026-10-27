@@ -3534,5 +3534,6 @@
 	"session.allowAutoResumeBody": "{{name}} is protected: AO will not resume it, replace it or tear it down on its own. If you allow it, AO may resume it after a restart, replace it, and tear it down on its own again.",
 	"session.allowAutoResumeConfirm": "Allow",
 	"session.allowAutoResumeDone": "Automatic resume allowed",
-	"session.allowAutoResumeFailed": "Couldn’t allow automatic resume"
+	"session.allowAutoResumeFailed": "Couldn’t allow automatic resume",
+	"session.allowAutoResumeSessionId": "Session ID: {{id}}"
 }
