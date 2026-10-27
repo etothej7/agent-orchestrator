@@ -355,9 +355,14 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 
-	launchCmd := buildLaunchCommand(cfg)
+	handoff, cleanupHandoff, err := writeLaunchHandoff(cfg)
+	if err != nil {
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
+	}
+	launchCmd := buildLaunchCommandWithHandoff(cfg, handoff)
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
 	if _, err := r.run(ctx, args...); err != nil {
+		cleanupHandoff()
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
 			fmt.Errorf("tmux runtime: create session %s: %w", id, err),
 			ports.RuntimeHandle{ID: id},
@@ -438,8 +443,13 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 		return ports.RuntimeHandle{}, err
 	}
 
-	launchCmd := buildLaunchCommand(cfg)
+	handoff, cleanupHandoff, err := writeLaunchHandoff(cfg)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	launchCmd := buildLaunchCommandWithHandoff(cfg, handoff)
 	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
+		cleanupHandoff()
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
 	alive, err := r.IsAlive(ctx, handle)
@@ -1653,6 +1663,14 @@ func shellQuote(s string) string {
 // PATH from cfg.Env is exported last, after all other keys, so an explicit
 // override takes effect.
 func buildLaunchCommand(cfg ports.RuntimeConfig) string {
+	return buildLaunchCommandWithHandoff(cfg, "")
+}
+
+// buildLaunchCommandWithHandoff builds the pane's shell command. Private variables
+// (privateEnvKeys) are never exported inline: when handoff names a file, the pane sources it
+// right after the cd guard and removes its directory, so they exist only in the pane's
+// environment. A pane that cannot read the file exits rather than run without them.
+func buildLaunchCommandWithHandoff(cfg ports.RuntimeConfig, handoff string) string {
 	path := cfg.Env["PATH"]
 	if path == "" {
 		path = getenv("PATH")
@@ -1662,6 +1680,13 @@ func buildLaunchCommand(cfg ports.RuntimeConfig) string {
 	b.WriteString("cd ")
 	b.WriteString(shellQuote(cfg.WorkspacePath))
 	b.WriteString(" || exit; ")
+	if handoff != "" {
+		b.WriteString(". ")
+		b.WriteString(shellQuote(handoff))
+		b.WriteString(" || exit; rm -rf ")
+		b.WriteString(shellQuote(filepath.Dir(handoff)))
+		b.WriteString("; ")
+	}
 	if _, configured := cfg.Env["NO_COLOR"]; !configured {
 		// The daemon may be launched from another agent or CI environment that
 		// sets NO_COLOR for its own captured output. Do not leak that ambient
@@ -1670,7 +1695,7 @@ func buildLaunchCommand(cfg ports.RuntimeConfig) string {
 		b.WriteString("unset NO_COLOR; ")
 	}
 	for _, key := range sortedKeys(cfg.Env) {
-		if key == "PATH" || key == "COLORTERM" {
+		if key == "PATH" || key == "COLORTERM" || isPrivateEnvKey(key) {
 			continue
 		}
 		b.WriteString("export ")

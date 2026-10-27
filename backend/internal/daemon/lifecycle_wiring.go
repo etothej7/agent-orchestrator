@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/artifactversions"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	activityobserver "github.com/aoagents/agent-orchestrator/backend/internal/observe/activity"
 	artifactsobserver "github.com/aoagents/agent-orchestrator/backend/internal/observe/artifacts"
@@ -326,12 +327,14 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Preview:             previewLifecycle,
 		Browser:             browserLifecycle,
 		BrowserCapabilities: browserCapabilities,
-		DataDir:             cfg.DataDir,
-		RunFilePath:         cfg.RunFilePath,
-		BackgroundContext:   ctx,
-		Logger:              log,
-		ReconcileWorkers:    startupReconcileWorkers,
-		CodexOperationGate:  codexOperationGate,
+		// Every launch and relaunch gives the session a new identity proof (ED8).
+		Identity:           identity.NewIssuer(store, nil),
+		DataDir:            cfg.DataDir,
+		RunFilePath:        cfg.RunFilePath,
+		BackgroundContext:  ctx,
+		Logger:             log,
+		ReconcileWorkers:   startupReconcileWorkers,
+		CodexOperationGate: codexOperationGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)

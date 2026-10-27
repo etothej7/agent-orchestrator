@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	coordinationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
@@ -390,6 +391,7 @@ type Manager struct {
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
 	browserCapabilities         BrowserCapabilityIssuer
+	proofs                      ProofIssuer
 	agentAccounts               ports.AgentAccountLaunchEnv
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
@@ -708,6 +710,12 @@ type BrowserLifecycle interface {
 	DestroySession(ctx context.Context, id domain.SessionID) error
 }
 
+// ProofIssuer gives a session its identity proof (package identity). The daemon keeps only
+// the proof's hash; the plain proof goes into the session's environment at launch.
+type ProofIssuer interface {
+	Issue(ctx context.Context, id domain.SessionID) (string, error)
+}
+
 // BrowserCapabilityIssuer mints the split capability injected into a worker
 // and persisted as a one-way verifier on its session row.
 type BrowserCapabilityIssuer interface {
@@ -768,6 +776,9 @@ type Deps struct {
 	Preview             PreviewLifecycle
 	Browser             BrowserLifecycle
 	BrowserCapabilities BrowserCapabilityIssuer
+	// Identity issues each launched session's identity proof (AO_SESSION_PROOF). Nil in
+	// embedders that do not authenticate callers: no proof is injected.
+	Identity ProofIssuer
 	// DataDir owns durable attachment storage and is exported to spawned agents
 	// as AO_DATA_DIR so their hook commands can open the same store.
 	DataDir string
@@ -833,6 +844,7 @@ func New(d Deps) *Manager {
 		preview:                        d.Preview,
 		browser:                        d.Browser,
 		browserCapabilities:            d.BrowserCapabilities,
+		proofs:                         d.Identity,
 		attachments:                    attachmentstore.New(d.DataDir),
 		attachmentSuffix:               randomSuffix,
 		dataDir:                        d.DataDir,
@@ -6286,6 +6298,9 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
+	// The identity proof is minted only at a real launch (launchRuntimeEnv). A project or the
+	// daemon's own environment must never supply one.
+	setProtectedEnv(env, identity.EnvProof, "", caseInsensitive)
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
@@ -6370,6 +6385,9 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
 	env := m.runtimeEnv(id, project, issue, projectEnv)
+	if err := m.injectSessionProof(id, env); err != nil {
+		return nil, "", err
+	}
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -6382,6 +6400,27 @@ func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID
 	}
 	env[EnvBrowserCapability] = token
 	return env, verifier, nil
+}
+
+// injectSessionProof gives the session a new identity proof and puts it in its launch
+// environment. Every launch and relaunch rotates the proof, so a proof from a previous
+// process stops verifying the moment its replacement exists. A session that cannot be given a
+// proof must not start: it would run with no way to identify itself to the daemon.
+func (m *Manager) injectSessionProof(id domain.SessionID, env map[string]string) error {
+	if m.proofs == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proof, err := m.proofs.Issue(ctx, id)
+	if err != nil {
+		return fmt.Errorf("issue session identity proof: %w", err)
+	}
+	if strings.TrimSpace(proof) == "" {
+		return errors.New("identity issuer returned an empty proof")
+	}
+	env[identity.EnvProof] = proof
+	return nil
 }
 
 // prepareWorkerLaunchEnv couples capability issuance with durable verifier

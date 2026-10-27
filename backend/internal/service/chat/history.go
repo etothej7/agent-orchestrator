@@ -983,6 +983,7 @@ func (s *Service) prepareBranchControllerEnv(ctx context.Context, cfg StartConfi
 	if err != nil {
 		return nil, fmt.Errorf("prepare replacement controller environment: %w", err)
 	}
+	applyLaunchProof(cfg.MCPServers, env)
 	return env, nil
 }
 
