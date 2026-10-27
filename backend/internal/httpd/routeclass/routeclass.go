@@ -15,22 +15,22 @@ import (
 type Class string
 
 const (
-	// H: the person only. Needs a verified human capability.
+	// H means the person only. Needs a verified human capability.
 	H Class = "H"
-	// HP: the person only, but a verified agent or a terminal that asks is answered by filing a
+	// HP means the person only, but a verified agent or a terminal that asks is answered by filing a
 	// pending request for the person to approve in the app (never by applying it).
 	HP Class = "HP"
-	// A: a verified agent or reviewer proof, or the person. The handler narrows it with the
+	// A means a verified agent or reviewer proof, or the person. The handler narrows it with the
 	// route's predicate (self, owner, manager, coordinator, reviewer of that run).
 	A Class = "A"
-	// T: bound to one session by its own capability (browser, preview, hooks): a session proof
+	// T means bound to one session by its own capability (browser, preview, hooks): a session proof
 	// for itself, the capability headers those routes already check, or the person.
 	T Class = "T"
-	// O: open to any local caller (a state-free or self-authenticating route).
+	// O means open to any local caller (a state-free or self-authenticating route).
 	O Class = "O"
-	// LC: local control (shutdown, side-chat launch): loopback only, as before.
+	// LC means local control (shutdown, side-chat launch): loopback only, as before.
 	LC Class = "LC"
-	// OwnProof: authenticated by a credential in the request itself (the connection password or
+	// OwnProof means authenticated by a credential in the request itself (the connection password or
 	// account credential), not by caller identity.
 	OwnProof Class = "OwnProof"
 )

@@ -79,7 +79,9 @@ type APIDeps struct {
 	// SessionIdentity resolves a session's identity proof (X-AO-Session-Proof) into the
 	// session that holds it. Nil identifies no agent (embedders and tests without identity).
 	SessionIdentity *identity.Resolver
-	SystemChecks    controllers.SystemChecker
+	// RouteClassMode is how strictly each route's caller class is applied (zero = observe).
+	RouteClassMode RouteClassMode
+	SystemChecks   controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.

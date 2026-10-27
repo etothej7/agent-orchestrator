@@ -6,12 +6,12 @@ import "github.com/aoagents/agent-orchestrator/backend/internal/domain"
 type Verdict int
 
 const (
-	// Refuse: the caller may not do this, and nothing should be filed on its behalf.
+	// Refuse means the caller may not do this, and nothing should be filed on its behalf.
 	Refuse Verdict = iota
-	// NeedsHuman: only the person may do this. The route files a pending request for the person
+	// NeedsHuman means only the person may do this. The route files a pending request for the person
 	// to approve in the app instead of applying anything.
 	NeedsHuman
-	// Allow: the caller may do this now.
+	// Allow means the caller may do this now.
 	Allow
 )
 
