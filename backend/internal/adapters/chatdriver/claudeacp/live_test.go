@@ -40,6 +40,10 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// Keep every test independent of the developer's real ~/.claude/settings.json:
+	// a user default read from it would change the availableModels the tests
+	// assert. Tests of the settings lookup set their own reader.
+	readClaudeSettings = func(string) ([]byte, error) { return nil, os.ErrNotExist }
 	os.Exit(m.Run())
 }
 

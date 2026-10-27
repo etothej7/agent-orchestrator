@@ -168,7 +168,12 @@ const (
 	foreignMulti   = `{"TCP":{"443":{"HTTPS":true}},"Web":{"h.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:4000"},"/api":{"Proxy":"http://127.0.0.1:5000"}}}}}`
 	foreignRemote  = `{"TCP":{"443":{"HTTPS":true}},"Web":{"h.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://10.0.0.9:4000"}}}}}`
 	funnelOnOwned  = `{"TCP":{"443":{"HTTPS":true}},"Web":{"h.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:4000"}}}},"AllowFunnel":{"h.tail1.ts.net:443":true}}`
-	funnelOnEmpty  = `{"AllowFunnel":{"h.tail1.ts.net:443":true}}`
+	// A `tailscale serve` run in the foreground keeps its config under
+	// "Foreground", keyed by session, beside the (empty) background config.
+	foregroundWeb    = `{"Foreground":{"sess1":{"TCP":{"443":{"HTTPS":true}},"Web":{"h.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:4000"}}}}}}}`
+	foregroundFunnel = `{"Foreground":{"sess1":{"AllowFunnel":{"h.tail1.ts.net:443":true}}}}`
+	foregroundOther  = `{"Foreground":{"sess1":{"TCP":{"8443":{"HTTPS":true}},"Web":{"h.tail1.ts.net:8443":{"Handlers":{"/":{"Text":"x"}}}}}}}`
+	funnelOnEmpty    = `{"AllowFunnel":{"h.tail1.ts.net:443":true}}`
 )
 
 func TestServeApplyOnlyTakesEmptyOrOwnedConfig(t *testing.T) {
@@ -191,6 +196,11 @@ func TestServeApplyOnlyTakesEmptyOrOwnedConfig(t *testing.T) {
 		{"non-loopback proxy", foreignRemote, []int{4000}, ErrForeignServe},
 		{"funnel on our own proxy", funnelOnOwned, []int{4000}, ErrFunnelExposed},
 		{"funnel flag on an otherwise empty :443", funnelOnEmpty, nil, ErrFunnelExposed},
+		// A foreground session is someone's live config even when it looks like
+		// AO's own shape, so it is never taken over.
+		{"foreground serve on 443", foregroundWeb, []int{4000}, ErrForeignServe},
+		{"foreground funnel on 443", foregroundFunnel, nil, ErrFunnelExposed},
+		{"foreground serve on another port", foregroundOther, nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,6 +249,7 @@ func TestServeClearOnlyRemovesWhatAOApplied(t *testing.T) {
 		{"static", foreignStatic, []int{4000}, false},
 		{"tcp forward", foreignTCP, []int{4000}, false},
 		{"no ownership record", ownedProxyJSON, nil, false},
+		{"foreground serve on 443", foregroundWeb, []int{4000}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

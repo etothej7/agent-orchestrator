@@ -96,6 +96,25 @@ func containsPort(ports []int, p int) bool {
 	return false
 }
 
+// serveConfigJSON is the shape of one serve config in `serve status --json`;
+// the top level and each Foreground session share it.
+type serveConfigJSON struct {
+	TCP map[string]struct {
+		HTTPS        bool   `json:"HTTPS"`
+		TCPForward   string `json:"TCPForward"`
+		TerminateTLS string `json:"TerminateTLS"`
+	} `json:"TCP"`
+	Web map[string]struct {
+		Handlers map[string]struct {
+			Proxy    string `json:"Proxy"`
+			Path     string `json:"Path"`
+			Text     string `json:"Text"`
+			Redirect string `json:"Redirect"`
+		} `json:"Handlers"`
+	} `json:"Web"`
+	AllowFunnel map[string]bool `json:"AllowFunnel"`
+}
+
 // serve443 classifies what tailnet :443 currently holds.
 type serve443 struct {
 	// inUse: anything at all is configured on :443 (HTTPS site, TCP forward, or
@@ -126,20 +145,10 @@ func (s *Serve) inspect(ctx context.Context) (serve443, error) {
 		return serve443{}, nil
 	}
 	var parsed struct {
-		TCP map[string]struct {
-			HTTPS        bool   `json:"HTTPS"`
-			TCPForward   string `json:"TCPForward"`
-			TerminateTLS string `json:"TerminateTLS"`
-		} `json:"TCP"`
-		Web map[string]struct {
-			Handlers map[string]struct {
-				Proxy    string `json:"Proxy"`
-				Path     string `json:"Path"`
-				Text     string `json:"Text"`
-				Redirect string `json:"Redirect"`
-			} `json:"Handlers"`
-		} `json:"Web"`
-		AllowFunnel map[string]bool `json:"AllowFunnel"`
+		serveConfigJSON
+		// A `tailscale serve` run in the foreground keeps its config here, keyed
+		// by session, beside the background config above.
+		Foreground map[string]serveConfigJSON `json:"Foreground"`
 	}
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return serve443{}, fmt.Errorf("parse tailscale serve status: %w", err)
@@ -152,6 +161,25 @@ func (s *Serve) inspect(ctx context.Context) (serve443, error) {
 			cfg.funnel = true
 		}
 	}
+	// A foreground session on :443 is someone's live config. It is never
+	// AO's (AO applies with --bg), so it reads as in use with no proxy port.
+	foreground := false
+	for _, fg := range parsed.Foreground {
+		if _, ok := fg.TCP["443"]; ok {
+			foreground = true
+		}
+		for key := range fg.Web {
+			if strings.HasSuffix(key, ":443") {
+				foreground = true
+			}
+		}
+		for key, on := range fg.AllowFunnel {
+			if on && strings.HasSuffix(key, ":443") {
+				cfg.funnel = true
+			}
+		}
+	}
+	cfg.inUse = cfg.inUse || foreground
 	var sites []string
 	for key := range parsed.Web {
 		if strings.HasSuffix(key, ":443") {
@@ -160,6 +188,9 @@ func (s *Serve) inspect(ctx context.Context) (serve443, error) {
 	}
 	if len(sites) > 0 {
 		cfg.inUse = true
+	}
+	if foreground {
+		return cfg, nil
 	}
 	if len(sites) != 1 || !hasTCP || !tcp.HTTPS || tcp.TCPForward != "" || tcp.TerminateTLS != "" {
 		return cfg, nil
