@@ -1,3 +1,7 @@
+//go:build !windows
+
+// The parent-death watchdog relies on re-parenting to init, which Windows lacks.
+
 package persistenthost
 
 import (

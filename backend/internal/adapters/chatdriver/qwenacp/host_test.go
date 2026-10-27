@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/internal/testparent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
+	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 // TestMain serves the detached chat-host child so live tests can start real
