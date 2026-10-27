@@ -208,6 +208,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionExitAgentCommand(ctx))
 	cmd.AddCommand(newSessionResumeAgentCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
+	cmd.AddCommand(newSessionSetAutoResumeCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
 	cmd.AddCommand(newSessionHistoryCommand(ctx))
@@ -342,6 +343,44 @@ func newSessionRenameCommand(ctx *commandContext) *cobra.Command {
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
 	return cmd
+}
+
+type sessionAutoResumeRequest struct {
+	Policy          string `json:"policy"`
+	SenderSessionID string `json:"senderSessionId,omitempty"`
+}
+
+type sessionAutoResumeResponse struct {
+	SessionID string `json:"sessionId"`
+	Policy    string `json:"policy"`
+}
+
+func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-auto-resume <id> allowed|never",
+		Short: "Set whether AO may resume, replace or tear down a session on its own",
+		Long: "allowed lets AO resume the session after a reboot. never protects it: AO will not resume it,\n" +
+			"replace it or tear its project down, and a kill keeps its worktree. Only the human can lift never;\n" +
+			"the main coordinator may set it.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			policy := strings.ToLower(strings.TrimSpace(args[1]))
+			if policy != "allowed" && policy != "never" {
+				return fmt.Errorf("policy must be allowed or never, got %q", args[1])
+			}
+			var res sessionAutoResumeResponse
+			req := sessionAutoResumeRequest{Policy: policy, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
+			if err := ctx.putJSON(cmd.Context(), "sessions/"+url.PathEscape(id)+"/auto-resume", req, &res); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "session %s auto-resume: %s\n", id, policy)
+			return err
+		},
+	}
 }
 
 func newSessionCleanupCommand(ctx *commandContext) *cobra.Command {

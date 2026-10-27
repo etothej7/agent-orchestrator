@@ -49,6 +49,7 @@ func newChatManager(chat ChatLauncher) (*Manager, *fakeStore, *fakeRuntime) {
 		DataDir:   "/ao-test-data",
 		LookPath:  lookPath,
 	})
+	m.workspaceExistsFn = func(string) bool { return true } // fixtures use paths that are not on disk
 	return m, st, rt
 }
 

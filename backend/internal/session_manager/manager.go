@@ -435,18 +435,26 @@ type Manager struct {
 	newLaunchID                    func() string
 	codexOperationGate             ports.CodexOperationGate
 	startupBackgroundReconcileDone chan struct{}
+	// startupRetries tracks the background reattach retries of chats whose boot check
+	// failed transiently; their last attempt may capture a resume intent minutes in.
+	startupRetries sync.WaitGroup
+	// workspaceExistsFn replaces the on-disk worktree check in tests.
+	workspaceExistsFn              func(string) bool
 	startupBackgroundReconcileOnce sync.Once
 	// A cold Chat resume must not launch a new persistent host while startup's
 	// orphan-host sweep is using its earlier snapshot of sleeping sessions.
 	persistentHostReconcileDone <-chan struct{}
 	statusRecoveryMu            sync.RWMutex
 	statusRecoveryFailed        bool
-	statusRecoveryRevision      uint64
-	statusRecoveries            map[domain.SessionID]statusRecovery
-	statusVerificationLimit     time.Duration
-	startupChatRetryDelays      []time.Duration
-	agentOpMu                   sync.Mutex
-	agentOperations             map[domain.SessionID]agentOperationKind
+	// resumeCapture arms boot-time resume-intent capture (SetBootWindow).
+	resumeCaptureMu         sync.Mutex
+	resumeCapture           *resumeCapture
+	statusRecoveryRevision  uint64
+	statusRecoveries        map[domain.SessionID]statusRecovery
+	statusVerificationLimit time.Duration
+	startupChatRetryDelays  []time.Duration
+	agentOpMu               sync.Mutex
+	agentOperations         map[domain.SessionID]agentOperationKind
 	// launchStartWait bounds the wait to see a new supervised launch alive.
 	launchStartWait           time.Duration
 	interfaceRecoveryMu       sync.Mutex
@@ -2600,6 +2608,14 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	// one in the same race window. A runtime that cannot be confirmed dead
 	// stops Kill here — same shape as a dirty-workspace refusal — rather than
 	// letting the worktree disappear out from under it.
+	// A protected session is still terminated (that is Ed's explicit choice) but its
+	// worktree is never removed. The decision comes before EVERY destroyer below: the
+	// background cleanup branch, the pre-remove user scripts (which may delete files
+	// before the worktree goes), the workspace-project rows and workspace.Destroy.
+	if ws.Path != "" && m.SessionProtected(ctx, id) {
+		m.logger.Info("kill: protected session terminated; its worktree is preserved", "sessionID", id)
+		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, true)
+	}
 	var releaseTerminals func()
 	defer func() {
 		if releaseTerminals != nil {
@@ -2700,6 +2716,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 // This deliberately does not write a session_worktrees row: those rows are
 // boot-restore markers, and a replaced orchestrator must stay terminated.
 func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
+	// A protected session is never retired: retirement force-removes even a dirty
+	// worktree. Checked first, before any operation gate or side effect.
+	if m.SessionProtected(ctx, id) {
+		return fmt.Errorf("retire replacement %s: %w", id, ErrSessionProtected)
+	}
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -2955,6 +2976,40 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // terminal identity, and provider-native conversation remain available for an
 // exact ResumeAgentWithMode call.
 func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	return m.exitAgent(ctx, id, domain.StopReasonUser)
+}
+
+// stopReasonStore is the optional part of the store that records why an agent was
+// stopped on purpose, so a restart can tell "Ed stopped it" from "it was running".
+type stopReasonStore interface {
+	SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error
+}
+
+// recordStopReason writes the reason BEFORE the controller is stopped, so it is
+// durable ahead of the controller's own exited write. A store that cannot record
+// reasons is skipped (nothing then distinguishes a stop); a store that can but fails
+// is an error, because a stop that cannot be recorded could later be mistaken for a
+// crash and resumed against Ed's wish.
+func (m *Manager) recordStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason) error {
+	store, ok := m.store.(stopReasonStore)
+	if !ok {
+		return nil
+	}
+	return store.SetStopReason(ctx, id, reason, m.clock())
+}
+
+// exitAgent is ExitAgent with the reason the agent is being stopped.
+func (m *Manager) exitAgent(ctx context.Context, id domain.SessionID, reason domain.StopReason) (_ domain.SessionRecord, retErr error) {
+	recorded := false
+	defer func() {
+		// An exit that did not complete leaves the agent as it was; do not leave a
+		// stop reason behind that would hide a later crash from auto-resume.
+		if retErr != nil && recorded {
+			if err := m.recordStopReason(context.WithoutCancel(ctx), id, domain.StopReasonNone); err != nil {
+				m.logger.Warn("exit agent: could not clear the stop reason after a failed exit", "sessionID", id, "error", err)
+			}
+		}
+	}()
 	if err := m.beginAgentOperation(ctx, id, agentOperationExit); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrAgentExitInProgress
@@ -2981,6 +3036,10 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 	if rec.Activity.State == domain.ActivityExited {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrAgentExited)
 	}
+	if err := m.recordStopReason(ctx, id, reason); err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: record why it stopped: %w", id, err)
+	}
+	recorded = true
 	if err := m.releaseTerminalRuntime(ctx, rec); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, err)
 	}
@@ -3183,7 +3242,60 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
-func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
+func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (RestoreResult, error) {
+	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: requireNativeHistory})
+}
+
+// resumeOptions are the knobs of one agent resume.
+type resumeOptions struct {
+	// requireNativeHistory refuses a launch that would not continue the provider's
+	// own conversation, instead of falling back to a fresh launch with the saved
+	// prompt (which would replay the original task).
+	requireNativeHistory bool
+	// skipReadinessReconcile skips the branch that, for a session whose status
+	// readiness reads "unavailable", reconciles the live session instead of
+	// resuming it. That reconcile relaunches NON-strictly, so an unattended strict
+	// resume must never take it.
+	skipReadinessReconcile bool
+	// neverFresh is the unattended resume of a CHAT session: the same provider
+	// conversation or nothing. It resumes the provider's saved session (full
+	// replay when the driver has it, model context alone when it does not) and
+	// never starts a fresh conversation in its place. It replaces
+	// requireNativeHistory for Chat, whose required-history mode is the
+	// terminal-handoff barrier rather than a restart check.
+	neverFresh bool
+}
+
+// ResumeAgentStrict resumes an exited agent for unattended (automatic) resume. It
+// is ResumeAgentWithMode with two differences: it never continues in a fresh
+// provider conversation, so a missing or unverifiable conversation ends in
+// ErrNotResumable, a history error or ErrChatResumeFailed instead of a launch that
+// re-runs the original task (a terminal session requires native history; a Chat
+// session resumes the saved provider conversation, with or without typed replay); and it never takes the
+// readiness-reconcile branch, which relaunches non-strictly (readiness reads
+// "unavailable" for any row with no recovery entry once boot reconciliation failed,
+// exited rows included). The worktree is preserved exactly as for ResumeAgentWithMode.
+func (m *Manager) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+	// The guard is code, not convention: this entry point is the unattended one, so it
+	// refuses a protected session (policy never, or unreadable) and one that was
+	// stopped on purpose, whoever calls it and however late.
+	if m.SessionProtected(ctx, id) {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionProtected)
+	}
+	if reader, ok := m.store.(resumeCaptureStore); ok {
+		if reason, err := reader.StopReason(ctx, id); err != nil || reason != domain.StopReasonNone {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, errors.Join(ErrStoppedOnPurpose, err))
+		}
+	}
+	if rec, found, err := m.store.GetSession(ctx, id); err == nil && found && rec.Metadata.WorkspacePath != "" &&
+		!m.workspaceExists(rec.Metadata.WorkspacePath) {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrWorkspaceMissing)
+	}
+	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, neverFresh: true, skipReadinessReconcile: true})
+}
+
+func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts resumeOptions) (result RestoreResult, err error) {
+	requireNativeHistory := opts.requireNativeHistory
 	ctx, releaseCoordination := coordinationsvc.ReadLock(ctx, m.store)
 	defer releaseCoordination()
 	if err := m.beginAgentResume(ctx, id); err != nil {
@@ -3243,7 +3355,7 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 		}
 		return result, err
 	}
-	if rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable" {
+	if rec.HibernatedAt == nil && !opts.skipReadinessReconcile && m.SessionStatusReadiness(rec) == "unavailable" {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
@@ -3318,8 +3430,14 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation state changed: %w", id, ErrResumeInProgress)
 		}
 	}
+	strictHistory := requireNativeHistory
+	if opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		// Chat: context resume, never a fresh conversation (see resumeOptions).
+		strictHistory = false
+		ctx = withNeverFreshChat(ctx)
+	}
 	result, err = m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec,
-		requireNativeHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
+		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
 	if err == nil && m.chat != nil && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil {
 		// A failed move to a new release kept the user's queued messages for
@@ -4259,7 +4377,11 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	close(jobs)
 	wg.Wait()
 	if len(retryChats) > 0 && ctx.Err() == nil {
-		go m.retryStartupChatChecks(ctx, retryChats)
+		m.startupRetries.Add(1)
+		go func() {
+			defer m.startupRetries.Done()
+			m.retryStartupChatChecks(ctx, retryChats)
+		}()
 	}
 }
 
@@ -5264,6 +5386,12 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	}
 	for _, rec := range recs {
 		if !rec.IsTerminated {
+			continue
+		}
+		if m.SessionProtected(ctx, rec.ID) {
+			// Never reclaimed on its own: its worktree is untracked by AO after a kill,
+			// and removing it is a deliberate, manual step after the unlock.
+			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "protected: run `ao session set-auto-resume " + string(rec.ID) + " allowed` first"})
 			continue
 		}
 		ws := workspaceInfo(rec)

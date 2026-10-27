@@ -1382,6 +1382,33 @@ func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
 	return next, err
 }
 
+const parkSessionHibernated = `-- name: ParkSessionHibernated :execrows
+UPDATE sessions
+SET hibernated_at = ?1,
+    activity_state = 'idle',
+    updated_at = ?1
+WHERE id = ?2 AND revision = ?3
+    AND is_terminated = 0 AND hibernated_at IS NULL AND session_mode = 'chat'
+`
+
+type ParkSessionHibernatedParams struct {
+	HibernatedAt     sql.NullTime
+	ID               domain.SessionID
+	ExpectedRevision int64
+}
+
+// Boot-time auto-resume parks an idle session: the sleep marker and the idle state
+// in ONE revision-checked write, so the row has exactly the shape the idle sweeper
+// leaves (idle plus the marker) and every reader that treats exited as dead sees a
+// session a message can wake. No provider is launched.
+func (q *Queries) ParkSessionHibernated(ctx context.Context, arg ParkSessionHibernatedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, parkSessionHibernated, arg.HibernatedAt, arg.ID, arg.ExpectedRevision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const promoteTaskPreparation = `-- name: PromoteTaskPreparation :execrows
 UPDATE sessions SET
     issue_id = ?1,

@@ -929,6 +929,21 @@ type SetSessionReviewerRequest struct {
 	AgentConfig domain.AgentConfig     `json:"agentConfig,omitempty"`
 }
 
+// SetSessionAutoResumeRequest is the body of PUT /api/v1/sessions/{sessionId}/auto-resume.
+type SetSessionAutoResumeRequest struct {
+	Policy domain.AutoResumePolicy `json:"policy" enum:"allowed,never" description:"allowed lets AO resume the session after a reboot; never protects it from automatic resume, replacement and teardown."`
+	// SenderSessionID is cooperative loopback attribution, not authentication.
+	// Empty is the human, who may set either value; the main coordinator may only
+	// set never; any other session is refused.
+	SenderSessionID domain.SessionID `json:"senderSessionId,omitempty"`
+}
+
+// SessionAutoResumeResponse reports the policy now in force.
+type SessionAutoResumeResponse struct {
+	SessionID domain.SessionID        `json:"sessionId"`
+	Policy    domain.AutoResumePolicy `json:"policy" enum:"allowed,never"`
+}
+
 // SetSessionAutoReviewRequest configures daemon-side review automation.
 type SetSessionAutoReviewRequest struct {
 	Enabled        bool `json:"enabled"`

@@ -66,11 +66,109 @@ type fakeStore struct {
 
 	createClientRequestErr error
 	promoteTaskErr         error
+	// stopReasons records why each agent was stopped on purpose (the stopReasonStore
+	// part of the store); stopReasonErr makes the write fail.
+	stopReasons   map[domain.SessionID]domain.StopReason
+	stopReasonErr error
+	// protected makes AutoResumeAllowed false for a session (policy never);
+	// policyUnreadable makes every policy read fail (and so fail closed).
+	protected        map[domain.SessionID]bool
+	policyUnreadable bool
+	policies         map[domain.SessionID]domain.AutoResumePolicy
+	// parkRevisionBump makes the next park see a row someone else just changed.
+	parkRevisionBump bool
+	intents          map[domain.SessionID]domain.ResumeIntent
+	interrupted      map[domain.SessionID][]domain.InterruptedTurn
+	stories          []domain.Story
+	coordination     domain.CoordinationConfig
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
+}
+
+// AutoResumeAllowed is the optional autoResumePolicyStore part of the store. It
+// fails closed, like the real store.
+func (s *fakeStore) AutoResumeAllowed(_ context.Context, id domain.SessionID) bool {
+	return !s.policyUnreadable && !s.protected[id]
+}
+
+// SetAutoResumePolicy is the optional autoResumePolicyWriter part of the store.
+func (s *fakeStore) SetAutoResumePolicy(_ context.Context, id domain.SessionID, policy domain.AutoResumePolicy, _ time.Time) error {
+	if s.policies == nil {
+		s.policies = map[domain.SessionID]domain.AutoResumePolicy{}
+	}
+	s.policies[id] = policy
+	if s.protected == nil {
+		s.protected = map[domain.SessionID]bool{}
+	}
+	s.protected[id] = !policy.Allows()
+	return nil
+}
+
+// ParkSessionHibernated is the optional sessionParker part of the store: the revision
+// check and the idle-plus-marker write, like the real one.
+func (s *fakeStore) ParkSessionHibernated(_ context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
+	rec, ok := s.sessions[id]
+	if s.parkRevisionBump {
+		rec.Revision++
+		s.sessions[id] = rec
+	}
+	if !ok || rec.Revision != expectedRevision || rec.IsTerminated || rec.HibernatedAt != nil {
+		return false, nil
+	}
+	rec.HibernatedAt = &at
+	rec.Activity.State = domain.ActivityIdle
+	rec.Revision++
+	s.sessions[id] = rec
+	return true, nil
+}
+
+// StopReason is the optional resumeCaptureStore part of the store.
+func (s *fakeStore) StopReason(_ context.Context, id domain.SessionID) (domain.StopReason, error) {
+	return s.stopReasons[id], nil
+}
+
+// InterruptedHumanTurns is the optional resumeCaptureStore part of the store.
+func (s *fakeStore) InterruptedHumanTurns(_ context.Context, id domain.SessionID, _, _ time.Time) ([]domain.InterruptedTurn, error) {
+	return s.interrupted[id], nil
+}
+
+// CaptureResumeIntent keeps a live intent, like the real store.
+func (s *fakeStore) CaptureResumeIntent(_ context.Context, fresh domain.ResumeIntent) (domain.ResumeIntent, bool, error) {
+	if s.intents == nil {
+		s.intents = map[domain.SessionID]domain.ResumeIntent{}
+	}
+	if existing, ok := s.intents[fresh.SessionID]; ok && existing.State.Live() {
+		return existing, false, nil
+	}
+	s.intents[fresh.SessionID] = fresh
+	return fresh, true, nil
+}
+
+// ListStories is the optional story reader part of the store.
+func (s *fakeStore) ListStories(context.Context) ([]domain.Story, error) { return s.stories, nil }
+
+// GetCoordination is the optional coordination reader part of the store.
+func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
+	return s.coordination, nil
+}
+
+// SetStopReason is the optional stopReasonStore part of the store.
+func (s *fakeStore) SetStopReason(_ context.Context, id domain.SessionID, reason domain.StopReason, _ time.Time) error {
+	if s.stopReasonErr != nil {
+		return s.stopReasonErr
+	}
+	if s.stopReasons == nil {
+		s.stopReasons = map[domain.SessionID]domain.StopReason{}
+	}
+	if reason == domain.StopReasonNone {
+		delete(s.stopReasons, id)
+		return nil
+	}
+	s.stopReasons[id] = reason
+	return nil
 }
 
 func newFakeStore() *fakeStore {

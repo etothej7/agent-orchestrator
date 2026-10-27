@@ -2619,6 +2619,8 @@ func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 // fakeCommander records Kill/Spawn calls so a test can assert the
 // clean-orchestrator ordering without wiring a real session engine.
 type fakeCommander struct {
+	// protectedSessions are the sessions SessionProtected reports as protected.
+	protectedSessions map[domain.SessionID]bool
 	killed            []domain.SessionID
 	retired           []domain.SessionID
 	exited            []domain.SessionID
@@ -2725,6 +2727,9 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 		f.killFunc(id)
 	}
 	return true, nil
+}
+func (f *fakeCommander) SessionProtected(_ context.Context, id domain.SessionID) bool {
+	return f.protectedSessions[id]
 }
 func (f *fakeCommander) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
 	if f.retireFunc != nil {

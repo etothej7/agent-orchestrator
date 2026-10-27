@@ -49,6 +49,9 @@ func (m *Manager) checkSessionHealth(ctx context.Context, rec domain.SessionReco
 		_, err = m.resumeChatController(ctx, "check session", rec, project,
 			workspaceInfo(rec), false, true, "", domain.SessionInterfaceTransitionHistoryStrict)
 		if errors.Is(err, ports.ErrChatHostNotRunning) {
+			// Capture runs on the row as it was, before boot marks it exited, and
+			// never changes what boot does to it.
+			m.captureResumeIntent(ctx, rec)
 			return m.recordAgentExited(ctx, rec)
 		}
 		return err

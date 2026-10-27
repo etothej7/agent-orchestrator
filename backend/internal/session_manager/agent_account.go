@@ -206,7 +206,7 @@ func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) err
 		if rec.Activity.State == domain.ActivityExited {
 			continue
 		}
-		if _, err := m.ExitAgent(ctx, rec.ID); err != nil && !errors.Is(err, ErrAgentExited) {
+		if _, err := m.exitAgent(ctx, rec.ID, domain.StopReasonAccount); err != nil && !errors.Is(err, ErrAgentExited) {
 			errs = append(errs, err)
 		}
 	}

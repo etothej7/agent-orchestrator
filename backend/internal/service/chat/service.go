@@ -296,10 +296,38 @@ type reviewerConversationStore interface {
 // keeps the old provider process, so it carries what that process runs in the
 // same write as the claim.
 func (s *Service) claimChatController(ctx context.Context, id domain.SessionID, generation string, liveReconnect bool) error {
+	var err error
 	if claimer, ok := s.store.(liveControllerClaimer); ok && liveReconnect {
-		return claimer.ClaimLiveChatControllerGeneration(ctx, id, generation)
+		err = claimer.ClaimLiveChatControllerGeneration(ctx, id, generation)
+	} else {
+		err = s.store.ClaimChatControllerGeneration(ctx, id, generation)
 	}
-	return s.store.ClaimChatControllerGeneration(ctx, id, generation)
+	if err != nil {
+		return err
+	}
+	s.clearStopReason(ctx, id)
+	return err
+}
+
+// stopReasonClearer is the optional part of the store that records why an agent was
+// stopped on purpose.
+type stopReasonClearer interface {
+	SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error
+}
+
+// clearStopReason forgets why the agent was last stopped: a new controller is
+// running, so a later exit is a new fact. Every controller start claims a generation,
+// which makes this the one place that covers resume, wake, restore and handoffs.
+// Best effort: a stale reason only ever suppresses an automatic resume, never
+// causes one, and the failure is logged.
+func (s *Service) clearStopReason(ctx context.Context, id domain.SessionID) {
+	clearer, ok := s.store.(stopReasonClearer)
+	if !ok {
+		return
+	}
+	if err := clearer.SetStopReason(ctx, id, domain.StopReasonNone, s.now()); err != nil {
+		s.log.Warn("chat start: could not clear the stop reason", "session", id, "error", err)
+	}
 }
 
 // ControllerCommit is the conversation state committed by ControllerReady.

@@ -434,6 +434,14 @@ type Cue struct {
 	UpdatedAt time.Time
 }
 
+type DaemonRun struct {
+	BootID            string
+	StartedAt         time.Time
+	HeartbeatAt       time.Time
+	ShutdownStartedAt sql.NullTime
+	EndedCleanAt      sql.NullTime
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string
@@ -775,6 +783,13 @@ type SessionArtifactVersion struct {
 	RestoredFrom int64
 }
 
+type SessionAutoResume struct {
+	SessionID  string
+	Policy     string
+	StopReason string
+	UpdatedAt  time.Time
+}
+
 type SessionCleanupFact struct {
 	SessionID            domain.SessionID
 	SessionGeneration    int64
@@ -821,6 +836,12 @@ type SessionInterfaceTransitionMessage struct {
 	ClientMessageID string
 	SenderSessionID string
 	AuthoredByUser  bool
+}
+
+type SessionResumeIntent struct {
+	SessionID string
+	Record    string
+	Revision  int64
 }
 
 type SessionTerminalTurn struct {
