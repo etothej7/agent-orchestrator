@@ -285,7 +285,7 @@ func TestAProoflessLoopbackCallerInsideASessionTreeIsThatSession(t *testing.T) {
 	resolver := identity.NewResolver(store, sessions).WithAncestry(ancestry)
 
 	got := seenCaller(resolver, loopbackRequest(t, ""))
-	if !got.IsAgent() || got.Session != "worker-1" || got.Via != identity.ViaAncestry {
+	if !got.IsBridged() || got.IsAgent() || got.Session != "worker-1" || got.Via != identity.ViaAncestry {
 		t.Fatalf("caller = %+v, want worker-1 via ancestry", got)
 	}
 	if ancestry.ports != [2]int{50321, 3001} {
@@ -332,5 +332,23 @@ func TestTheBridgeFailingLeavesTheCallerAnonymous(t *testing.T) {
 	resolver := identity.NewResolver(store, sessions).WithAncestry(&countingAncestry{err: procidentity.ErrNotInSession})
 	if got := seenCaller(resolver, loopbackRequest(t, "")); got.Kind != identity.KindAnonymous {
 		t.Fatalf("caller = %+v, want anonymous", got)
+	}
+}
+
+// The middleware hands handlers the claim of an unproven caller (for the merge gate's routing of a
+// refusal to that session's re-proof); it never turns a claim into an identity.
+func TestTheMiddlewareRecordsTheClaimOfAnUnprovenCallerWithoutMakingItAnIdentity(t *testing.T) {
+	store := &proofStore{hashes: map[domain.SessionID]string{}}
+	resolver := identity.NewResolver(store, proofSessions{})
+	req := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req.Header.Set(identity.HeaderClaim, " worker-7 ")
+	var caller identity.Caller
+	var claim domain.SessionID
+	h := callerIdentityMiddleware(resolver, slog.New(slog.NewTextHandler(io.Discard, nil)))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, claim = identity.FromContext(r.Context()), identity.ClaimFromContext(r.Context())
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if caller.Kind != identity.KindAnonymous || claim != "worker-7" {
+		t.Fatalf("caller %+v claim %q; want an anonymous caller attributed to worker-7", caller, claim)
 	}
 }

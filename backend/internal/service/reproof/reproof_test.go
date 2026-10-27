@@ -1,10 +1,13 @@
 package reproof
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,19 +19,57 @@ type fakeManager struct {
 	mu        sync.Mutex
 	relaunch  []domain.SessionID
 	err       map[domain.SessionID]error
+	resumeErr map[domain.SessionID]error // ResumeStopped failures
+	resumed   []domain.SessionID
+	asked     map[domain.SessionID]int // RelaunchForIdentity calls per session
+	noop      map[domain.SessionID]bool
 	proofsFor func(domain.SessionID) // called on a successful relaunch (the new launch issues a proof)
 }
 
-func (f *fakeManager) RelaunchForIdentity(_ context.Context, id domain.SessionID) error {
+func (f *fakeManager) RelaunchForIdentity(_ context.Context, id domain.SessionID) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.asked == nil {
+		f.asked = map[domain.SessionID]int{}
+	}
+	f.asked[id]++
 	if err := f.err[id]; err != nil {
-		return err
+		return false, err
+	}
+	if f.noop[id] {
+		return false, nil
 	}
 	f.relaunch = append(f.relaunch, id)
 	if f.proofsFor != nil {
 		f.proofsFor(id)
 	}
+	return true, nil
+}
+
+func (f *fakeManager) ResumeStopped(_ context.Context, id domain.SessionID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.resumeErr[id]; err != nil {
+		return false, err
+	}
+	f.resumed = append(f.resumed, id)
+	return true, nil
+}
+
+type fakeStopped struct {
+	recorded []domain.SessionID
+	notified []domain.SessionID
+	reasons  []string
+}
+
+func (f *fakeStopped) RecordStopped(_ context.Context, id domain.SessionID) error {
+	f.recorded = append(f.recorded, id)
+	return nil
+}
+
+func (f *fakeStopped) NotifyGaveUp(_ context.Context, id domain.SessionID, reason string) error {
+	f.notified = append(f.notified, id)
+	f.reasons = append(f.reasons, reason)
 	return nil
 }
 
@@ -82,10 +123,10 @@ func fixture() (*Service, *fakeManager, *fakeStore, *clock) {
 			rec("manager-b", domain.KindOrchestrator, "repo2", 5),
 		},
 	}
-	mgr := &fakeManager{err: map[domain.SessionID]error{}}
+	mgr := &fakeManager{err: map[domain.SessionID]error{}, resumeErr: map[domain.SessionID]error{}, noop: map[domain.SessionID]bool{}}
 	mgr.proofsFor = func(id domain.SessionID) { store.proofs[id] = true }
 	clk := &clock{now: epoch.Add(time.Hour)}
-	svc := New(mgr, store, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Now: clk.Now, StartupDelay: -1, ProjectCooldown: time.Millisecond})
+	svc := New(mgr, store, &fakeStopped{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Now: clk.Now, StartupDelay: -1, ProjectCooldown: time.Millisecond})
 	return svc, mgr, store, clk
 }
 
@@ -242,5 +283,128 @@ func TestNothingHappensBeforeTheStartupDelay(t *testing.T) {
 	s.Tick(context.Background())
 	if len(mgr.relaunch) != 1 {
 		t.Fatalf("relaunched %v after the settle", mgr.relaunch)
+	}
+}
+
+func stoppedOf(s *Service) *fakeStopped { return s.stopped.(*fakeStopped) }
+
+// A relaunch that STOPPED a session and could not start it again leaves it down: the service records
+// the intent to bring it back, retries it with backoff, and when it gives up posts the standard
+// notice. It is never silent, and the failure is not mistaken for a skip.
+func TestASessionLeftDownByAFailedRelaunchIsRetriedRecordedAndFinallyAnnounced(t *testing.T) {
+	s, mgr, _, clk := fixture()
+	mgr.err["coord"] = fmt.Errorf("%w: provider cannot start", ErrResumeFailed)
+	mgr.resumeErr["coord"] = errors.New("still cannot start")
+	s.Tick(context.Background()) // the relaunch: stopped, then the start fails
+	if got := stoppedOf(s).recorded; len(got) != 1 || got[0] != "coord" {
+		t.Fatalf("recorded resume intents = %v, want one for coord", got)
+	}
+	if len(stoppedOf(s).notified) != 0 {
+		t.Fatal("announced before any retry")
+	}
+	if s.failures["coord"] != 0 || s.GaveUp("coord") {
+		t.Fatal("a resume failure was counted as a relaunch failure")
+	}
+	// retries, with backoff
+	s.Tick(context.Background()) // too soon
+	if len(mgr.relaunch) != 0 && mgr.relaunch[0] == "coord" {
+		t.Fatal("relaunched again")
+	}
+	for i := 0; i < 20; i++ {
+		clk.now = clk.now.Add(time.Hour)
+		s.Tick(context.Background())
+	}
+	if got := stoppedOf(s).notified; len(got) != 1 || got[0] != "coord" {
+		t.Fatalf("notices = %v, want exactly one for coord on giving up", got)
+	}
+	if !s.GaveUp("coord") {
+		t.Fatal("not recorded as given up")
+	}
+	if got := stoppedOf(s).reasons[0]; got == "" || len(got) > 120 {
+		t.Fatalf("notice reason %q: want a short fixed phrase", got)
+	}
+}
+
+func TestASessionLeftDownComesBackOnARetryAndNeverIsAnnounced(t *testing.T) {
+	s, mgr, _, clk := fixture()
+	mgr.err["coord"] = fmt.Errorf("%w: boom", ErrResumeFailed)
+	s.Tick(context.Background())
+	delete(mgr.err, "coord") // the provider can start now
+	clk.now = clk.now.Add(time.Hour)
+	s.Tick(context.Background())
+	if len(mgr.resumed) != 1 || mgr.resumed[0] != "coord" {
+		t.Fatalf("resumed %v, want coord", mgr.resumed)
+	}
+	if len(stoppedOf(s).notified) != 0 {
+		t.Fatal("announced a session that came back")
+	}
+	if len(s.down) != 0 {
+		t.Fatalf("still tracking %v", s.down)
+	}
+}
+
+// A session with background work running is never relaunched (and so never killed); the service
+// waits, says so once after the max wait, and relaunches it as soon as it is quiet.
+func TestASessionWithBackgroundWorkIsWaitedForNeverKilledAndLoggedOnce(t *testing.T) {
+	var logs bytes.Buffer
+	s, mgr, _, clk := fixture()
+	s.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	for _, id := range []domain.SessionID{"coord", "manager-a", "manager-b", "worker-a", "worker-b"} {
+		mgr.err[id] = ErrWorkRunning
+	}
+	for i := 0; i < 20; i++ { // 200 minutes, past the 2h max wait
+		clk.now = clk.now.Add(10 * time.Minute)
+		s.Tick(context.Background())
+	}
+	if len(mgr.relaunch) != 0 {
+		t.Fatalf("relaunched %v while background work ran", mgr.relaunch)
+	}
+	if s.failures["coord"] != 0 || s.GaveUp("coord") {
+		t.Fatal("waiting for work was counted as a failure")
+	}
+	if n := strings.Count(logs.String(), "still has background work running"); n != 5 {
+		t.Fatalf("max-wait log entries = %d, want exactly one per waiting session (5), however long it keeps waiting; log:\n%s", n, logs.String())
+	}
+	// the moment it is quiet it is relaunched
+	delete(mgr.err, "coord")
+	clk.now = clk.now.Add(time.Minute)
+	s.Tick(context.Background())
+	if len(mgr.relaunch) != 1 || mgr.relaunch[0] != "coord" {
+		t.Fatalf("relaunched %v once the work ended, want coord", mgr.relaunch)
+	}
+}
+
+// A relaunch that turns out to have nothing to do (the session ended or went to sleep meanwhile) is
+// a skip: it is not logged or counted as a relaunch and does not use the project's cooldown.
+func TestARelaunchThatDidNothingIsNotReportedAsARelaunch(t *testing.T) {
+	var logs bytes.Buffer
+	s, mgr, _, clk := fixture()
+	s.log = slog.New(slog.NewTextHandler(&logs, nil))
+	mgr.noop["coord"] = true
+	tick(t, s, clk)
+	if strings.Contains(logs.String(), "session=coord ") {
+		t.Fatalf("a no-op was logged as a relaunch:\n%s", logs.String())
+	}
+	if _, cooling := s.lastProject["overall"]; cooling {
+		t.Fatal("a no-op started the project cooldown")
+	}
+}
+
+// Prioritize only queues; it never relaunches, and a busy session that was prioritized is still
+// left alone until it is idle.
+func TestPrioritizeNeverRelaunchesAndNeverInterruptsAWorkingSession(t *testing.T) {
+	s, mgr, store, _ := fixture()
+	for i := range store.sessions {
+		if store.sessions[i].ID == "worker-b" {
+			store.sessions[i].Activity.State = domain.ActivityActive
+		}
+	}
+	s.Prioritize(context.Background(), "worker-b")
+	if len(mgr.relaunch) != 0 || len(mgr.asked) != 0 {
+		t.Fatalf("Prioritize relaunched or asked about %v", mgr.asked)
+	}
+	s.Tick(context.Background())
+	if mgr.asked["worker-b"] != 0 {
+		t.Fatal("a working session was asked to relaunch because it was prioritized")
 	}
 }

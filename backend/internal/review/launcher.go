@@ -420,7 +420,49 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec) 
 	inv.SystemPromptFile = systemPath
 	inv.TaskPromptFile = taskPath
 	inv.TaskPromptRoot = promptRoot
+	if l.proofs != nil {
+		inv.ProofFilePath = filepath.Join(promptRoot, reviewerProofFileName)
+	}
 	return inv, nil
+}
+
+// reviewerProofFileName is the private file (next to the reviewer's prompts, mode 0600 in a 0700
+// directory) the reviewer's proof is written to for harnesses that filter their shell's environment.
+const reviewerProofFileName = "reviewer-proof"
+
+// writeReviewerProofFile places the reviewer's freshly issued proof where AO_SESSION_PROOF_FILE
+// points, replacing any earlier one (the earlier proof no longer verifies anyway). The file is
+// written with owner-only permissions through a temp file and a rename, so a reader never sees a
+// partial proof, and a reviewer whose proof file cannot be written must not start.
+func writeReviewerProofFile(path, proof string) error {
+	if path == "" || proof == "" {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create reviewer proof directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".reviewer-proof-*")
+	if err != nil {
+		return fmt.Errorf("write reviewer proof file: %w", err)
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write reviewer proof file: %w", err)
+	}
+	if _, err := tmp.WriteString(proof + "\n"); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write reviewer proof file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write reviewer proof file: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("write reviewer proof file: %w", err)
+	}
+	return nil
 }
 
 func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvocation, error) {
@@ -433,6 +475,10 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 	}
 	if err := os.WriteFile(systemPath, []byte(systemPrompt), 0o600); err != nil {
 		return ports.ReviewInvocation{}, fmt.Errorf("write reviewer system prompt: %w", err)
+	}
+	proofFile := ""
+	if l.proofs != nil {
+		proofFile = filepath.Join(promptRoot, reviewerProofFileName)
 	}
 	prompt := fmt.Sprintf("Reviewer terminal restored for worker session %s.\n\n%s\n\nWait for AO to send the next review task file path before submitting a new review.", spec.WorkerID, previousReviewHistoryText(spec.PreviousRuns))
 	return ports.ReviewInvocation{
@@ -447,6 +493,7 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 		SystemPrompt:     "",
 		SystemPromptFile: systemPath,
 		TaskPromptRoot:   promptRoot,
+		ProofFilePath:    proofFile,
 	}, nil
 }
 
@@ -619,6 +666,9 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	// A reviewer pane is always a new process (the stale pane was just destroyed), so this is a
 	// launch: the review gets a new proof now, as the environment is built.
 	if err := l.injectReviewerProof(ctx, spec.ReviewSessionID, env); err != nil {
+		return LaunchResult{}, err
+	}
+	if err := writeReviewerProofFile(inv.ProofFilePath, env[identity.EnvProof]); err != nil {
 		return LaunchResult{}, err
 	}
 	argv := cmd.Argv

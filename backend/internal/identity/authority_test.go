@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -112,5 +114,60 @@ func TestSelfAndManagerPredicatesNeedAVerifiedAgent(t *testing.T) {
 	forged := Caller{Kind: KindReviewer, Review: "review-1", Session: "worker-1", SessionKind: domain.KindWorker}
 	if forged.IsSession("worker-1") || forged.IsManagerOf("") {
 		t.Fatal("a reviewer satisfied a session predicate")
+	}
+}
+
+// A caller the daemon matched only by process ancestry has no authority: every predicate and
+// decision treats it as the anonymous caller.
+func TestACallerKnownOnlyByAncestryFailsEveryPredicate(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		c := Caller{Kind: KindAgent, Session: "s-1", SessionKind: kind, Project: "repo", Via: ViaAncestry}
+		if c.IsAgent() || c.IsSession("s-1") || c.IsManagerOf("repo") || c.IsHuman() || c.IsReviewer() {
+			t.Errorf("%s: an ancestry caller satisfied a predicate: agent=%v session=%v manager=%v", kind, c.IsAgent(), c.IsSession("s-1"), c.IsManagerOf("repo"))
+		}
+		if !c.IsBridged() {
+			t.Errorf("%s: not reported as bridged", kind)
+		}
+		for _, mayMerge := range []bool{false, true} {
+			if got := DecideMerge(c, mayMerge, Target{Session: "s-1", Project: "repo"}); got != NeedsHuman {
+				t.Errorf("%s: DecideMerge(agentMayMerge=%v) = %v for its own PR; want NeedsHuman (as anonymous)", kind, mayMerge, got)
+			}
+		}
+		if MaySubmitReview(c, ReviewRunRef{Review: "review-1", Worker: "s-1"}) {
+			t.Errorf("%s: an ancestry caller may submit a review", kind)
+		}
+	}
+	proven := Caller{Kind: KindAgent, Session: "s-1", SessionKind: domain.KindWorker, Project: "repo", Via: ViaProof}
+	if !proven.IsAgent() || !proven.IsSession("s-1") || proven.IsBridged() {
+		t.Fatal("a proven agent lost its predicates")
+	}
+}
+
+func TestClaimFromContextAttributesOnlyUnprovenCallers(t *testing.T) {
+	ctx := WithClaim(context.Background(), "worker-9")
+	if got := ClaimFromContext(WithCaller(ctx, Anonymous())); got != "worker-9" {
+		t.Fatalf("anonymous claim = %q, want worker-9", got)
+	}
+	if got := ClaimFromContext(context.Background()); got != "" {
+		t.Fatalf("an unmarked context claims %q", got)
+	}
+	// a caller the kernel matched is attributed to the MATCHED session, not to what the header says
+	bridged := Caller{Kind: KindAgent, Session: "worker-1", SessionKind: domain.KindWorker, Via: ViaAncestry}
+	if got := ClaimFromContext(WithCaller(ctx, bridged)); got != "worker-1" {
+		t.Fatalf("bridged claim = %q, want the matched worker-1", got)
+	}
+	// proven callers and the person are never "claimants"
+	for name, c := range map[string]Caller{
+		"human": Human(), "proven agent": {Kind: KindAgent, Session: "w", Via: ViaProof},
+		"reviewer": {Kind: KindReviewer, Review: "r", Worker: "w"},
+	} {
+		if got := ClaimFromContext(WithCaller(ctx, c)); got != "" {
+			t.Errorf("%s: claim %q, want none", name, got)
+		}
+	}
+	for raw, want := range map[string]domain.SessionID{"  mer-1 ": "mer-1", "": "", "   ": "", strings.Repeat("x", 129): ""} {
+		if got := ParseClaim(raw); got != want {
+			t.Errorf("ParseClaim(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }

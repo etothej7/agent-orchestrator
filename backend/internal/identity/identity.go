@@ -30,6 +30,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -111,8 +113,19 @@ func Human() Caller { return Caller{Kind: KindHuman} }
 // IsHuman reports whether the caller is the person at the keyboard.
 func (c Caller) IsHuman() bool { return c.Kind == KindHuman }
 
-// IsAgent reports whether the caller is a verified session.
-func (c Caller) IsAgent() bool { return c.Kind == KindAgent && c.Session != "" }
+// IsAgent reports whether the caller is a session that PROVED itself (presented its identity
+// proof). A caller the daemon matched only by process ancestry (IsBridged) is not: it gets no
+// authority, so every predicate built on IsAgent (IsSession, IsManagerOf, DecideMerge) is false
+// for it and it can do only what an anonymous caller may on observe-allowed routes.
+func (c Caller) IsAgent() bool {
+	return c.Kind == KindAgent && c.Session != "" && c.Via != ViaAncestry
+}
+
+// IsBridged reports whether the caller is a pre-upgrade session recognised only by its process
+// tree (ED8 D8). It is a diagnostic and a narrow compatibility path, never an identity.
+func (c Caller) IsBridged() bool {
+	return c.Kind == KindAgent && c.Session != "" && c.Via == ViaAncestry
+}
 
 // IsReviewer reports whether the caller is a verified native reviewer.
 func (c Caller) IsReviewer() bool { return c.Kind == KindReviewer && c.Review != "" }
@@ -123,6 +136,41 @@ type callerKey struct{}
 // identity middleware may call it.
 func WithCaller(ctx context.Context, c Caller) context.Context {
 	return context.WithValue(ctx, callerKey{}, c)
+}
+
+type claimKey struct{}
+
+// ParseClaim reads the session id a caller says it is from an X-AO-Session-Claim value: trimmed,
+// non-empty and of sane length, else "". It is a CLAIM, never an identity.
+func ParseClaim(raw string) domain.SessionID {
+	id := strings.TrimSpace(raw)
+	if id == "" || len(id) > 128 {
+		return ""
+	}
+	return domain.SessionID(id)
+}
+
+// WithClaim records the session id a request CLAIMS to be (its X-AO-Session-Claim). Only the
+// daemon's own identity middleware may call it.
+func WithClaim(ctx context.Context, id domain.SessionID) context.Context {
+	return context.WithValue(ctx, claimKey{}, id)
+}
+
+// ClaimFromContext is the session an UNPROVEN caller is attributed to, for routing a refusal to
+// that session's re-proof and for counting: the session the daemon matched by process ancestry
+// (from the kernel), else the session the request claims in X-AO-Session-Claim (unauthenticated:
+// it may only affect counting and queue order, never an authority decision). Empty for the person,
+// a proven agent, a reviewer, and an anonymous caller that claims nothing.
+func ClaimFromContext(ctx context.Context) domain.SessionID {
+	c := FromContext(ctx)
+	switch {
+	case c.IsBridged():
+		return c.Session
+	case c.Kind == KindAnonymous:
+		id, _ := ctx.Value(claimKey{}).(domain.SessionID)
+		return id
+	}
+	return ""
 }
 
 // FromContext returns the verified caller of a request; a context nothing verified yields the
@@ -306,7 +354,16 @@ type Resolver struct {
 	reviews  ReviewStore
 	reviewed ReviewReader
 	ancestry Ancestry
+
+	// confirmed holds the proof hashes this daemon run already recorded as presented, so a proof
+	// that authenticates every tool call costs one write the first time, not one per call.
+	confirmed     sync.Map
+	confirmedSize atomic.Int64
 }
+
+// maxRememberedConfirmations bounds the in-memory set; past it the set is simply forgotten and
+// each live proof is recorded once more.
+const maxRememberedConfirmations = 8192
 
 // NewResolver builds a Resolver.
 func NewResolver(store Store, sessions SessionReader) *Resolver {
@@ -351,7 +408,15 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if confirmer, ok := r.store.(ProofConfirmer); ok {
 		// Presenting a proof confirms it (and promotes a pending successor). A failure to record it
 		// never refuses a valid proof.
-		_ = confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now())
+		if _, done := r.confirmed.Load(want); !done {
+			if err := confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now()); err == nil {
+				if r.confirmedSize.Add(1) > maxRememberedConfirmations {
+					r.confirmed.Range(func(k, _ any) bool { r.confirmed.Delete(k); return true })
+					r.confirmedSize.Store(0)
+				}
+				r.confirmed.Store(want, struct{}{})
+			}
+		}
 	}
 	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaProof}, nil
 }
@@ -454,4 +519,8 @@ func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort
 type CoordinatorState struct {
 	Session    domain.SessionID
 	HoldsProof bool
+	// EverProven is true once any orchestrator of the coordinator project has ever held a
+	// confirmed proof. The coordinator's first phase never comes back: with no active coordinator
+	// (exited, crashed, between a reboot and its resume) the strict phase still applies.
+	EverProven bool
 }

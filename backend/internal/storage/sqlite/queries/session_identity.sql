@@ -39,6 +39,13 @@ SELECT session_id, proof_sha256, pending_sha256, issued_at, generation, confirme
 -- name: DeleteSessionIdentity :exec
 DELETE FROM session_identity WHERE session_id = ?;
 
+-- name: RevokeSessionIdentity :exec
+-- Revocation keeps the row (and its confirmed_at and generation: "this session was once proven" is
+-- durable) but replaces the hash with one nobody holds, and drops any pending proof.
+UPDATE session_identity SET proof_sha256 = ?, pending_sha256 = NULL WHERE session_id = ?;
+
 -- name: ListSessionIdentitiesByIDs :many
--- Which of the given sessions hold a proof right now (one batched read for the session list).
-SELECT session_id FROM session_identity WHERE session_id IN (sqlc.slice('session_ids'));
+-- Which of the given sessions hold a usable proof right now (one batched read for the session
+-- list). A revoked proof does not count.
+SELECT session_id FROM session_identity
+WHERE session_id IN (sqlc.slice('session_ids')) AND proof_sha256 NOT LIKE 'revoked:%';

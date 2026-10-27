@@ -17,6 +17,14 @@ func TestObserveFlagsArePinned(t *testing.T) {
 		"POST /api/v1/sessions/cleanup",
 		"POST /api/v1/orchestrators",
 		"POST /api/v1/orchestrators/delegate",
+		// scheduling autonomous agent work
+		"POST /api/v1/automations",
+		"PATCH /api/v1/automations/{automationId}",
+		"DELETE /api/v1/automations/{automationId}",
+		"PATCH /api/v1/cues/{cueId}",
+		"DELETE /api/v1/cues/{cueId}",
+		"POST /api/v1/cues/{cueId}/invoke",
+		"POST /api/v1/projects/{projectId}/cues",
 	}
 	coordinatorOnly := []string{
 		"POST /api/v1/sessions/{sessionId}/conversation/human-decisions",

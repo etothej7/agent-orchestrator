@@ -59,7 +59,11 @@ func callerIdentityMiddleware(resolver *identity.Resolver, log *slog.Logger) fun
 					}
 				}
 			}
-			next.ServeHTTP(w, r.WithContext(identity.WithCaller(r.Context(), caller)))
+			ctx := identity.WithCaller(r.Context(), caller)
+			if claim := identity.ParseClaim(r.Header.Get(identity.HeaderClaim)); claim != "" {
+				ctx = identity.WithClaim(ctx, claim)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -222,3 +222,50 @@ func TestAnotherPendingProofReplacesThePreviousPendingOne(t *testing.T) {
 		t.Fatalf("a=%v b=%v c=%v; want the active and only the latest pending", resolves("a"), resolves("b"), resolves("c"))
 	}
 }
+
+// "This session once had a proof presented" is durable: revoking the proof removes what verifies
+// but keeps the fact, so it cannot reopen the process-ancestry bridge or the coordinator's first
+// phase; and the session no longer counts as holding a proof.
+func TestRevokingAProofKeepsTheEverProvenMarker(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	hash := strings.Repeat("c", 64)
+	if err := db.SetSessionProofHash(ctx, session, hash, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ConfirmSessionProof(ctx, session, hash, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteSessionProof(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed, err := db.SessionProofConfirmed(ctx, session); err != nil || !confirmed {
+		t.Fatalf("after a revoke the session is not marked as ever proven (%v, %v)", confirmed, err)
+	}
+	if gen, _ := db.SessionProofGeneration(ctx, session); gen != 1 {
+		t.Fatalf("generation after a revoke = %d, want 1 (kept)", gen)
+	}
+	if _, _, found, _ := db.SessionIdentityByProofHash(ctx, hash); found {
+		t.Fatal("the revoked proof still resolves")
+	}
+	held, err := db.SessionsWithProof(ctx, []domain.SessionID{session})
+	if err != nil || held[session] {
+		t.Fatalf("a revoked session still reports a proof (%v, %v)", held, err)
+	}
+	// a new proof can be issued afterwards and works once presented
+	fresh := strings.Repeat("d", 64)
+	if err := db.SetSessionProofHash(ctx, session, fresh, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ConfirmSessionProof(ctx, session, fresh, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, found, _ := db.SessionIdentityByProofHash(ctx, fresh); !found || id != session {
+		t.Fatalf("a proof issued after a revoke does not resolve (found %v, %q)", found, id)
+	}
+	held, _ = db.SessionsWithProof(ctx, []domain.SessionID{session})
+	if !held[session] {
+		t.Fatal("the re-issued proof is not counted")
+	}
+}

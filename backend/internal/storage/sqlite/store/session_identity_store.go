@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -98,11 +100,21 @@ func (s *Store) SessionProofGeneration(ctx context.Context, id domain.SessionID)
 	return int(row.Generation), nil
 }
 
-// DeleteSessionProof revokes a session's proof.
+// revokedPrefix marks a proof hash nobody holds. A real hash is 64 hex characters, so the two can
+// never collide, and the column keeps its length check.
+const revokedPrefix = "revoked:"
+
+// DeleteSessionProof revokes a session's proof. The row stays, with a hash nobody holds: that
+// the session once had a proof presented (confirmed_at, generation) is durable, so revoking can
+// never reopen the process-ancestry bridge or the coordinator's first phase.
 func (s *Store) DeleteSessionProof(ctx context.Context, id domain.SessionID) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.qw.DeleteSessionIdentity(ctx, string(id)); err != nil {
+	var nonce [28]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("revoke identity proof for %s: %w", id, err)
+	}
+	if err := s.qw.RevokeSessionIdentity(ctx, gen.RevokeSessionIdentityParams{ProofSha256: revokedPrefix + hex.EncodeToString(nonce[:]), SessionID: string(id)}); err != nil {
 		return fmt.Errorf("revoke identity proof for %s: %w", id, err)
 	}
 	return nil

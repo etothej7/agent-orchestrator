@@ -58,6 +58,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/autoresume"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -1018,7 +1019,7 @@ func Run(buildVersion string) error {
 	// Rolling re-proof: idle sessions without an identity proof are relaunched (coordinator
 	// first); a session refused for lack of one is moved to the front of that queue.
 	var sessionReproof httpd.Prioritizer
-	if reproofSvc := newReproof(log, wiredSessMgr, store); reproofSvc != nil {
+	if reproofSvc := newReproof(log, wiredSessMgr, store, autoresume.NoticeWriter{Store: store, Notify: notificationWriter}); reproofSvc != nil {
 		guardConfig.Reproof = reproofSvc
 		sessionReproof = reproofSvc
 		go reproofSvc.Run(ctx)
@@ -1028,7 +1029,7 @@ func Run(buildVersion string) error {
 		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store).WithAncestry(
 			ancestryBridge(log, procLookup, peerLookup, store, func(ctx context.Context, handle string) ([]int, error) {
 				return runtimeAdapter.ProcessRootPIDs(ctx, ports.RuntimeHandle{ID: handle})
-			}, cfg.DataDir)),
+			}, runtimeAdapter.ServerPID, cfg.DataDir)),
 		// Class-H routes need the human capability; identity is observed (ED8 rollout).
 		RouteGuard:           guardConfig,
 		IdentityObservations: identityObs,

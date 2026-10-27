@@ -78,7 +78,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.NotFound(notFoundJSON)
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
-	mountHealth(r, cfg)
+	mountHealth(r, cfg, deps.UICapability != nil)
 	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins, deps.TerminalTickets)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
@@ -107,12 +107,12 @@ func previewOriginMiddleware(sessions *controllers.SessionsController) func(http
 
 // mountHealth registers the liveness and readiness probes the Electron
 // supervisor polls before letting the renderer connect.
-func mountHealth(r chi.Router, cfg config.Config) {
+func mountHealth(r chi.Router, cfg config.Config, humanCapability bool) {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg, humanCapability))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg, humanCapability))
 	})
 }
 
@@ -407,11 +407,17 @@ func localControlRequest(r *http.Request) bool {
 // daemonProbePayload is shared by /healthz and /readyz. Dependency
 // initialization happens before the server is constructed, so a listening
 // daemon is ready to answer requests.
-func daemonProbePayload(status string, cfg config.Config) map[string]any {
+//
+// humanCapability says whether this daemon verifies the human-write capability, i.e. was started by
+// the desktop app with its per-launch key. The app's supervisor and an operator use it to tell a
+// daemon that enforces person-only routes from a scratch one that cannot. It is a flag only.
+func daemonProbePayload(status string, cfg config.Config, humanCapability bool) map[string]any {
 	payload := map[string]any{
 		"status":  status,
 		"service": daemonmeta.ServiceName,
 		"pid":     os.Getpid(),
+
+		"humanCapability": humanCapability,
 	}
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		payload["executablePath"] = exe

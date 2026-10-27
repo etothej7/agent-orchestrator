@@ -34,6 +34,21 @@ type ProcTable interface {
 	Info(pid int) (Proc, error)
 }
 
+// ProcInspector lists processes and reads their command lines, for the one-time adoption of the
+// sessions that were already running (never used on the request path).
+type ProcInspector interface {
+	// All returns every process the kernel lists.
+	All() ([]Proc, error)
+	// Args returns the process's argv.
+	Args(pid int) ([]string, error)
+}
+
+// ListenerLookup finds the process that owns a loopback listening socket.
+type ListenerLookup interface {
+	// OwnerOfListener returns the pid of the process listening on 127.0.0.1:port.
+	OwnerOfListener(port int) (int, error)
+}
+
 // PeerLookup maps a loopback connection to the pid that owns the client end.
 type PeerLookup interface {
 	// OwnerPID returns the pid of the process whose socket has local port clientPort and remote
@@ -83,3 +98,11 @@ var (
 )
 
 func domainSession(s string) domain.SessionID { return domain.SessionID(s) }
+
+// FrozenRoots is a RootSource that never changes: the roots the daemon validated once, at start, for
+// the sessions that were already running. Nothing refreshes it, so a process planted later
+// (a rewritten host descriptor, a look-alike tmux session) can never join it.
+type FrozenRoots []Root
+
+// Roots implements RootSource.
+func (f FrozenRoots) Roots(context.Context) ([]Root, error) { return f, nil }
