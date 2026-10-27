@@ -62,7 +62,7 @@ func ValidKey(key string) bool {
 }
 
 // probeLabel keeps a possession proof from ever being usable as (or confused with) a request capability.
-const probeLabel = "ao-ui-capability-probe:" + version + ":"
+const probeLabel = "ao-ui-capability-probe:v2:"
 
 // ValidNonce reports whether a probe nonce is long enough to be unguessable and plain base64url text.
 func ValidNonce(nonce string) bool {
@@ -79,13 +79,16 @@ func ValidNonce(nonce string) bool {
 	return true
 }
 
-// ProbeProof is what a daemon that holds the run's key answers to a nonce: an HMAC under its own label.
-// The app sends a fresh nonce to a daemon address before it ever signs a request for it, so a process that
-// merely listens on the port the app was told about (a forged run file) cannot be signed for. Mirror of the
-// Electron main process; pinned by the shared vectors file.
-func ProbeProof(key, nonce string) string {
+// ProbeProof is what a daemon that holds the run's key answers to a nonce: an HMAC under its own label over the
+// nonce, the port the request ARRIVED ON (the socket's local port, not anything the caller wrote) and the daemon's
+// pid. The app sends a fresh nonce to an address before it signs anything for it and expects the proof for THAT
+// port and the pid it spawned. A process that merely listens on the address the app was told about (a forged run
+// file) cannot answer, and cannot relay the nonce to the real daemon either: the real daemon would bind the proof
+// to its own port, which is not the one the app asked. Mirror of the Electron main process; pinned by the shared
+// vectors file.
+func ProbeProof(key, nonce string, port, pid int) string {
 	h := hmac.New(sha256.New, []byte(key))
-	_, _ = h.Write([]byte(probeLabel + nonce))
+	_, _ = fmt.Fprintf(h, "%s%s:%d:%d", probeLabel, nonce, port, pid)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
@@ -136,13 +139,13 @@ func (v *Verifier) VerifyRequest(header, method, path string, now time.Time) err
 // app did not start), where nothing is ever human and nothing human-gated can be enforced.
 func (v *Verifier) Enabled() bool { return v != nil && len(v.secret) > 0 }
 
-// Probe answers a possession probe for nonce. ok is false for a verifier without a key (a daemon the app
+// Probe answers a possession probe for nonce, bound to the local port it arrived on and this daemon's pid. ok is false for a verifier without a key (a daemon the app
 // did not start, which therefore must never be signed for) or a nonce that is not well formed.
-func (v *Verifier) Probe(nonce string) (proof string, ok bool) {
-	if v == nil || len(v.secret) == 0 || !ValidNonce(nonce) {
+func (v *Verifier) Probe(nonce string, port, pid int) (proof string, ok bool) {
+	if v == nil || len(v.secret) == 0 || !ValidNonce(nonce) || port < 1 || port > 65535 || pid < 1 {
 		return "", false
 	}
-	return ProbeProof(string(v.secret), nonce), true
+	return ProbeProof(string(v.secret), nonce, port, pid), true
 }
 
 // Verify accepts a capability only if it was signed with this run's secret for this

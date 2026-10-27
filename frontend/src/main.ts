@@ -2286,6 +2286,9 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		stopDiscovery();
 		spawnedDaemonPid = child.pid;
 		setDaemonStatus({ state: "ready", port, pid: child.pid });
+		// Ask the daemon on this port to prove it holds the key (for this port and the pid we spawned) now, so the
+		// first state-changing request is not the one that waits for the answer.
+		daemonKeyCheck.ensure(`http://127.0.0.1:${port}`, child.pid);
 
 		// Establish the OS-native liveness link on the spawn path (we own this
 		// daemon). Holding the connection keeps the daemon alive; when Electron

@@ -1,8 +1,15 @@
 package httpd
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,9 +63,13 @@ func TestHumanCapabilityMiddlewareMarksOnlyAValidRequestBoundCapability(t *testi
 	}
 }
 
+// probeTestPort is the port the in-process probe requests "arrive on".
+const probeTestPort = 41234
+
 func probe(t *testing.T, v *uicapability.Verifier, body string, mutate func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3001/internal/human-capability/probe", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, net.Addr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: probeTestPort})))
 	if mutate != nil {
 		mutate(req)
 	}
@@ -71,7 +82,7 @@ func TestTheProbeProvesPossessionOfTheKeyToALocalNativeCallerOnly(t *testing.T) 
 	key := strings.Repeat("k", 43)
 	nonce := "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
 	rec := probe(t, uicapability.New(key), `{"nonce":"`+nonce+`"}`, nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), uicapability.ProbeProof(key, nonce)) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), uicapability.ProbeProof(key, nonce, probeTestPort, os.Getpid())) {
 		t.Fatalf("probe = %d %s", rec.Code, rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), key) {
@@ -82,7 +93,7 @@ func TestTheProbeProvesPossessionOfTheKeyToALocalNativeCallerOnly(t *testing.T) 
 	}
 	// A daemon with another key answers differently, so the app can tell it is not the one it started.
 	other := probe(t, uicapability.New(strings.Repeat("z", 43)), `{"nonce":"`+nonce+`"}`, nil)
-	if strings.Contains(other.Body.String(), uicapability.ProbeProof(key, nonce)) {
+	if strings.Contains(other.Body.String(), uicapability.ProbeProof(key, nonce, probeTestPort, os.Getpid())) {
 		t.Fatal("a daemon with another key produced this run's proof")
 	}
 }
@@ -103,9 +114,82 @@ func TestTheProbeRefusesWhatCouldMakeItAnOracleOrLeakWhoHoldsAKey(t *testing.T) 
 		"not json":                  {keyed, `nonce`, nil, http.StatusBadRequest},
 		"a browser (any Origin)":    {keyed, good, func(r *http.Request) { r.Header.Set("Origin", "app://renderer") }, http.StatusForbidden},
 		"a rebinding host":          {keyed, good, func(r *http.Request) { r.Host = "evil.example:3001" }, http.StatusForbidden},
+		"no known listener port":    {keyed, good, func(r *http.Request) { *r = *r.WithContext(context.Background()) }, http.StatusNotFound},
 	} {
 		if rec := probe(t, tc.v, tc.body, tc.mutate); rec.Code != tc.want {
 			t.Errorf("%s: status %d, want %d (%s)", name, rec.Code, tc.want, rec.Body.String())
 		}
 	}
+}
+
+// A process that only listens where the app was told to look can forward the app's nonce to the real daemon and
+// hand back the genuine answer. The answer is bound to the port the real daemon received it on, so it is the
+// wrong answer for the address the app asked.
+func TestARelayedProbeAnswerIsRefusedBecauseItIsBoundToTheRealDaemonsPort(t *testing.T) {
+	key := strings.Repeat("k", 43)
+	nonce := "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+	realDaemon := httptest.NewServer(humanCapabilityProbeHandler(uicapability.New(key)))
+	defer realDaemon.Close()
+	forged := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp, err := http.Post(realDaemon.URL, "application/json", r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer forged.Close()
+
+	realPort := tcpPort(t, realDaemon.URL)
+	forgedPort := tcpPort(t, forged.URL)
+	body := `{"nonce":"` + nonce + `"}`
+
+	// The real daemon answers the app directly: right proof for the port the app targets.
+	direct, err := http.Post(realDaemon.URL, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = direct.Body.Close() }()
+	var got struct{ Proof string }
+	if err := json.NewDecoder(direct.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Proof != uicapability.ProbeProof(key, nonce, realPort, os.Getpid()) {
+		t.Fatal("the real daemon's answer is not bound to its own port")
+	}
+
+	// Via the forged listener the app receives a genuine proof, but not the one for the forged port.
+	relayed, err := http.Post(forged.URL, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = relayed.Body.Close() }()
+	var viaForged struct{ Proof string }
+	if err := json.NewDecoder(relayed.Body).Decode(&viaForged); err != nil {
+		t.Fatal(err)
+	}
+	if viaForged.Proof == "" {
+		t.Fatal("the relay got no answer, so the test proves nothing")
+	}
+	if viaForged.Proof == uicapability.ProbeProof(key, nonce, forgedPort, os.Getpid()) {
+		t.Fatal("a relayed answer satisfies the check for the forged port")
+	}
+	if viaForged.Proof != got.Proof {
+		t.Fatal("the relay did not return the genuine answer, so the test proves nothing")
+	}
+}
+
+func tcpPort(t *testing.T, rawURL string) int {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }

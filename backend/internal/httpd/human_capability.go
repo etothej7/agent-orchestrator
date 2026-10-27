@@ -2,7 +2,9 @@ package httpd
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
@@ -55,7 +57,9 @@ func humanCapabilityProbeHandler(v *uicapability.Verifier) http.HandlerFunc {
 			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 			return
 		}
-		proof, ok := v.Probe(in.Nonce)
+		// The port is the socket's own local port, never the Host header: a relay cannot make the real daemon
+		// answer for a port it did not receive the request on.
+		proof, ok := v.Probe(in.Nonce, localPort(r), os.Getpid())
 		if !ok {
 			// No key, or a nonce that is not well formed: say nothing about which.
 			envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "NOT_FOUND", "not found", nil)
@@ -64,4 +68,13 @@ func humanCapabilityProbeHandler(v *uicapability.Verifier) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		envelope.WriteJSON(w, http.StatusOK, map[string]string{"proof": proof})
 	}
+}
+
+// localPort is the port of the listener socket r arrived on, or 0 when it cannot be told.
+func localPort(r *http.Request) int {
+	addr, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if tcp, ok := addr.(*net.TCPAddr); ok {
+		return tcp.Port
+	}
+	return 0
 }

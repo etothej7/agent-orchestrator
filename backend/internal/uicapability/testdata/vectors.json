@@ -83,6 +83,8 @@
 	"probe": {
 		"key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 		"nonce": "AbCdEfGhIjKlMnOpQrStUvWxYz012345",
-		"proof": "ZcfeXX7dRdPas_-ww9I15YmqPfJRzsE-hVyjqCzYT6c"
+		"port": 41234,
+		"pid": 900,
+		"proof": "PynNVQp8i5Kx7wsFye5GV7b3562yyHc4USDkpdsOUa0"
 	}
 }

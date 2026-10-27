@@ -10,22 +10,27 @@ const NONCE = "AbCdEfGhIjKlMnOpQrStUvWxYz012345";
 describe("probeProof", () => {
 	it("matches the daemon's vector", () => {
 		const vectors = JSON.parse(readFileSync(resolve(__dirname, "../../../backend/internal/uicapability/testdata/vectors.json"), "utf8")) as {
-			probe: { key: string; nonce: string; proof: string };
+			probe: { key: string; nonce: string; port: number; pid: number; proof: string };
 		};
-		expect(probeProof(vectors.probe.key, vectors.probe.nonce)).toBe(vectors.probe.proof);
+		const { key, nonce, port, pid, proof } = vectors.probe;
+		expect(probeProof(key, nonce, port, pid)).toBe(proof);
 	});
 
-	it("depends on the key and the nonce, and is not a request capability", () => {
-		expect(probeProof(KEY, NONCE)).not.toBe(probeProof("z".repeat(43), NONCE));
-		expect(probeProof(KEY, NONCE)).not.toBe(probeProof(KEY, NONCE + "x"));
-		expect(probeProof(KEY, NONCE)).not.toMatch(/^v1\./);
+	it("depends on the key, the nonce, the port and the pid, and is not a request capability", () => {
+		expect(probeProof(KEY, NONCE, 41234, 900)).not.toBe(probeProof("z".repeat(43), NONCE, 41234, 900));
+		expect(probeProof(KEY, NONCE, 41234, 900)).not.toBe(probeProof(KEY, NONCE + "x", 41234, 900));
+		expect(probeProof(KEY, NONCE, 41234, 900)).not.toBe(probeProof(KEY, NONCE, 41235, 900));
+		expect(probeProof(KEY, NONCE, 41234, 900)).not.toBe(probeProof(KEY, NONCE, 41234, 901));
+		expect(probeProof(KEY, NONCE, 41234, 900)).not.toMatch(/^v1\./);
 	});
 });
 
-function daemon(key: string, status = 200) {
-	return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+/** A daemon (process `pid`) that answers every probe with the proof for the port the request arrived on. */
+function daemon(key: string, status = 200, pid = 900) {
+	return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		const { nonce } = JSON.parse(String(init?.body)) as { nonce: string };
-		return new Response(JSON.stringify({ proof: probeProof(key, nonce) }), { status });
+		const port = Number(new URL(String(url)).port);
+		return new Response(JSON.stringify({ proof: probeProof(key, nonce, port, pid) }), { status });
 	});
 }
 
@@ -60,12 +65,48 @@ describe("createKeyPossessionCheck", () => {
 		["a listener that answers with no proof", () => new Response("{}", { status: 200 })],
 		["a listener that answers a non-string proof", () => new Response('{"proof":42}', { status: 200 })],
 		["a listener that answers garbage", () => new Response("not json", { status: 200 })],
-		["a listener that replays another nonce's proof", () => new Response(JSON.stringify({ proof: probeProof(KEY, "some-other-nonce-0123456789") }), { status: 200 })],
+		["a listener that replays another nonce's proof", () => new Response(JSON.stringify({ proof: probeProof(KEY, "some-other-nonce-0123456789", 41234, 900) }), { status: 200 })],
 	])("does not verify %s", async (_name, answer) => {
 		const check = createKeyPossessionCheck({ key: KEY, fetchImpl: (async () => answer()) as never, newNonce: () => NONCE });
 		check.ensure(ORIGIN, 900);
 		await settle();
 		expect(check.isVerified(ORIGIN, 900)).toBe(false);
+	});
+
+	it("does not verify a listener that relays the nonce to the real daemon (the proof is for the real port)", async () => {
+		const realOrigin = "http://127.0.0.1:41000";
+		const real = daemon(KEY);
+		// The forged listener sits on ORIGIN, forwards the probe to the real daemon and returns its genuine answer.
+		const relay = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => real(`${realOrigin}/internal/human-capability/probe`, init));
+		const check = createKeyPossessionCheck({ key: KEY, fetchImpl: relay as never, newNonce: () => NONCE });
+		check.ensure(ORIGIN, 900);
+		await settle();
+		expect(relay).toHaveBeenCalledTimes(1);
+		expect(check.isVerified(ORIGIN, 900)).toBe(false);
+		// The same genuine answer is accepted where it belongs.
+		check.ensure(realOrigin, 900);
+		const direct = createKeyPossessionCheck({ key: KEY, fetchImpl: real as never, newNonce: () => NONCE });
+		direct.ensure(realOrigin, 900);
+		await settle();
+		expect(direct.isVerified(realOrigin, 900)).toBe(true);
+	});
+
+	it("does not verify a daemon that answers as some other process than the one the app spawned", async () => {
+		const check = createKeyPossessionCheck({ key: KEY, fetchImpl: daemon(KEY, 200, 4242) as never, newNonce: () => NONCE });
+		check.ensure(ORIGIN, 900);
+		await settle();
+		expect(check.isVerified(ORIGIN, 900)).toBe(false);
+	});
+
+	it("starts no probe for an origin without a port or for no pid", async () => {
+		const fetchImpl = daemon(KEY);
+		const check = createKeyPossessionCheck({ key: KEY, fetchImpl: fetchImpl as never });
+		check.ensure("http://127.0.0.1", 900);
+		check.ensure("not a url", 900);
+		check.ensure(ORIGIN, undefined);
+		check.ensure(ORIGIN, 0);
+		await settle();
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
 	it("does not verify when the request fails or hangs", async () => {
