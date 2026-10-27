@@ -111,8 +111,19 @@ func Human() Caller { return Caller{Kind: KindHuman} }
 // IsHuman reports whether the caller is the person at the keyboard.
 func (c Caller) IsHuman() bool { return c.Kind == KindHuman }
 
-// IsAgent reports whether the caller is a verified session.
-func (c Caller) IsAgent() bool { return c.Kind == KindAgent && c.Session != "" }
+// IsAgent reports whether the caller is a session that PROVED itself (presented its identity
+// proof). A caller the daemon matched only by process ancestry (IsBridged) is not: it gets no
+// authority, so every predicate built on IsAgent (IsSession, IsManagerOf, DecideMerge) is false
+// for it and it can do only what an anonymous caller may on observe-allowed routes.
+func (c Caller) IsAgent() bool {
+	return c.Kind == KindAgent && c.Session != "" && c.Via != ViaAncestry
+}
+
+// IsBridged reports whether the caller is a pre-upgrade session recognised only by its process
+// tree (ED8 D8). It is a diagnostic and a narrow compatibility path, never an identity.
+func (c Caller) IsBridged() bool {
+	return c.Kind == KindAgent && c.Session != "" && c.Via == ViaAncestry
+}
 
 // IsReviewer reports whether the caller is a verified native reviewer.
 func (c Caller) IsReviewer() bool { return c.Kind == KindReviewer && c.Review != "" }
@@ -454,4 +465,8 @@ func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort
 type CoordinatorState struct {
 	Session    domain.SessionID
 	HoldsProof bool
+	// EverProven is true once any orchestrator of the coordinator project has ever held a
+	// confirmed proof. The coordinator's first phase never comes back: with no active coordinator
+	// (exited, crashed, between a reboot and its resume) the strict phase still applies.
+	EverProven bool
 }

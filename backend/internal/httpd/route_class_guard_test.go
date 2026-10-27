@@ -497,3 +497,114 @@ func TestParseRouteClassMode(t *testing.T) {
 		}
 	}
 }
+
+// ---- callers known only by process ancestry (ED8 D8): anonymous for every class-A decision ----
+
+var (
+	bridgedWorker  = identity.Caller{Kind: identity.KindAgent, Session: "worker-1", SessionKind: domain.KindWorker, Project: "repo", Via: identity.ViaAncestry}
+	bridgedManager = identity.Caller{Kind: identity.KindAgent, Session: "manager-1", SessionKind: domain.KindOrchestrator, Project: "repo", Via: identity.ViaAncestry}
+	bridgedCoord   = identity.Caller{Kind: identity.KindAgent, Session: "coord-1", SessionKind: domain.KindOrchestrator, Project: "overall", Via: identity.ViaAncestry}
+)
+
+func TestABridgedCallerIsRefusedOnEveryRouteWithAuthorityInEveryMode(t *testing.T) {
+	for _, mode := range []RouteClassMode{RouteClassObserve, RouteClassEnforce} {
+		for name, c := range map[string]identity.Caller{"worker": bridgedWorker, "manager": bridgedManager, "coordinator": bridgedCoord} {
+			caller := c
+			g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
+			for _, p := range []string{"/api/v1/prs/7/merge", "/api/v1/sessions/worker-1/reviews/submit", "/api/v1/sessions/worker-1/kill", "/api/v1/orchestrators"} {
+				before := *g.reached
+				if got := call(g.router, "POST", p, nil); got != http.StatusForbidden || *g.reached != before {
+					t.Errorf("mode %v: bridged %s on %s: status %d, handler reached %v; ancestry gives no authority", mode, name, p, got, *g.reached != before)
+				}
+			}
+		}
+	}
+}
+
+func TestABridgedCallerKeepsWorkingOnTheObserveOKRoutesAndIsCounted(t *testing.T) {
+	for _, mode := range []RouteClassMode{RouteClassObserve, RouteClassEnforce} {
+		caller := bridgedWorker
+		g := newGuard(GuardConfig{EnforceHuman: true, Identity: mode}, &caller)
+		if got := call(g.router, "POST", "/api/v1/sessions/worker-1/send", nil); got != http.StatusNoContent {
+			t.Fatalf("mode %v: a pre-upgrade session's ao send was refused (%d)", mode, got)
+		}
+		if len(g.obs.calls) != 1 || !g.obs.calls[0].Allowed || g.obs.calls[0].Claimed != "worker-1" {
+			t.Fatalf("mode %v: the bridged call was not counted against its session: %+v", mode, g.obs.calls)
+		}
+	}
+}
+
+func TestABridgedCallerGetsOnlyTheListedKindsOfAPerKindRoute(t *testing.T) {
+	caller := bridgedWorker
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassEnforce}, &caller)
+	if got := do(g.router, "POST", "/api/v1/sessions", `{"kind":"worker"}`, nil).Code; got != http.StatusNoContent {
+		t.Fatalf("a bridged manager's worker spawn was refused (%d): the same list an anonymous caller gets", got)
+	}
+	if got := do(g.router, "POST", "/api/v1/sessions", `{"kind":"orchestrator"}`, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("a bridged caller spawned an orchestrator (%d)", got)
+	}
+	if got := do(g.router, "POST", "/api/v1/sessions", `not json`, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("a bridged caller with an unreadable body was not refused (%d)", got)
+	}
+}
+
+func TestABridgedCoordinatorPassesTheCoordinatorRoutesOnlyInPhaseOne(t *testing.T) {
+	p := "/api/v1/sessions/coord-1/conversation/human-decisions"
+	state := &fakeCoordinatorBox{s: identity.CoordinatorState{Session: "coord-1"}}
+	caller := bridgedCoord
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassEnforce, Coordinator: state}, &caller)
+	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("the active coordinator (bridged) was refused in phase 1 (%d)", got)
+	}
+	for name, c := range map[string]identity.Caller{"worker": bridgedWorker, "manager": bridgedManager} {
+		caller = c
+		if got := call(g.router, "POST", p, nil); got != http.StatusForbidden {
+			t.Errorf("a bridged %s passed a coordinator-only route in phase 1 (%d)", name, got)
+		}
+	}
+	caller = bridgedCoord
+	state.set(identity.CoordinatorState{Session: "coord-1", HoldsProof: true})
+	if got := call(g.router, "POST", p, nil); got != http.StatusForbidden {
+		t.Fatalf("a bridged coordinator passed in phase 2 (%d)", got)
+	}
+}
+
+// The first phase never returns: once any orchestrator of the coordinator project ever held a
+// proof, a moment with no active coordinator is still the strict phase.
+func TestTheCoordinatorPhaseIsMonotonic(t *testing.T) {
+	p := "/api/v1/sessions/coord-1/conversation/human-decisions"
+	caller := anonymous
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve,
+		Coordinator: fakeCoordinator{state: identity.CoordinatorState{EverProven: true}}}, &caller)
+	if got := call(g.router, "POST", p, nil); got != http.StatusForbidden {
+		t.Fatalf("anonymous passed with no active coordinator after one had a proof (%d)", got)
+	}
+	caller = bridgedCoord
+	if got := call(g.router, "POST", p, nil); got != http.StatusForbidden {
+		t.Fatalf("a bridged caller passed with no active coordinator (%d)", got)
+	}
+	// never proven and no coordinator: phase 1, as before
+	caller = anonymous
+	g = newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve, Coordinator: fakeCoordinator{}}, &caller)
+	if got := call(g.router, "POST", p, nil); got != http.StatusNoContent {
+		t.Fatalf("anonymous refused in phase 1 (%d)", got)
+	}
+}
+
+// A refused bridged caller is told its session will be relaunched, using the session the KERNEL
+// matched, not a header.
+func TestARefusedBridgedCallerIsPrioritizedByItsMatchedSession(t *testing.T) {
+	caller := bridgedWorker
+	rp := &fakePrioritizer{queued: true}
+	g := newGuard(GuardConfig{EnforceHuman: true, Identity: RouteClassObserve, Reproof: rp}, &caller)
+	rec := do(g.router, "POST", "/api/v1/sessions/worker-1/kill", "{}", func(r *http.Request) *http.Request {
+		r.Header.Set(identity.HeaderClaim, "some-other-session")
+		return r
+	})
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "SESSION_NEEDS_IDENTITY") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	if len(rp.asked) != 1 || rp.asked[0] != "worker-1" {
+		t.Fatalf("prioritized %v, want the kernel-matched worker-1", rp.asked)
+	}
+}

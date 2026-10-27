@@ -38,9 +38,22 @@ func (c coordinatorProofs) CoordinatorState(ctx context.Context) (identity.Coord
 		return identity.CoordinatorState{}, err
 	}
 	var active *domain.SessionRecord
+	everProven := false
 	for i := range sessions {
 		rec := &sessions[i]
-		if rec.Kind != domain.KindOrchestrator || rec.IsTerminated || rec.Activity.State == domain.ActivityExited {
+		if rec.Kind != domain.KindOrchestrator {
+			continue
+		}
+		// The first phase ends for good once any orchestrator of the coordinator project (live or
+		// not) has had a proof presented: the proof row, and its confirmation, outlive a revoke.
+		if !everProven {
+			ever, err := c.store.SessionProofConfirmed(ctx, rec.ID)
+			if err != nil {
+				return identity.CoordinatorState{}, err
+			}
+			everProven = ever
+		}
+		if rec.IsTerminated || rec.Activity.State == domain.ActivityExited {
 			continue
 		}
 		if active == nil || rec.CreatedAt.After(active.CreatedAt) {
@@ -48,7 +61,7 @@ func (c coordinatorProofs) CoordinatorState(ctx context.Context) (identity.Coord
 		}
 	}
 	if active == nil {
-		return identity.CoordinatorState{}, nil
+		return identity.CoordinatorState{EverProven: everProven}, nil
 	}
 	// "Holds a proof" means a running process uses one: an issued-but-unused proof (a relaunch that
 	// has not come up) must not end the coordinator's first phase, or an old coordinator that is
@@ -57,7 +70,7 @@ func (c coordinatorProofs) CoordinatorState(ctx context.Context) (identity.Coord
 	if err != nil {
 		return identity.CoordinatorState{}, err
 	}
-	return identity.CoordinatorState{Session: active.ID, HoldsProof: confirmed}, nil
+	return identity.CoordinatorState{Session: active.ID, HoldsProof: confirmed, EverProven: everProven || confirmed}, nil
 }
 
 // routeGuardConfig is the daemon's route-class guard setting (ED8): class-H routes require the

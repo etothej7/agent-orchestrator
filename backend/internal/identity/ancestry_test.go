@@ -42,7 +42,7 @@ func ancestryResolver(res procidentity.Result, err error, gen map[domain.Session
 func TestABridgedSessionResolvesFromItsRecordAndIsMarkedAsAncestry(t *testing.T) {
 	r := ancestryResolver(procidentity.Result{Session: "worker-1", PID: 4242, Comm: "ao"}, nil, map[domain.SessionID]int{})
 	c, err := r.ResolveByAncestry(context.Background(), 50000, 3001)
-	if err != nil || !c.IsAgent() || c.Session != "worker-1" || c.SessionKind != domain.KindWorker || c.Project != "repo" || c.Via != ViaAncestry {
+	if err != nil || !c.IsBridged() || c.IsAgent() || c.Session != "worker-1" || c.SessionKind != domain.KindWorker || c.Project != "repo" || c.Via != ViaAncestry {
 		t.Fatalf("caller = %+v, %v; want worker-1 (worker, repo) via ancestry", c, err)
 	}
 }

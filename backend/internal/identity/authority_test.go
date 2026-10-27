@@ -114,3 +114,29 @@ func TestSelfAndManagerPredicatesNeedAVerifiedAgent(t *testing.T) {
 		t.Fatal("a reviewer satisfied a session predicate")
 	}
 }
+
+// A caller the daemon matched only by process ancestry has no authority: every predicate and
+// decision treats it as the anonymous caller.
+func TestACallerKnownOnlyByAncestryFailsEveryPredicate(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		c := Caller{Kind: KindAgent, Session: "s-1", SessionKind: kind, Project: "repo", Via: ViaAncestry}
+		if c.IsAgent() || c.IsSession("s-1") || c.IsManagerOf("repo") || c.IsHuman() || c.IsReviewer() {
+			t.Errorf("%s: an ancestry caller satisfied a predicate: agent=%v session=%v manager=%v", kind, c.IsAgent(), c.IsSession("s-1"), c.IsManagerOf("repo"))
+		}
+		if !c.IsBridged() {
+			t.Errorf("%s: not reported as bridged", kind)
+		}
+		for _, mayMerge := range []bool{false, true} {
+			if got := DecideMerge(c, mayMerge, Target{Session: "s-1", Project: "repo"}); got != NeedsHuman {
+				t.Errorf("%s: DecideMerge(agentMayMerge=%v) = %v for its own PR; want NeedsHuman (as anonymous)", kind, mayMerge, got)
+			}
+		}
+		if MaySubmitReview(c, ReviewRunRef{Review: "review-1", Worker: "s-1"}) {
+			t.Errorf("%s: an ancestry caller may submit a review", kind)
+		}
+	}
+	proven := Caller{Kind: KindAgent, Session: "s-1", SessionKind: domain.KindWorker, Project: "repo", Via: ViaProof}
+	if !proven.IsAgent() || !proven.IsSession("s-1") || proven.IsBridged() {
+		t.Fatal("a proven agent lost its predicates")
+	}
+}

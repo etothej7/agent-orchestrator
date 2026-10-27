@@ -161,19 +161,26 @@ func routeClassGuard(router chi.Routes, cfg GuardConfig, log *slog.Logger) func(
 
 // classARefusal decides an A-class request: whether it is refused, with which code. It also
 // records anonymous calls and asks for the claiming session's re-proof when refusing it.
+//
+// A caller recognised only by process ancestry (a pre-upgrade session, ED8 D8) is NOT an identified
+// agent here: it is treated as anonymous, and passes only what an anonymous caller may (the
+// ObserveOK routes and the listed kinds), in every mode, because that is the bridge's whole
+// purpose; and the coordinator-only routes only when it is the active coordinator in the first
+// phase. Everything with authority (merge, review submit, kill, spawn of orchestrators, ...) is
+// ObserveNone and is refused for it.
 func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pattern string, caller identity.Caller, log *slog.Logger) (string, bool) {
 	if caller.IsHuman() {
 		return "", false
 	}
 	if entry.Observe == routeclass.ObserveUntilCoordinatorProof {
-		// Phase 2: once the coordinator holds a proof, only its own identity passes (anonymous,
-		// another agent and a reviewer are refused). If the state cannot be read, the strict
-		// phase applies.
+		// Phase 2: once the coordinator holds a proof (or any orchestrator of its project ever
+		// did), only its own proven identity passes (anonymous, bridged, another agent and a
+		// reviewer are refused). If the state cannot be read, the strict phase applies.
 		state, err := identity.CoordinatorState{}, error(nil)
 		if cfg.Coordinator != nil {
 			state, err = cfg.Coordinator.CoordinatorState(r.Context())
 		}
-		if cfg.Coordinator == nil || err != nil || state.HoldsProof {
+		if cfg.Coordinator == nil || err != nil || state.HoldsProof || state.EverProven {
 			if cfg.Coordinator != nil && err != nil {
 				log.Warn("coordinator proof state unavailable; treating the coordinator as proven", "error", err)
 			}
@@ -183,14 +190,24 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 			cfg.noteAnonymous(r, entry, pattern, caller, false, codeCoordinatorIdent)
 			return codeCoordinatorIdent, true
 		}
-		// Phase 1: no coordinator proof yet. Identified callers pass as in ed.7; anonymous is
+		// Phase 1: no coordinator proof yet. Identified callers pass as in ed.7; a caller known
+		// only by ancestry passes as the active coordinator and no other session; anonymous is
 		// observe-allowed (below).
+		if caller.IsBridged() {
+			if state.Session != "" && caller.Session == state.Session {
+				cfg.noteAnonymous(r, entry, pattern, caller, true, "")
+				return "", false
+			}
+			cfg.noteAnonymous(r, entry, pattern, caller, false, codeCallerIdentityNeeds)
+			return codeCallerIdentityNeeds, true
+		}
 	}
 	if caller.IsAgent() || caller.IsReviewer() {
 		return "", false
 	}
-	// An anonymous caller.
-	if cfg.Identity == RouteClassEnforce {
+	// An anonymous or bridged caller. Enforce mode refuses the anonymous; a bridged caller is the
+	// pre-upgrade session the bridge exists for and is held to the same per-route list.
+	if cfg.Identity == RouteClassEnforce && !caller.IsBridged() {
 		return cfg.refuseAnonymous(r, entry, pattern, caller), true
 	}
 	allowed := false
@@ -212,7 +229,7 @@ func (cfg GuardConfig) classARefusal(r *http.Request, entry routeclass.Entry, pa
 // CALLER_IDENTITY_REQUIRED.
 func (cfg GuardConfig) refuseAnonymous(r *http.Request, entry routeclass.Entry, pattern string, caller identity.Caller) string {
 	code := codeCallerIdentityNeeds
-	if claimed := claimedSession(r); claimed != "" && cfg.Reproof != nil && cfg.Reproof.Prioritize(r.Context(), claimed) {
+	if claimed := claimOf(r, caller); claimed != "" && cfg.Reproof != nil && cfg.Reproof.Prioritize(r.Context(), claimed) {
 		code = codeSessionNeedsIdent
 	}
 	cfg.noteAnonymous(r, entry, pattern, caller, false, code)
@@ -225,9 +242,19 @@ func (cfg GuardConfig) noteAnonymous(r *http.Request, entry routeclass.Entry, pa
 	}
 	client, server, _ := loopbackPorts(r)
 	cfg.Observer.ObserveAnonymous(AnonymousCall{
-		Method: r.Method, Route: pattern, Class: entry.Class, Claimed: claimedSession(r),
+		Method: r.Method, Route: pattern, Class: entry.Class, Claimed: claimOf(r, caller),
 		Allowed: allowed, Reason: reason, ClientPort: client, ServerPort: server,
 	})
+}
+
+// claimOf is the session an anonymous call is attributed to: for a caller the daemon matched by
+// process ancestry, the matched session (from the kernel, not the request); otherwise the session
+// the request CLAIMS, which is a diagnostic and never an identity.
+func claimOf(r *http.Request, caller identity.Caller) domain.SessionID {
+	if caller.IsBridged() {
+		return caller.Session
+	}
+	return claimedSession(r)
 }
 
 // claimedSession is the session the caller says it is (a claim, never an identity).

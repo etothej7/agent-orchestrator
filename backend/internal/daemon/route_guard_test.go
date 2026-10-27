@@ -74,3 +74,32 @@ func TestRouteGuardDefaultsEnforceHumanAndObserveIdentity(t *testing.T) {
 		t.Fatalf("overrides = human %v identity %v", cfg.EnforceHuman, cfg.Identity)
 	}
 }
+
+// The first phase never comes back: after a coordinator held a proof, a moment with NO live
+// coordinator (crashed, mid-reboot, terminated) is still the strict phase.
+func TestTheCoordinatorsFirstPhaseNeverReturnsOnceAnOrchestratorWasProven(t *testing.T) {
+	base := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	store := fakeCoordStore{
+		cfg: domain.CoordinationConfig{CoordinatorProjectID: "overall"},
+		sessions: []domain.SessionRecord{
+			{ID: "old", Kind: domain.KindOrchestrator, CreatedAt: base, IsTerminated: true},
+		},
+		proofs: map[domain.SessionID]int{"old": 1},
+	}
+	st, err := coordinatorProofs{store}.CoordinatorState(context.Background())
+	if err != nil || st.Session != "" || !st.EverProven {
+		t.Fatalf("state = %+v, %v; want no active coordinator but EverProven", st, err)
+	}
+	store.proofs = nil
+	st, _ = coordinatorProofs{store}.CoordinatorState(context.Background())
+	if st.EverProven {
+		t.Fatalf("EverProven with no orchestrator ever proven: %+v", st)
+	}
+	// a worker of the coordinator project having a proof does not count
+	store.sessions = append(store.sessions, domain.SessionRecord{ID: "w", Kind: domain.KindWorker})
+	store.proofs = map[domain.SessionID]int{"w": 1}
+	st, _ = coordinatorProofs{store}.CoordinatorState(context.Background())
+	if st.EverProven {
+		t.Fatalf("a worker's proof ended the coordinator's first phase: %+v", st)
+	}
+}

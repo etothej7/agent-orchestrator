@@ -60,7 +60,7 @@ func TestRealHTTPCallFromAChildProcessIsIdentifiedByItsAncestry(t *testing.T) {
 	mu.Lock()
 	got := seen
 	mu.Unlock()
-	if len(got) != 1 || !got[0].IsAgent() || got[0].Session != "worker-1" || got[0].Via != identity.ViaAncestry {
+	if len(got) != 1 || !got[0].IsBridged() || got[0].IsAgent() || got[0].Session != "worker-1" || got[0].Via != identity.ViaAncestry {
 		t.Fatalf("server saw %+v, want worker-1 via ancestry", got)
 	}
 

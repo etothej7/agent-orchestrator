@@ -285,7 +285,7 @@ func TestAProoflessLoopbackCallerInsideASessionTreeIsThatSession(t *testing.T) {
 	resolver := identity.NewResolver(store, sessions).WithAncestry(ancestry)
 
 	got := seenCaller(resolver, loopbackRequest(t, ""))
-	if !got.IsAgent() || got.Session != "worker-1" || got.Via != identity.ViaAncestry {
+	if !got.IsBridged() || got.IsAgent() || got.Session != "worker-1" || got.Via != identity.ViaAncestry {
 		t.Fatalf("caller = %+v, want worker-1 via ancestry", got)
 	}
 	if ancestry.ports != [2]int{50321, 3001} {
