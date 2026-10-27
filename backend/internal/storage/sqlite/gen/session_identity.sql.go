@@ -109,22 +109,6 @@ func (q *Queries) InsertSessionIdentity(ctx context.Context, arg InsertSessionId
 	return err
 }
 
-const revokeSessionIdentity = `-- name: RevokeSessionIdentity :exec
-UPDATE session_identity SET proof_sha256 = ?, pending_sha256 = NULL WHERE session_id = ?
-`
-
-type RevokeSessionIdentityParams struct {
-	ProofSha256 string
-	SessionID   string
-}
-
-// Revocation keeps the row (and its confirmed_at and generation: "this session was once proven" is
-// durable) but replaces the hash with one nobody holds, and drops any pending proof.
-func (q *Queries) RevokeSessionIdentity(ctx context.Context, arg RevokeSessionIdentityParams) error {
-	_, err := q.db.ExecContext(ctx, revokeSessionIdentity, arg.ProofSha256, arg.SessionID)
-	return err
-}
-
 const listSessionIdentitiesByIDs = `-- name: ListSessionIdentitiesByIDs :many
 SELECT session_id FROM session_identity
 WHERE session_id IN (/*SLICE:session_ids*/?) AND proof_sha256 NOT LIKE 'revoked:%'
@@ -207,6 +191,22 @@ func (q *Queries) ReplaceUnconfirmedSessionIdentity(ctx context.Context, arg Rep
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const revokeSessionIdentity = `-- name: RevokeSessionIdentity :exec
+UPDATE session_identity SET proof_sha256 = ?, pending_sha256 = NULL WHERE session_id = ?
+`
+
+type RevokeSessionIdentityParams struct {
+	ProofSha256 string
+	SessionID   string
+}
+
+// Revocation keeps the row (and its confirmed_at and generation: "this session was once proven" is
+// durable) but replaces the hash with one nobody holds, and drops any pending proof.
+func (q *Queries) RevokeSessionIdentity(ctx context.Context, arg RevokeSessionIdentityParams) error {
+	_, err := q.db.ExecContext(ctx, revokeSessionIdentity, arg.ProofSha256, arg.SessionID)
+	return err
 }
 
 const setPendingSessionIdentity = `-- name: SetPendingSessionIdentity :execrows

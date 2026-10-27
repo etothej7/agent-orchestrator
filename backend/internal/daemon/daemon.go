@@ -58,6 +58,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/autoresume"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -1014,7 +1015,7 @@ func Run(buildVersion string) error {
 	guardConfig.Observer = guardObserver{rec: identityObs}
 	// Rolling re-proof: idle sessions without an identity proof are relaunched (coordinator
 	// first); a session refused for lack of one is moved to the front of that queue.
-	if reproofSvc := newReproof(log, wiredSessMgr, store); reproofSvc != nil {
+	if reproofSvc := newReproof(log, wiredSessMgr, store, autoresume.NoticeWriter{Store: store, Notify: notificationWriter}); reproofSvc != nil {
 		guardConfig.Reproof = reproofSvc
 		go reproofSvc.Run(ctx)
 	}

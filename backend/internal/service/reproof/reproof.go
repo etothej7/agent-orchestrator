@@ -26,9 +26,33 @@ import (
 // approval is pending). It is not a failure: the session is simply tried again later.
 var ErrBusy = errors.New("session is busy")
 
+// ErrWorkRunning is what a Manager returns when the session is idle but its agent has background
+// work running (a test run, a dev server, a build). Relaunching would kill that work, so the
+// session is left alone and tried again later; it is not a failure either.
+var ErrWorkRunning = errors.New("session has background work running")
+
+// ErrResumeFailed is what a Manager returns when the session WAS stopped for the relaunch but could
+// not be started again. The session is down: unlike a skip, this must be followed up.
+var ErrResumeFailed = errors.New("session was stopped but could not be started again")
+
 // Manager relaunches one session with its conversation resumed, only if it is idle.
 type Manager interface {
-	RelaunchForIdentity(ctx context.Context, id domain.SessionID) error
+	// RelaunchForIdentity reports whether the session was actually relaunched: false, nil is a
+	// session that needed nothing (ended, asleep).
+	RelaunchForIdentity(ctx context.Context, id domain.SessionID) (bool, error)
+	// ResumeStopped starts a session a relaunch stopped and could not start again. It reports
+	// false, nil when the session no longer needs it (it came back or ended).
+	ResumeStopped(ctx context.Context, id domain.SessionID) (bool, error)
+}
+
+// Stopped is how the service makes sure a session it stopped never stays down unnoticed.
+type Stopped interface {
+	// RecordStopped durably records that the session is down and should be brought back, so the
+	// auto-resume pass of the next daemon start revives it even if the daemon restarts first.
+	RecordStopped(ctx context.Context, id domain.SessionID) error
+	// NotifyGaveUp tells the person once that the session is stopped and the service has stopped
+	// trying to bring it back (the standard "work has stopped" notice).
+	NotifyGaveUp(ctx context.Context, id domain.SessionID, reason string) error
 }
 
 // Store is the daemon's records the service reads.
@@ -52,6 +76,10 @@ type Config struct {
 	// delay, doubling (default 2m).
 	MaxAttempts int
 	BackoffBase time.Duration
+	// MaxWorkWait is how long a session with background work running is waited for before the
+	// service logs that it is still staying on its old identity (default 2h). It never kills the
+	// work and keeps asking; the session is relaunched the first time it is quiet.
+	MaxWorkWait time.Duration
 	Now         func() time.Time
 }
 
@@ -74,6 +102,9 @@ func (c Config) withDefaults() Config {
 	if c.BackoffBase <= 0 {
 		c.BackoffBase = 2 * time.Minute
 	}
+	if c.MaxWorkWait <= 0 {
+		c.MaxWorkWait = 2 * time.Hour
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -82,10 +113,11 @@ func (c Config) withDefaults() Config {
 
 // Service is the rolling re-proof.
 type Service struct {
-	mgr   Manager
-	store Store
-	log   *slog.Logger
-	cfg   Config
+	mgr     Manager
+	store   Store
+	stopped Stopped
+	log     *slog.Logger
+	cfg     Config
 
 	mu          sync.Mutex
 	started     time.Time
@@ -94,13 +126,26 @@ type Service struct {
 	gaveUp      map[domain.SessionID]bool
 	lastProject map[domain.ProjectID]time.Time
 	priority    map[domain.SessionID]time.Time
+	// down are sessions a relaunch stopped and could not start again, retried until they are back
+	// or the service gives up (and says so).
+	down map[domain.SessionID]*downState
+	// workSince is when a session was first seen with background work running; workWarned is set
+	// once the wait went past MaxWorkWait and was logged.
+	workSince  map[domain.SessionID]time.Time
+	workWarned map[domain.SessionID]bool
+}
+
+type downState struct {
+	attempts int
+	nextTry  time.Time
 }
 
 // New builds a Service.
-func New(mgr Manager, store Store, log *slog.Logger, cfg Config) *Service {
+func New(mgr Manager, store Store, stopped Stopped, log *slog.Logger, cfg Config) *Service {
 	cfg = cfg.withDefaults()
 	return &Service{
-		mgr: mgr, store: store, log: log, cfg: cfg, started: cfg.Now(),
+		mgr: mgr, store: store, stopped: stopped, log: log, cfg: cfg, started: cfg.Now(),
+		down: map[domain.SessionID]*downState{}, workSince: map[domain.SessionID]time.Time{}, workWarned: map[domain.SessionID]bool{},
 		failures: map[domain.SessionID]int{}, nextTry: map[domain.SessionID]time.Time{}, gaveUp: map[domain.SessionID]bool{},
 		lastProject: map[domain.ProjectID]time.Time{}, priority: map[domain.SessionID]time.Time{},
 	}
@@ -172,6 +217,9 @@ func (s *Service) Tick(ctx context.Context) {
 	settled := now.Sub(s.started) >= s.cfg.StartupDelay
 	s.mu.Unlock()
 	if !settled {
+		return
+	}
+	if s.retryDown(ctx, now) {
 		return
 	}
 	recs, err := s.store.ListAllSessions(ctx)
@@ -270,17 +318,27 @@ func (s *Service) attempt(ctx context.Context, rec domain.SessionRecord, now tim
 	if rec.Activity.State != domain.ActivityIdle {
 		return false // never mid-turn: the manager checks again under the session's lock
 	}
-	err := s.mgr.RelaunchForIdentity(ctx, rec.ID)
+	relaunched, err := s.mgr.RelaunchForIdentity(ctx, rec.ID)
 	switch {
 	case errors.Is(err, ErrBusy):
 		return false
+	case errors.Is(err, ErrWorkRunning):
+		s.waitForWork(rec, now)
+		return false
+	case err == nil && !relaunched:
+		return false // nothing to do for this session (ended or asleep): not a relaunch
 	case err == nil:
 		s.mu.Lock()
 		s.lastProject[rec.ProjectID] = now
 		delete(s.priority, rec.ID)
 		delete(s.failures, rec.ID)
+		delete(s.workSince, rec.ID)
+		delete(s.workWarned, rec.ID)
 		s.mu.Unlock()
 		s.log.Info("re-proof: relaunched a session to give it an identity proof", "session", rec.ID, "project", rec.ProjectID, "kind", string(rec.Kind))
+		return true
+	case errors.Is(err, ErrResumeFailed):
+		s.sessionIsDown(ctx, rec, now, err)
 		return true
 	}
 	s.mu.Lock()
@@ -294,5 +352,91 @@ func (s *Service) attempt(ctx context.Context, rec domain.SessionRecord, now tim
 	}
 	s.mu.Unlock()
 	s.log.Warn("re-proof: relaunch failed", "session", rec.ID, "attempt", n, "gave_up", n >= s.cfg.MaxAttempts, "error", err)
+	return true
+}
+
+// waitForWork notes that a session is idle but has background work running. The first sighting is
+// logged at debug; once the wait passes MaxWorkWait it is logged ONCE at info (the session stays on
+// its old identity and keeps being asked about). The work is never killed.
+func (s *Service) waitForWork(rec domain.SessionRecord, now time.Time) {
+	s.mu.Lock()
+	since, seen := s.workSince[rec.ID]
+	if !seen {
+		s.workSince[rec.ID] = now
+		since = now
+	}
+	warn := now.Sub(since) >= s.cfg.MaxWorkWait && !s.workWarned[rec.ID]
+	if warn {
+		s.workWarned[rec.ID] = true
+	}
+	s.mu.Unlock()
+	switch {
+	case warn:
+		s.log.Info("re-proof: a session still has background work running; it stays on its old identity until that ends (nothing is killed)",
+			"session", rec.ID, "project", rec.ProjectID, "waited", now.Sub(since).Round(time.Minute).String())
+	case !seen:
+		s.log.Debug("re-proof: a session has background work running; trying again later", "session", rec.ID)
+	}
+}
+
+// sessionIsDown handles a relaunch that stopped the session and could not start it again. The
+// failure counts as the first attempt, the intent to bring it back is made durable, and the
+// session is retried by retryDown until it is back or the attempts run out.
+func (s *Service) sessionIsDown(ctx context.Context, rec domain.SessionRecord, now time.Time, cause error) {
+	s.mu.Lock()
+	s.lastProject[rec.ProjectID] = now
+	s.down[rec.ID] = &downState{attempts: 1, nextTry: now.Add(s.cfg.BackoffBase)}
+	s.mu.Unlock()
+	s.log.Warn("re-proof: a session was stopped for its relaunch and could not be started again; retrying", "session", rec.ID, "error", cause)
+	if s.stopped != nil {
+		if err := s.stopped.RecordStopped(ctx, rec.ID); err != nil {
+			s.log.Warn("re-proof: could not record the intent to resume a stopped session", "session", rec.ID, "error", err)
+		}
+	}
+}
+
+// retryDown retries ONE session that a relaunch stopped and could not start again, when its
+// backoff is up. It returns true when it used this tick. After MaxAttempts failed attempts it gives
+// up and posts the standard "work has stopped" notice; the recorded resume intent still stands for
+// the next daemon start.
+func (s *Service) retryDown(ctx context.Context, now time.Time) bool {
+	s.mu.Lock()
+	var id domain.SessionID
+	for cand, st := range s.down {
+		if !now.Before(st.nextTry) && (id == "" || cand < id) {
+			id = cand
+		}
+	}
+	s.mu.Unlock()
+	if id == "" {
+		return false
+	}
+	resumed, err := s.mgr.ResumeStopped(ctx, id)
+	s.mu.Lock()
+	st := s.down[id]
+	if err == nil {
+		delete(s.down, id)
+		s.mu.Unlock()
+		if resumed {
+			s.log.Info("re-proof: a session stopped for its relaunch is running again", "session", id)
+		}
+		return true
+	}
+	st.attempts++
+	giveUp := st.attempts >= s.cfg.MaxAttempts
+	if giveUp {
+		delete(s.down, id)
+		s.gaveUp[id] = true
+	} else {
+		st.nextTry = now.Add(s.cfg.BackoffBase << (st.attempts - 1))
+	}
+	attempts := st.attempts
+	s.mu.Unlock()
+	s.log.Warn("re-proof: starting a stopped session again failed", "session", id, "attempt", attempts, "gave_up", giveUp, "error", err)
+	if giveUp && s.stopped != nil {
+		if nerr := s.stopped.NotifyGaveUp(ctx, id, "its identity relaunch stopped it and it could not be started again"); nerr != nil {
+			s.log.Warn("re-proof: could not post the notice that a session is stopped", "session", id, "error", nerr)
+		}
+	}
 	return true
 }

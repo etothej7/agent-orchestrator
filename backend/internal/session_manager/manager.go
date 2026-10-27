@@ -503,6 +503,9 @@ type Manager struct {
 	updateStops updateStops
 	// versionRetries are sessions a version move could not start again.
 	versionRetries versionRetries
+	// chatWorkloads, when set, replaces the process-table read behind a chat session's
+	// background-work count (tests).
+	chatWorkloads func(ctx context.Context, id domain.SessionID) (int, error)
 	// versionMoves bounds the version moves restarting sessions at once.
 	versionMoves versionMoveSlots
 	// versionPolicy says whether and when sessions move to a new release;

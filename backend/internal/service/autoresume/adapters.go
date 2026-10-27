@@ -68,6 +68,23 @@ type NoticeWriter struct {
 
 // NotifyResumeFailure implements Notifier.
 func (w NoticeWriter) NotifyResumeFailure(ctx context.Context, id domain.SessionID, reason, bootID string) error {
+	return w.notifyStopped(ctx, id, bootID, "resume-failed-",
+		func(name string) string {
+			return fmt.Sprintf("Session %s couldn't resume after the restart: %s. It's stopped until you resume it.", name, reason)
+		})
+}
+
+// NotifyRelaunchFailure tells the human that a session stopped for its identity relaunch could not
+// be started again and the rolling re-proof has stopped trying. Same notice, same dedupe and rate
+// limits; only the wording differs.
+func (w NoticeWriter) NotifyRelaunchFailure(ctx context.Context, id domain.SessionID, reason, bootID string) error {
+	return w.notifyStopped(ctx, id, bootID, "relaunch-failed-",
+		func(name string) string {
+			return fmt.Sprintf("Session %s was stopped to give it an identity proof and couldn't be started again: %s. It's stopped until you resume it.", name, reason)
+		})
+}
+
+func (w NoticeWriter) notifyStopped(ctx context.Context, id domain.SessionID, bootID, idPrefix string, text func(name string) string) error {
 	cfg, err := w.Store.GetCoordination(ctx)
 	if err != nil || cfg.CoordinatorProjectID == "" {
 		return err // nobody to tell without a coordinator project
@@ -88,11 +105,11 @@ func (w NoticeWriter) NotifyResumeFailure(ctx context.Context, id domain.Session
 	if strings.TrimSpace(name) == "" {
 		name = string(victim.ID)
 	}
-	text := fmt.Sprintf("Session %s couldn't resume after the restart: %s. It's stopped until you resume it.", name, reason)
+	body := text(name)
 	now := w.now()
 	messageID, err := w.Store.RecordCoordinatorHumanMessage(ctx, domain.ConversationMessage{
-		ID:             fmt.Sprintf("resume-failed-%x", sha256.Sum256([]byte(string(id)+"\x00"+bootID))),
-		ConversationID: conversation.ID, SenderDisplayName: "AO", Text: text,
+		ID:             fmt.Sprintf("%s%x", idPrefix, sha256.Sum256([]byte(string(id)+"\x00"+bootID))),
+		ConversationID: conversation.ID, SenderDisplayName: "AO", Text: body,
 	}, "stopped_work", "", now)
 	if err != nil || w.Notify == nil {
 		return err
@@ -102,7 +119,7 @@ func (w NoticeWriter) NotifyResumeFailure(ctx context.Context, id domain.Session
 	return w.Notify.Notify(ctx, ports.NotificationIntent{
 		Type: domain.NotificationCoordinatorMessage, SessionID: coordinator.ID, ProjectID: coordinator.ProjectID, CreatedAt: now,
 		SourceKey: "coordinator-message:" + messageID, SessionDisplayName: coordinator.DisplayName,
-		Title: "Work has stopped and needs you", Body: text, Purpose: "stopped_work",
+		Title: "Work has stopped and needs you", Body: body, Purpose: "stopped_work",
 	})
 }
 

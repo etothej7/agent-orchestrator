@@ -141,3 +141,31 @@ func TestResumeFailureNoticeWithoutACoordinatorWritesNothing(t *testing.T) {
 		t.Fatal("a notice was written with no coordinator session to own the conversation")
 	}
 }
+
+// The identity relaunch's give-up notice is the same stopped_work notice in the coordinator's
+// conversation, worded for what happened, and independent of the restart notice for the same
+// session and boot.
+func TestRelaunchFailureNoticeIsAStoppedWorkNoticeWithItsOwnWording(t *testing.T) {
+	store := &noticeStore{
+		cfg: domain.CoordinationConfig{CoordinatorProjectID: "coord"},
+		sessions: []domain.SessionRecord{
+			{ID: "coord-1", Kind: domain.KindOrchestrator, ProjectID: "coord", CreatedAt: t0},
+			{ID: "w-1", Kind: domain.KindWorker, ProjectID: "repo", DisplayName: "Fix the build"},
+		},
+	}
+	notifier := &recordingNotifier{}
+	writer := NoticeWriter{Store: store, Notify: notifier, Now: func() time.Time { return t0 }}
+	if err := writer.NotifyRelaunchFailure(context.Background(), "w-1", "it could not be started again", "reproof-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.NotifyResumeFailure(context.Background(), "w-1", "x", "reproof-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.messages) != 2 || store.messages[0].ID == store.messages[1].ID {
+		t.Fatalf("messages = %+v; the relaunch and restart notices must not share an id", store.messages)
+	}
+	want := "Session Fix the build was stopped to give it an identity proof and couldn't be started again: it could not be started again. It's stopped until you resume it."
+	if store.messages[0].Text != want || store.purposes[0] != "stopped_work" {
+		t.Fatalf("notice = %q purpose %q, want %q as stopped_work", store.messages[0].Text, store.purposes[0], want)
+	}
+}
