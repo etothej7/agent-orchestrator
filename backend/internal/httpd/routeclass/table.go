@@ -95,7 +95,7 @@ var table = []Entry{
 	{Method: "POST", Pattern: "/api/v1/projects/initialize", Class: HP, Note: "CLI `ao project add`; project add/clone/initialize"},
 	{Method: "DELETE", Pattern: "/api/v1/projects/{id}", Class: HP, Note: "project settings / remove (`ao project remove`)"},
 	{Method: "PUT", Pattern: "/api/v1/projects/{id}", Class: HP, Note: "project settings / remove (`ao project remove`)"},
-	{Method: "PUT", Pattern: "/api/v1/projects/{id}/config", Class: HP, Note: "coordinator `ao project config set`: non-executing keys = C; keys that run commands or widen permission (postCreate, preRemove, env, permissionMode) = P"},
+	{Method: "PUT", Pattern: "/api/v1/projects/{id}/config", Class: HP, Note: "person-only today (HP: the guard refuses every non-human, incl. the coordinator's `ao project config set`). Planned relaxation, not implemented: the coordinator may set non-executing keys (C) while keys that run commands or widen permission (postCreate, preRemove, env, permissionMode, agentMayMerge) stay the person's (P), via a pending request"},
 	{Method: "DELETE", Pattern: "/api/v1/projects/{id}/permissions", Class: H, Note: "project permission policy (bypass/auto)"},
 	{Method: "PATCH", Pattern: "/api/v1/projects/{id}/permissions", Class: H, Note: "project permission policy (bypass/auto)"},
 	{Method: "POST", Pattern: "/api/v1/projects/{id}/tasks/prepare", Class: H, Note: "new-task flow in the app"},
