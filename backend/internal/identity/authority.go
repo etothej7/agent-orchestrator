@@ -54,6 +54,10 @@ type Target struct {
 // never merges. A caller who proved nothing (a terminal, a session started before upgrade) has
 // no authority: NeedsHuman, so it too files a request attributed to an unauthenticated terminal.
 //
+// The overall coordinator is an orchestrator of the coordinator project, so it is neither the pull
+// request's own worker nor its project's manager and is refused for every repository PR even when
+// agentMayMerge is on: the coordinator coordinates and does not merge (Ed's no-merge rule).
+//
 // The route must still check the preconditions the design requires even when this allows: a
 // passing native review on exactly the expected head SHA and green required checks.
 func DecideMerge(c Caller, agentMayMerge bool, target Target) Verdict {
@@ -90,7 +94,9 @@ func MaySubmitReview(c Caller, run ReviewRunRef) bool {
 	case c.IsHuman():
 		return true
 	case c.IsReviewer():
-		return run.Review != "" && c.Review == run.Review && (run.Worker == "" || c.Worker == run.Worker)
+		// All three must be known and agree: a run that names no worker (or a reviewer with none)
+		// cannot be bound, so it fails closed.
+		return run.Review != "" && run.Worker != "" && c.Review == run.Review && c.Worker == run.Worker
 	default:
 		return false
 	}

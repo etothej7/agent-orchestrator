@@ -76,6 +76,8 @@ type APIDeps struct {
 	// human-authored writes. Nil marks no request as human (a daemon the app did not
 	// start, so nothing human-only can be done through it).
 	UICapability *uicapability.Verifier
+	// ReviewRuns lets review submit bind a verified reviewer to its own active run.
+	ReviewRuns controllers.ReviewRunReader
 	// SessionProofs reports which sessions hold an identity proof (for the session views).
 	SessionProofs controllers.SessionIdentitySource
 	// IdentityObservations records the calls that reach the daemon without an identity, for the
@@ -222,7 +224,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		desktop:       &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
 		usage:         &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
 		prs:           &controllers.PRsController{Svc: deps.PRs},
-		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
+		reviews:       &controllers.ReviewsController{Svc: deps.Reviews, Runs: deps.ReviewRuns},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		stories:       &controllers.StoriesController{Svc: deps.Stories},
 		reports:       &controllers.ReportsController{Svc: deps.Reports},

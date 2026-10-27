@@ -1028,6 +1028,7 @@ func Run(buildVersion string) error {
 		RouteGuard:           guardConfig,
 		IdentityObservations: identityObs,
 		SessionProofs:        sessionProofs{store: store, obs: identityObs},
+		ReviewRuns:           store,
 		IdentityMode:         func() string { return identityModeName(guardConfig.Identity) },
 		Awake:                awakeSvc,
 		Projects:             projectSvc,

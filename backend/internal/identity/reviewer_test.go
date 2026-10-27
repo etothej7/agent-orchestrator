@@ -167,3 +167,38 @@ func TestReviewerProofsNeedAReviewStore(t *testing.T) {
 		t.Fatalf("a reviewer proof on a session-only resolver = %v, want invalid", err)
 	}
 }
+
+// An archived review no longer speaks for anyone, and the caller says which harness reviews.
+func TestAnArchivedReviewsProofStopsAndTheCallerNamesItsHarness(t *testing.T) {
+	issuer, resolver, _, _ := reviewerFixture()
+	reader := resolver.reviewed.(fakeReviews)
+	r := reader["review-1"]
+	r.Harness = domain.ReviewerCodex
+	reader["review-1"] = r
+	proof, _ := issuer.IssueReview(context.Background(), "review-1")
+	c, err := resolver.Resolve(context.Background(), proof)
+	if err != nil || c.ReviewHarness != domain.ReviewerCodex {
+		t.Fatalf("caller = %+v, %v; want the reviewer's harness", c, err)
+	}
+	r.IsArchived = true
+	reader["review-1"] = r
+	if c, err := resolver.Resolve(context.Background(), proof); !errors.Is(err, ErrSessionEnded) || c.Kind != KindAnonymous {
+		t.Fatalf("an archived review's proof = %+v, %v; want ErrSessionEnded", c, err)
+	}
+}
+
+func TestAReviewerProofIsNeverASessionProofAndNoEmptyReviewGetsOne(t *testing.T) {
+	issuer, resolver, _, _ := reviewerFixture()
+	if _, err := issuer.IssueReview(context.Background(), " "); err == nil {
+		t.Fatal("a proof was issued for an empty review id")
+	}
+	// A session's proof presented where only reviewers resolve, and a reviewer's where only sessions do.
+	sessionProof, _ := issuer.Issue(context.Background(), "worker-1")
+	reviewProof, _ := issuer.IssueReview(context.Background(), "review-1")
+	if c, err := resolver.Resolve(context.Background(), sessionProof); err != nil || c.IsReviewer() {
+		t.Fatalf("a session proof resolved as %+v, %v; it must never be a reviewer", c, err)
+	}
+	if c, err := resolver.Resolve(context.Background(), reviewProof); err != nil || c.IsAgent() {
+		t.Fatalf("a reviewer proof resolved as %+v, %v; it must never be an agent", c, err)
+	}
+}

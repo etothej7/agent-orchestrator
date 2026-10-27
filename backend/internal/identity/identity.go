@@ -98,6 +98,8 @@ type Caller struct {
 	// checks the run's review against Review, so a reviewer can act only on its own run.
 	Review string
 	Worker domain.SessionID
+	// ReviewHarness is the harness the reviewer runs on (reviewers only).
+	ReviewHarness domain.ReviewerHarness
 }
 
 // Anonymous is the caller that proved nothing.
@@ -268,6 +270,9 @@ func (i *Issuer) WithReviews(reviews ReviewStore) *Issuer {
 // the plain proof exists only on the way into the reviewer's launch environment, and issuing
 // again replaces the previous proof. Call it only when a new reviewer process is being launched.
 func (i *Issuer) IssueReview(ctx context.Context, reviewID string) (string, error) {
+	if strings.TrimSpace(reviewID) == "" {
+		return "", errors.New("issue reviewer identity proof: review id is required")
+	}
 	if i.reviews == nil {
 		return "", errors.New("reviewer proofs are not available: no review store")
 	}
@@ -364,7 +369,7 @@ func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, er
 	if err != nil {
 		return Anonymous(), fmt.Errorf("resolve reviewer proof: %w", err)
 	}
-	if !ok {
+	if !ok || review.IsArchived {
 		return Anonymous(), ErrSessionEnded
 	}
 	worker, ok, err := r.sessions.GetSession(ctx, review.SessionID)
@@ -374,7 +379,7 @@ func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, er
 	if !ok || worker.IsTerminated {
 		return Anonymous(), ErrSessionEnded
 	}
-	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID}, nil
+	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID, ReviewHarness: review.Harness}, nil
 }
 
 // Ancestry finds the session a loopback caller belongs to from the socket and the kernel's
