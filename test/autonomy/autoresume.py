@@ -40,16 +40,18 @@ SLEEP_COMMAND = 'sleep 600'
 STAGES = (('coord',), ('mgr_busy',), ('wkr', 'codex_wkr'))
 CLASSES = {
     'coord': 'working-idle',  # always actively resumed, even though idle
-    'mgr_idle': 'idle', 'mgr_busy': 'working', 'wkr': 'working', 'codex_wkr': 'working',
+    'mgr_idle': 'idle', 'mgr_idle2': 'idle', 'mgr_busy': 'working', 'wkr': 'working', 'codex_wkr': 'working',
     'never_orch': 'never', 'stopped': 'user_stopped', 'terminated': 'terminated',
 }
-FULL_ROLES = ('coord', 'mgr_idle', 'mgr_busy', 'wkr', 'codex_wkr', 'never_orch', 'stopped', 'terminated')
+FULL_ROLES = ('coord', 'mgr_idle', 'mgr_idle2', 'mgr_busy', 'wkr', 'codex_wkr', 'never_orch', 'stopped', 'terminated')
 SMALL_ROLES = ('coord', 'wkr', 'wkr_fail')
+FLAP_ROLES = ('coord', 'wkr')
 CYCLES = {
     'hosts-first': {'order': 'hosts-first', 'roles': FULL_ROLES},
     'daemon-first': {'order': 'daemon-first', 'roles': FULL_ROLES},
     'kill9': {'order': 'kill9', 'roles': FULL_ROLES},
-    'flap': {'order': 'kill9', 'roles': SMALL_ROLES, 'flap': True},
+    # Two extra quick daemon kills make four daemon starts in minutes: past the design's boot-storm guard (more than 3), which delays the resumer by 2 minutes.
+    'flap': {'order': 'kill9', 'roles': FLAP_ROLES, 'flap': 2, 'giveup': 240},
     'resume-failure': {'order': 'kill9', 'roles': SMALL_ROLES, 'fail': 'wkr_fail'},
 }
 
@@ -76,6 +78,7 @@ for line in sys.stdin:
     if m == "initialize":
         out({"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"resume": {}}}, "authMethods": [], "agentInfo": {"name": "OpenCode", "version": "2.0.0"}})
     elif m in ("session/new", "session/load", "session/resume"):
+        if m != "session/new": time.sleep(float(os.environ.get("AO_SCRATCH_LOAD_DELAY", "0")))
         if m != "session/new" and os.path.exists(os.path.join(ROOT, "fail-load", sid)):
             print(json.dumps({"jsonrpc": "2.0", "id": i, "error": {"code": -32002, "message": "session not found"}}), flush=True)
             continue
@@ -136,6 +139,12 @@ def gate(passed, **detail):
 def provider_sid(conversation):
     """AO stores 'ao-harness:<harness>:<provider id>'; the provider only sees the last segment."""
     return (conversation or '').rsplit(':', 1)[-1]
+
+
+def mentions(text, names):
+    """True if any name (a display name such as 'wkr' or a session id) appears as a whole token.
+    'wkr' must not match 'wkr_fail', nor 'ar-work-1' 'ar-work-10'."""
+    return any(re.search(r'(?<![\w-])' + re.escape(name) + r'(?![\w-])', text) for name in names if name)
 
 
 def first_live(timeline, sid):
@@ -206,10 +215,15 @@ def wake_gate(results):
     return gate(results and not problems, probes=results, problems=sorted(problems))
 
 
-def stays_down_gate(timeline, before, after, sessions, require_policy=None):
+def stays_down_gate(timeline, before, after, sessions, require_policy=None, intents=None):
+    """intents: {sid: state} read from the daemon. A daemon that captured nothing proves nothing about exclusions."""
     problems = {}
     for sid in sessions:
         issues = []
+        if intents is not None and not intents.get('_observed'):
+            issues.append('no_intents_recorded_so_nothing_to_judge')
+        if intents is not None and sid in intents:
+            issues.append('captured_for_resume')
         if ever_live(timeline, sid):
             issues.append('launched')
         view = after['sessions'].get(sid, {})
@@ -225,19 +239,75 @@ def stays_down_gate(timeline, before, after, sessions, require_policy=None):
     return gate(sessions and not problems, checked=sorted(sessions), problems=problems)
 
 
-def worktree_gate(before, after):
-    problems = {}
-    for sid, old in before['sessions'].items():
-        fingerprint = old.get('fingerprint') or {}
-        if not fingerprint.get('exists'):
+WORKTREE_KEYS = ('exists', 'digest', 'entries', 'rootInode', 'rootBirth')
+
+
+def worktree_gate(before, pre_wake, final, strict, resumed, timeline):
+    """Byte-for-byte identity (content, modes, names, inode, birth) for sessions that run no agent: excluded
+    ones and the parked manager, measured BEFORE the wake probe. A resumed agent legitimately writes, so for
+    those the worktree must be the same directory (inode, birth), keep the dirty marker and stay on the same HEAD."""
+    problems, compared = {}, {'strict': [], 'resumed': []}
+    for sid in strict:
+        old = (before['sessions'].get(sid, {}).get('fingerprint')) or {}
+        if not old.get('exists'):
             continue
-        new = (after['sessions'].get(sid, {}).get('fingerprint')) or {}
-        keys = ('exists', 'digest', 'entries', 'rootInode', 'rootBirth')
-        changed = [k for k in keys if fingerprint.get(k) != new.get(k)]
+        compared['strict'].append(sid)
+        new = (pre_wake['sessions'].get(sid, {}).get('fingerprint')) or {}
+        changed = [k for k in WORKTREE_KEYS if old.get(k) != new.get(k)]
         if changed:
             problems[sid] = changed
-    compared = sorted(s for s, v in before['sessions'].items() if (v.get('fingerprint') or {}).get('exists'))
-    return gate(compared and not problems, compared=compared, problems=problems)
+    for sid in resumed:
+        old = (before['sessions'].get(sid, {}).get('fingerprint')) or {}
+        if not old.get('exists'):
+            continue
+        compared['resumed'].append(sid)
+        new = (final['sessions'].get(sid, {}).get('fingerprint')) or {}
+        changed = [k for k in ('exists', 'rootInode', 'rootBirth', 'marker', 'head') if old.get(k) != new.get(k)]
+        if first_live(timeline, sid) is None:
+            changed.append('not_resumed_so_nothing_to_judge')
+        if changed:
+            problems[sid] = changed
+    return gate(compared['resumed'] and (compared['strict'] or not any(
+        (before['sessions'].get(sid, {}).get('fingerprint') or {}).get('exists') for sid in strict)) and not problems,
+        compared=compared, problems=problems)
+
+
+def intent_barrier_gate(timeline, stages):
+    """Durable-state view of the stage barrier: a later-stage session is never `resuming` while an earlier-stage
+    one is still pending/resuming/missing. Needs the daemon's intent rows; no rows is no evidence."""
+    settled = ('resumed', 'failed', 'abandoned', 'hibernated')
+    seen, violations = set(), []
+    for item in timeline:
+        intents = item.get('intents', {})
+        for index, stage in enumerate(stages):
+            for sid in stage:
+                if intents.get(sid):
+                    seen.add(sid)
+                if intents.get(sid) == 'resuming':
+                    unsettled = [e for earlier in stages[:index] for e in earlier if intents.get(e) not in settled]
+                    if unsettled:
+                        violations.append({'t': item['t'], 'session': sid, 'earlierUnsettled': unsettled})
+    expected = {sid for stage in stages for sid in stage}
+    missing = sorted(expected - seen)
+    return gate(not missing and not violations, intentsSeen=sorted(seen), missing=missing, violations=violations[:5])
+
+
+def intent_expectation_gate(intents, resumed, parked, excluded, failed=()):
+    """Final intent rows: resumed sessions `resumed`, parked ones `hibernated`, a failed one `failed`, excluded none."""
+    problems = {}
+    for sid in resumed:
+        if intents.get(sid) != 'resumed':
+            problems[sid] = f'expected resumed, got {intents.get(sid)}'
+    for sid in parked:
+        if intents.get(sid) != 'hibernated':
+            problems[sid] = f'expected hibernated, got {intents.get(sid)}'
+    for sid in failed:
+        if intents.get(sid) != 'failed':
+            problems[sid] = f'expected failed, got {intents.get(sid)}'
+    for sid in excluded:
+        if sid in intents:
+            problems[sid] = f'excluded session has an intent ({intents[sid]})'
+    return gate(intents.get('_observed') and (resumed or parked) and not problems, problems=problems)
 
 
 def continue_messages(after, sid):
@@ -316,16 +386,17 @@ def duplicate_gate(timeline, after, sessions):
 
 
 def failure_notice_gate(notices, failed, others, after, timeline):
-    """One stopped-work coordinator notice for the failed session only; it stays down; the rest resume."""
-    mine = [n for n in notices if failed in n['text']]
-    stray = [n for n in notices if any(o in n['text'] for o in others)]
-    down = (after['sessions'].get(failed, {}).get('activity') == 'exited') and not ever_live(timeline, failed)
+    """One stopped-work coordinator notice for the failed session only; it stays down; the rest resume.
+    failed/others are NAME LISTS ([display name, session id]): the product writes the display name."""
+    mine = [n for n in notices if mentions(n['text'], failed['names'])]
+    stray = [n for n in notices if any(mentions(n['text'], o) for o in others)]
+    down = (after['sessions'].get(failed['sid'], {}).get('activity') == 'exited') and not ever_live(timeline, failed['sid'])
     return gate(len(mine) == 1 and not stray and down, noticesForFailed=len(mine), strayNotices=len(stray), failedStaysExited=down)
 
 
-def codex_settle_gate(timeline, after, notices, sid, restart_at, bound):
+def codex_settle_gate(timeline, after, notices, sid, restart_at, bound, names=()):
     live = first_live(timeline, sid)
-    noticed = any(sid in n['text'] for n in notices)
+    noticed = any(mentions(n['text'], [sid, *names]) for n in notices)
     if live is not None and live - restart_at <= bound:
         outcome = 'resumed'
     elif noticed and live is None:
@@ -352,10 +423,15 @@ class Cycle(A.Harness):
         self.gates = {}
         self.detail = {'cycle': name, 'order': self.spec['order'], 'roles': list(self.spec['roles'])}
         self.wake = {}
+        self.starts = 0
         self.install_shim()
 
     def emit(self):  # the aggregator writes the artifacts
         pass
+
+    def start(self, seed=False):
+        self.starts += 1
+        super().start(seed)
 
     def install_shim(self):
         if self.args.mode != 'mechanics':
@@ -367,7 +443,8 @@ class Cycle(A.Harness):
         shim.chmod(0o755)
         (self.root / 'fail-load').mkdir()
         self.env.update(AO_SCRATCH_FAKE_ACP=str(fake), AO_SCRATCH_ACP_LOG=str(self.shim_log),
-                        AO_SCRATCH_ROOT=str(self.root), AO_SCRATCH_PYTHON=sys.executable)
+                        AO_SCRATCH_ROOT=str(self.root), AO_SCRATCH_PYTHON=sys.executable,
+                        AO_SCRATCH_LOAD_DELAY=str(self.args.load_delay))
 
     # -- helpers -------------------------------------------------------------------------------------------------
     @property
@@ -409,7 +486,7 @@ class Cycle(A.Harness):
                 'prompt': A.digest(row.get('prompt', '')),
                 'policy': (policy.get(sid) or {}).get('policy', 'allowed' if policy is not None else None),
                 'stopReason': (policy.get(sid) or {}).get('stop_reason', ''),
-                'fingerprint': tree_fingerprint(row['workspace_path']) if with_fingerprints and row.get('workspace_path') else None}
+                'fingerprint': self.fingerprint(row['workspace_path']) if with_fingerprints and row.get('workspace_path') else None}
         return {
             'sessions': by_id,
             'turns': {sid: [{'id': t['id'], 'state': t['state'], 'providerTurnId': t['provider_turn_id']}
@@ -417,7 +494,30 @@ class Cycle(A.Harness):
             'messages': {sid: [{'id': m['id'], 'origin': m['origin'], 'role': m['role'], 'text': m['text'], 'key': m['client_message_id'],
                                 'turnId': m['turn_id'], 'createdAt': m['created_at']}
                                for m in messages if conversations.get(sid) == m['conversation_id']] for sid in by_id},
-            'daemonRuns': len(runs), 'intents': len(intents), 'hasPolicyTable': bool(policy) or self.has_table('session_auto_resume')}
+            'daemonRuns': len(runs), 'intents': len(intents), 'intentStates': self.intent_states(intents),
+            'hasPolicyTable': bool(policy) or self.has_table('session_auto_resume')}
+
+    @staticmethod
+    def intent_states(rows):
+        """{session id: state} from session_resume_intents; '_observed' says whether the daemon wrote any row."""
+        states = {'_observed': bool(rows)}
+        for row in rows:
+            try:
+                states[row['session_id']] = json.loads(row['record']).get('state') or 'unknown'
+            except (ValueError, KeyError):
+                states[row.get('session_id', '?')] = 'unreadable'
+        return states
+
+    def fingerprint(self, path):
+        fp = tree_fingerprint(path)
+        if fp.get('exists'):
+            marker = Path(path) / 'ar-dirty.txt'
+            fp['marker'] = hashlib.sha256(marker.read_bytes()).hexdigest() if marker.is_file() else None
+            try:
+                fp['head'] = self.git(path, 'rev-parse', 'HEAD')
+            except (subprocess.CalledProcessError, OSError):
+                fp['head'] = None
+        return fp
 
     def has_table(self, name):
         with A.db_open(self.db) as db:
@@ -450,7 +550,9 @@ class Cycle(A.Harness):
             rows = {r['id']: r for r in A.rows(db, 'sessions')}
         view = {sid: {'activity': rows.get(sid, {}).get('activity_state'), 'terminated': bool(rows.get(sid, {}).get('is_terminated')),
                       'hibernated': bool(rows.get(sid, {}).get('hibernated_at'))} for sid in self.sessions.values()}
-        item = {'t': time.time(), 'sessions': view, 'hosts': self.hosts(current)}
+        with A.db_open(self.db) as db:
+            intents = self.intent_states(A.rows(db, 'session_resume_intents'))
+        item = {'t': time.time(), 'sessions': view, 'hosts': self.hosts(current), 'intents': intents}
         self.timeline.append(item)
         return item
 
@@ -484,11 +586,11 @@ class Cycle(A.Harness):
     def build_state(self):
         roles = self.spec['roles']
         harness = self.harness_for('coord')
-        for project in ('ar-coord', 'ar-repo', 'ar-busy', 'ar-never', 'ar-work'):
+        for project in ('ar-coord', 'ar-repo', 'ar-repo2', 'ar-busy', 'ar-never', 'ar-work'):
             self.register(project, harness)
         coordinator = self.require('POST', '/api/v1/settings/coordination/project', {'agent': harness})['projectId']
         self.require('PUT', '/api/v1/settings/coordination', {'coordinatorProjectId': coordinator,
-                                                              'managedProjectIds': ['ar-repo', 'ar-busy', 'ar-never', 'ar-work']})
+                                                              'managedProjectIds': ['ar-repo', 'ar-repo2', 'ar-busy', 'ar-never', 'ar-work']})
         existing = [s for s in self.require('GET', '/api/v1/sessions')['sessions']
                     if s.get('projectId') == coordinator and s.get('kind') == 'orchestrator']
         self.sessions['coord'] = existing[0]['id'] if existing else self.require('POST', '/api/v1/sessions', {
@@ -497,7 +599,7 @@ class Cycle(A.Harness):
         busy = lambda role: (f'{token(role)} Run exactly {SLEEP_COMMAND} as a single standalone shell command, '  # noqa: E731
                              'wait for it to finish, then reply with the single word DONE.')
         quiet = lambda role: f'{token(role)} Reply with the single word READY and do nothing else.'  # noqa: E731
-        plan = {'mgr_idle': ('ar-repo', 'orchestrator', quiet, False), 'mgr_busy': ('ar-busy', 'orchestrator', busy, True),
+        plan = {'mgr_idle': ('ar-repo', 'orchestrator', quiet, False), 'mgr_idle2': ('ar-repo2', 'orchestrator', quiet, False), 'mgr_busy': ('ar-busy', 'orchestrator', busy, True),
                 'wkr': ('ar-work', 'worker', busy, True), 'wkr_fail': ('ar-work', 'worker', busy, True),
                 'codex_wkr': ('ar-work', 'worker', busy, True), 'never_orch': ('ar-never', 'orchestrator', quiet, False),
                 'stopped': ('ar-work', 'worker', quiet, False), 'terminated': ('ar-work', 'worker', quiet, False)}
@@ -524,14 +626,14 @@ class Cycle(A.Harness):
             if role in ('wkr', 'wkr_fail', 'codex_wkr', 'mgr_busy'):
                 self.wait_state(role, lambda s, turns: any(x['state'] == 'running' and x['providerTurnId'] for x in turns)
                                 and s['activity'] in ('active', 'waiting_input', 'blocked'), t, 'mid-turn')
-            elif role in ('mgr_idle', 'never_orch', 'stopped', 'terminated'):
+            elif role in ('mgr_idle', 'mgr_idle2', 'never_orch', 'stopped', 'terminated'):
                 self.wait_state(role, lambda s, turns: s['activity'] == 'idle' and any(x['state'] == 'completed' for x in turns), t, 'idle after a turn')
-                if role == 'mgr_idle' and self.read_snapshot()['sessions'][self.sessions[role]]['hibernated']:
+                if role in ('mgr_idle', 'mgr_idle2') and self.read_snapshot()['sessions'][self.sessions[role]]['hibernated']:
                     # The idle sweeper got there first: boot parking would not be exercised.
-                    raise RuntimeError('precondition invalid: mgr_idle was already hibernated before the restart')
+                    raise RuntimeError(f'precondition invalid: {role} was already hibernated before the restart')
         if 'coord' in self.spec['roles']:
-            # The coordinator is idle when nothing was asked of it; require a live host and an idle row.
-            self.wait_state('coord', lambda s, turns: s['activity'] in ('idle', 'active') and not s['terminated'], t, 'live')
+            # Nothing is asked of the coordinator: it must be idle (and live) so it is the always-resumed idle case.
+            self.wait_state('coord', lambda s, turns: s['activity'] == 'idle' and not s['terminated'], t, 'idle')
         if 'stopped' in self.sessions:
             status, _ = self.api('POST', f'/api/v1/sessions/{self.sessions["stopped"]}/exit-agent', {})
             self.detail['stopStatus'] = status
@@ -547,8 +649,9 @@ class Cycle(A.Harness):
         self.detail['autoResumeEndpointStatus'] = probe_status
         for sid in self.sessions.values():  # real state in the worktrees: an untracked file per live session
             row = self.read_snapshot()['sessions'][sid]
-            if row['workspace'] and Path(row['workspace']).is_dir():
-                (Path(row['workspace']) / 'ar-dirty.txt').write_text(f'dirty worktree marker for {sid}\n')
+            workspace = Path(row['workspace']) if row['workspace'] else None
+            if workspace and workspace.is_dir() and workspace.resolve().is_relative_to(self.root):
+                (workspace / 'ar-dirty.txt').write_text(f'dirty worktree marker for {sid}\n')
 
     def quarantine_history(self, role):
         """Make the saved provider conversation of one session unresumable, inside the scratch root only."""
@@ -635,7 +738,7 @@ class Cycle(A.Harness):
             live_now = all(item['hosts'].get(s) for s in expected_live)
             if live_now and time.monotonic() - last_change >= self.args.quiet:
                 break
-            if time.monotonic() - last_change >= self.args.giveup:
+            if time.monotonic() - last_change >= max(self.args.giveup, self.spec.get('giveup', 0)):
                 self.detail['gaveUpWaiting'] = True  # nothing changes by itself: the feature is absent or stuck
                 break
             time.sleep(self.args.poll)
@@ -664,14 +767,19 @@ class Cycle(A.Harness):
                     self.sample()
 
     def probe_wake(self, snap):
-        for role in ('mgr_idle',):
+        """One probe per delivery path against a PARKED manager (a woken session is no longer parked):
+        a human conversation message to mgr_idle, and an `ao send` from the coordinator to mgr_idle2."""
+        probes = {'mgr_idle': ('conversation message', lambda sid: ('POST', f'/api/v1/sessions/{sid}/conversation/messages',
+                                                                    {'text': WAKE_PROBE_TEXT, 'clientMessageId': f'ar-wake-{self.token[:8]}'})),
+                  'mgr_idle2': ('coordinator ao send', lambda sid: ('POST', f'/api/v1/sessions/{sid}/send',
+                                                                    {'message': WAKE_PROBE_TEXT, 'senderSessionId': self.sessions['coord']}))}
+        for role, (path, request) in probes.items():
             if role not in self.sessions:
                 continue
             sid = self.sessions[role]
             before_turns = {t['id'] for t in snap['turns'][sid]}
-            status, _ = self.api('POST', f'/api/v1/sessions/{sid}/conversation/messages',
-                                 {'text': WAKE_PROBE_TEXT, 'clientMessageId': f'ar-wake-{self.token[:8]}'})
-            result = {'status': status, 'turnStarted': False, 'live': False, 'sameConversation': False}
+            status, _ = self.api(*request(sid))
+            result = {'path': path, 'status': status, 'turnStarted': False, 'live': False, 'sameConversation': False}
             deadline = time.monotonic() + self.args.wake_timeout
             while time.monotonic() < deadline and 200 <= status < 300:
                 after = self.read_snapshot()
@@ -696,11 +804,11 @@ class Cycle(A.Harness):
         mutations_before = len(self.mutations)
         self.start()
         daemon_ready_at = time.time()
-        if self.spec.get('flap'):
+        for kill in range(int(self.spec.get('flap') or 0)):
             time.sleep(self.args.flap_gap)
             self.signal_pids([self.daemon.pid], signal.SIGKILL)
             self.wait_gone([self.daemon.pid], 10)
-            self.detail['flapKills'] = 1
+            self.detail['flapKills'] = kill + 1
             self.start()
         if self.args.simulate_resumer:
             self.simulated_resumer()
@@ -709,7 +817,7 @@ class Cycle(A.Harness):
         self.probe_wake(after)
         self.sample()
         final = self.read_snapshot(with_fingerprints=True)
-        self.evaluate(before, final, restart_at, daemon_ready_at, mutations_before)
+        self.evaluate(before, after, final, restart_at, daemon_ready_at, mutations_before)
 
     def public(self, snap):
         """IDs, states and counts only: no message text and no raw provider data."""
@@ -718,71 +826,77 @@ class Cycle(A.Harness):
                              for sid, view in snap['sessions'].items()},
                 'turnCounts': {sid: collections.Counter(t['state'] for t in turns) for sid, turns in snap['turns'].items()},
                 'messageCounts': {sid: len(m) for sid, m in snap['messages'].items()},
-                'daemonRuns': snap['daemonRuns'], 'resumeIntents': snap['intents']}
+                'daemonRuns': snap['daemonRuns'], 'resumeIntents': snap['intents'], 'intentStates': snap['intentStates']}
 
     def notices(self, after):
         coord = self.sessions['coord']
-        return [{'text': m['text'], 'createdAt': m['createdAt']} for m in after['messages'].get(coord, [])
+        return [{'id': m['id'], 'text': m['text'], 'createdAt': m['createdAt']} for m in after['messages'].get(coord, [])
                 if m['origin'] in ('daemon', 'automation') and NOTICE_TEXT.search(m['text'])]
 
-    def evaluate(self, before, after, restart_at, daemon_ready_at, mutations_before):
+    def evaluate(self, before, pre_wake, after, restart_at, daemon_ready_at, mutations_before):
         r = self.sessions
         role = lambda *names: [r[n] for n in names if n in r]  # noqa: E731
-        working = [n for n in ('mgr_busy', 'wkr', 'codex_wkr') if n in r]
+        names = lambda n: [n, r[n]]  # noqa: E731  the product writes the DISPLAY NAME (= role here), falling back to the id
         failed = self.spec.get('fail')
-        if failed:
-            working = [n for n in working if n != failed]
+        working = [n for n in ('mgr_busy', 'wkr', 'codex_wkr') if n in r and n != failed]
+        parked = role('mgr_idle', 'mgr_idle2')
+        excluded = role('never_orch', 'stopped', 'terminated')
+        resumed = role('coord', *working)
         shim = [c for c in self.shim_calls() if c['t'] >= restart_at]
         notices = self.notices(after)
+        intents = after['intentStates']
         gates = self.gates
         gates['auto_resume_endpoint_present'] = gate(self.detail.get('autoResumeEndpointStatus') not in (None, 404, 405, 501),
                                                      status=self.detail.get('autoResumeEndpointStatus'))
         if 'never_orch' in r:
             gates['never_policy_applied'] = gate(after['sessions'][r['never_orch']]['policy'] == 'never',
                                                  policyStatus=self.detail.get('neverPolicyStatus'))
-        resumed = role('coord', *working)
         gates['coordinator_resumed_actively'] = active_resume_gate(self.timeline, before, after, role('coord'))
         if working:
             gates['working_sessions_resumed_actively'] = active_resume_gate(self.timeline, before, after, role(*working))
-        stages = [[n for n in stage if n in r and n != failed] for stage in STAGES]
-        stages = [s for s in stages if s]
+        stages = [[r[n] for n in stage if n in r and n != failed] for stage in STAGES]
+        stages = [stage for stage in stages if stage]
         if len(stages) > 1:
-            gates['stage_barrier_order'] = stage_order_gate(self.timeline, [[r[n] for n in stage] for stage in stages])
-        if 'mgr_idle' in r:
-            gates['idle_session_hibernated'] = hibernate_gate(self.timeline, after, role('mgr_idle'))
-            gates['hibernated_session_wakes_on_message'] = wake_gate(self.wake)
-        down = role('never_orch', 'stopped', 'terminated')
-        if down:
-            gates['excluded_sessions_stay_down'] = stays_down_gate(self.timeline, before, after, role('stopped', 'terminated'))
+            gates['stage_barrier_order'] = stage_order_gate(self.timeline, stages)
+            gates['stage_barrier_by_intent_state'] = intent_barrier_gate(self.timeline, stages)
+        if parked:
+            gates['idle_sessions_hibernated'] = hibernate_gate(self.timeline, pre_wake, parked)
+            gates['hibernated_sessions_wake_on_message'] = wake_gate(self.wake)
+        if excluded:
+            gates['excluded_sessions_stay_down'] = stays_down_gate(self.timeline, before, after, role('stopped', 'terminated'), intents=intents)
             if 'never_orch' in r:
-                gates['never_session_stays_down_with_policy'] = stays_down_gate(self.timeline, before, after, role('never_orch'), 'never')
+                gates['never_session_stays_down_with_policy'] = stays_down_gate(
+                    self.timeline, before, after, role('never_orch'), 'never', intents=intents)
         if 'stopped' in r:
             gates['user_stop_reason_recorded'] = gate(after['sessions'][r['stopped']]['stopReason'] == 'user_stop',
                                                       stopReason=after['sessions'][r['stopped']]['stopReason'])
-        gates['worktrees_byte_identical'] = worktree_gate(before, after)
+        gates['intents_match_expectations'] = intent_expectation_gate(
+            intents, resumed, parked, excluded, role(failed) if failed else ())
+        gates['worktrees_preserved'] = worktree_gate(before, pre_wake, after, [*excluded, *parked, *role(failed or '')], resumed, self.timeline)
         if working:
-            gates['one_keyed_continue_turn'] = continue_turn_gate(before, after, role(*working),
-                                                                  role('coord', 'mgr_idle', 'never_orch', 'stopped', 'terminated'))
+            gates['one_keyed_continue_turn'] = continue_turn_gate(
+                before, after, role(*working), role('coord', 'mgr_idle', 'mgr_idle2', 'never_orch', 'stopped', 'terminated'))
         gates['no_fresh_relaunch_or_prompt_replay'] = no_fresh_relaunch_gate(
-            before, after, shim, restart_at, [s for s in resumed], self.tokens, self.timeline)
+            before, after, shim, restart_at, resumed, self.tokens, self.timeline)
         if 'codex_wkr' in r:
             gates['codex_midturn_settles_or_clean_notice'] = codex_settle_gate(
-                self.timeline, after, notices, r['codex_wkr'], restart_at, self.args.codex_settle)
+                self.timeline, after, notices, r['codex_wkr'], restart_at, self.args.codex_settle, [names('codex_wkr')[0]])
         if failed:
             gates['one_stopped_work_notice_on_resume_failure'] = failure_notice_gate(
-                notices, r[failed], role('coord', 'wkr'), after, self.timeline)
+                notices, {'sid': r[failed], 'names': names(failed)}, [names('wkr'), [r['coord']]], after, self.timeline)
             gates['other_sessions_still_resume'] = active_resume_gate(self.timeline, before, after, role('coord', 'wkr'))
         if self.spec.get('flap'):
+            gates['flap_exceeded_boot_storm_threshold'] = gate(self.starts > 3, daemonStarts=self.starts)  # harness precondition
             gates['flap_no_duplicate_resumes'] = duplicate_gate(self.timeline, after, resumed)
         else:
             gates['no_duplicate_hosts_or_continue'] = duplicate_gate(self.timeline, after, resumed)
         writes = [m for m in self.mutations[mutations_before:]
-                  if not (m['method'] == 'POST' and m['route'].endswith('/conversation/messages'))]
+                  if not (m['method'] == 'POST' and (m['route'].endswith('/conversation/messages') or m['route'].endswith('/send')))]
         gates['no_manual_intervention_after_restart'] = gate(not writes, writes=len(writes))
         gates['daemon_log_clean_of_panics'] = gate(not self.log_has_panic(), log='daemon.log')
         self.detail['after'] = self.public(after)
         self.detail['timeline'] = {'samples': len(self.timeline), 'seconds': round(self.timeline[-1]['t'] - restart_at, 2),
-                                   'daemonReadyAfter': round(daemon_ready_at - restart_at, 2)}
+                                   'daemonReadyAfter': round(daemon_ready_at - restart_at, 2), 'daemonStarts': self.starts}
         self.detail['continueKeys'] = {sid: [m['key'] for m in continue_messages(after, sid)[0]] for sid in resumed}
         self.detail['wake'] = self.wake
         self.detail['noticeCount'] = len(notices)
@@ -865,6 +979,7 @@ def parse(argv=None):
     parser.add_argument('--agent-bin-dir', action='append', default=[])
     parser.add_argument('--pass-env', action='append', default=[])
     parser.add_argument('--auth-readonly', action='append', default=[], metavar='SOURCE=HOME_RELATIVE_DEST')
+    parser.add_argument('--load-delay', type=float, default=1.5, help='fixture provider: seconds session/load takes, so stage ordering is observable')
     parser.add_argument('--simulate-resumer', action='store_true', help='mechanics only: positive control that resumes through the public API; never certifies')
     parser.add_argument('--cycle-timeout', type=float, default=1800, help='hard wall-clock limit per cycle; teardown still runs')
     parser.add_argument('--setup-timeout', type=float, default=240)

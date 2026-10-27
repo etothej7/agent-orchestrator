@@ -84,6 +84,10 @@ class StaysDownAndWorktrees(unittest.TestCase):
         before = snap({'n': view()}, turns={'n': []})
         after = snap({'n': view(activity='exited', policy='never')}, turns={'n': []})
         self.assertTrue(R.stays_down_gate([sample(1, [])], before, after, ['n'], 'never')['passed'])
+        observed = {'_observed': True}
+        self.assertTrue(R.stays_down_gate([sample(1, [])], before, after, ['n'], 'never', intents=observed)['passed'])
+        self.assertIn('no_intents_recorded_so_nothing_to_judge', R.stays_down_gate([], before, after, ['n'], intents={'_observed': False})['problems']['n'])
+        self.assertIn('captured_for_resume', R.stays_down_gate([], before, after, ['n'], intents={'_observed': True, 'n': 'pending'})['problems']['n'])
         self.assertIn('launched', R.stays_down_gate([sample(1, ['n'])], before, after, ['n'])['problems']['n'])
         up = snap({'n': view(activity='idle')})
         self.assertIn('not_down_at_end', R.stays_down_gate([], before, up, ['n'])['problems']['n'])
@@ -91,14 +95,33 @@ class StaysDownAndWorktrees(unittest.TestCase):
         grown = snap({'n': view(activity='exited')}, turns={'n': [{'id': 't'}]})
         self.assertIn('new_turns', R.stays_down_gate([], before, grown, ['n'])['problems']['n'])
 
-    def test_worktree_gate(self):
-        fp = {'exists': True, 'digest': 'd', 'entries': 3, 'rootInode': 1, 'rootBirth': 2.0}
-        before = snap({'a': view(fingerprint=fp)})
-        self.assertTrue(R.worktree_gate(before, snap({'a': view(fingerprint=dict(fp))}))['passed'])
-        self.assertIn('digest', R.worktree_gate(before, snap({'a': view(fingerprint={**fp, 'digest': 'e'})}))['problems']['a'])
-        self.assertIn('rootInode', R.worktree_gate(before, snap({'a': view(fingerprint={**fp, 'rootInode': 9})}))['problems']['a'])
-        self.assertIn('exists', R.worktree_gate(before, snap({'a': view(fingerprint={'exists': False})}))['problems']['a'])
-        self.assertFalse(R.worktree_gate(snap({'a': view()}), snap({'a': view()}))['passed'])  # nothing compared is not a pass
+    def test_worktree_gate_strict_for_idle_and_light_for_resumed(self):
+        fp = {'exists': True, 'digest': 'd', 'entries': 3, 'rootInode': 1, 'rootBirth': 2.0, 'marker': 'm', 'head': 'h'}
+        before = snap({'x': view(fingerprint=fp), 'w': view(fingerprint=fp)})
+        live = [sample(1, ['w'])]
+
+        def gate_for(pre, final):
+            return R.worktree_gate(before, snap({'x': view(fingerprint=pre), 'w': view(fingerprint=fp)}),
+                                   snap({'x': view(fingerprint=pre), 'w': view(fingerprint=final)}), ['x'], ['w'], live)
+        self.assertTrue(gate_for(dict(fp), dict(fp))['passed'])
+        # a running agent legitimately writes: content change on a resumed session is fine, recreation is not
+        self.assertTrue(gate_for(dict(fp), {**fp, 'digest': 'other', 'entries': 9})['passed'])
+        self.assertIn('rootInode', gate_for(dict(fp), {**fp, 'rootInode': 9})['problems']['w'])
+        self.assertIn('marker', gate_for(dict(fp), {**fp, 'marker': None})['problems']['w'])
+        self.assertIn('head', gate_for(dict(fp), {**fp, 'head': 'z'})['problems']['w'])
+        # a session that runs no agent must be byte-identical
+        self.assertIn('digest', gate_for({**fp, 'digest': 'e'}, dict(fp))['problems']['x'])
+        self.assertIn('rootBirth', gate_for({**fp, 'rootBirth': 3.0}, dict(fp))['problems']['x'])
+        self.assertIn('exists', gate_for({'exists': False}, dict(fp))['problems']['x'])
+
+    def test_worktree_gate_is_not_vacuous(self):
+        fp = {'exists': True, 'digest': 'd', 'entries': 3, 'rootInode': 1, 'rootBirth': 2.0, 'marker': 'm', 'head': 'h'}
+        before = snap({'x': view(fingerprint=fp), 'w': view(fingerprint=fp)})
+        # the resumed session never came back: nothing to judge
+        self.assertIn('not_resumed_so_nothing_to_judge', R.worktree_gate(before, before, before, ['x'], ['w'], [])['problems']['w'])
+        # nothing compared at all
+        empty = snap({'w': view()})
+        self.assertFalse(R.worktree_gate(empty, empty, empty, [], ['w'], [sample(1, ['w'])])['passed'])
 
     def test_tree_fingerprint_detects_content_new_file_and_recreation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,22 +213,54 @@ class DuplicatesNoticesCodex(unittest.TestCase):
         self.assertIn('continue_turns=2', R.duplicate_gate([sample(1, ['a'])], twice, ['a'])['problems']['a'])
         self.assertFalse(R.duplicate_gate([], after, ['a'])['passed'])
 
-    def test_failure_notice(self):
-        after = snap({'f': view(activity='exited')})
-        notice = lambda sid: {'text': f"Session {sid} couldn't resume: its saved conversation can't be resumed safely", 'createdAt': ''}  # noqa: E731
-        self.assertTrue(R.failure_notice_gate([notice('f')], 'f', ['w', 'coord'], after, [sample(1, [])])['passed'])
-        self.assertFalse(R.failure_notice_gate([], 'f', ['w'], after, [])['passed'])
-        self.assertFalse(R.failure_notice_gate([notice('f'), notice('f')], 'f', ['w'], after, [])['passed'])
-        self.assertFalse(R.failure_notice_gate([notice('f'), notice('w')], 'f', ['w'], after, [])['passed'])
-        self.assertFalse(R.failure_notice_gate([notice('f')], 'f', ['w'], after, [sample(1, ['f'])])['passed'])
-        self.assertTrue(R.NOTICE_TEXT.search("Session x couldn’t resume"))
+    def test_failure_notice_matches_the_product_shaped_text(self):
+        after = snap({'f-id': view(activity='exited')})
+        product = lambda name: {'id': 'resume-failed-ab', 'createdAt': '', 'text': (  # noqa: E731  adapters.go wording, display name first
+            f"Session {name} couldn't resume after the restart: its saved conversation can't be resumed safely. It's stopped until you resume it.")}
+        failed = {'sid': 'f-id', 'names': ['wkr_fail', 'f-id']}
+        others = [['wkr', 'w-id'], ['c-id']]
+        timeline = [sample(1, [])]
+        self.assertTrue(R.failure_notice_gate([product('wkr_fail')], failed, others, after, timeline)['passed'])
+        self.assertTrue(R.failure_notice_gate([product('f-id')], failed, others, after, timeline)['passed'])  # id fallback when unnamed
+        # 'wkr' is a prefix of 'wkr_fail': a notice about wkr_fail must not count as stray for wkr
+        self.assertFalse(R.mentions('Session wkr_fail couldn\'t resume', ['wkr']))
+        self.assertTrue(R.mentions('Session wkr couldn\'t resume', ['wkr']))
+        self.assertFalse(R.mentions('Session ar-work-10 couldn\'t', ['ar-work-1']))
+        self.assertFalse(R.failure_notice_gate([], failed, others, after, timeline)['passed'])
+        self.assertFalse(R.failure_notice_gate([product('wkr_fail'), product('wkr_fail')], failed, others, after, timeline)['passed'])
+        self.assertFalse(R.failure_notice_gate([product('wkr_fail'), product('wkr')], failed, others, after, timeline)['passed'])
+        self.assertFalse(R.failure_notice_gate([product('wkr_fail')], failed, others, after, [sample(1, ['f-id'])])['passed'])
+        self.assertTrue(R.NOTICE_TEXT.search("Session x couldn\u2019t resume after the restart"))
+
+    def test_intent_barrier(self):
+        stages = [['c'], ['m'], ['w']]
+
+        def at(t, **states):
+            return {'t': t, 'sessions': {}, 'hosts': {}, 'intents': {'_observed': True, **states}}
+        good = [at(1, c='resuming', m='pending', w='pending'), at(2, c='resumed', m='resuming', w='pending'), at(3, c='resumed', m='resumed', w='resuming'), at(4, c='resumed', m='resumed', w='resumed')]
+        self.assertTrue(R.intent_barrier_gate(good, stages)['passed'])
+        early = good[:1] + [at(2, c='resuming', m='resuming', w='pending')] + good[2:]
+        self.assertTrue(R.intent_barrier_gate(early, stages)['violations'])
+        self.assertFalse(R.intent_barrier_gate([at(1), at(2)], stages)['passed'])  # no intent rows is no evidence
+        self.assertEqual(R.intent_barrier_gate([at(1, c='resumed', m='resumed')], stages)['missing'], ['w'])
+
+    def test_intent_expectations(self):
+        base = {'_observed': True, 'c': 'resumed', 'w': 'resumed', 'p': 'hibernated'}
+        self.assertTrue(R.intent_expectation_gate(base, ['c', 'w'], ['p'], ['x'])['passed'])
+        self.assertFalse(R.intent_expectation_gate({**base, 'w': 'pending'}, ['c', 'w'], ['p'], ['x'])['passed'])
+        self.assertFalse(R.intent_expectation_gate({**base, 'p': 'resumed'}, ['c', 'w'], ['p'], ['x'])['passed'])
+        self.assertFalse(R.intent_expectation_gate({**base, 'x': 'pending'}, ['c', 'w'], ['p'], ['x'])['passed'])
+        self.assertFalse(R.intent_expectation_gate({'_observed': False}, ['c'], [], [])['passed'])
+        self.assertTrue(R.intent_expectation_gate({**base, 'f': 'failed'}, ['c', 'w'], ['p'], [], ['f'])['passed'])
+        self.assertFalse(R.intent_expectation_gate(base, ['c', 'w'], ['p'], [], ['f'])['passed'])
 
     def test_codex_settle(self):
         after = snap({'c': view()})
         self.assertEqual(R.codex_settle_gate([sample(50, ['c'])], after, [], 'c', 0, 120)['outcome'], 'resumed')
         self.assertEqual(R.codex_settle_gate([sample(500, ['c'])], after, [], 'c', 0, 120)['outcome'], 'resumed_late')
-        notice = [{'text': 'Session c couldn\'t resume', 'createdAt': ''}]
-        self.assertTrue(R.codex_settle_gate([sample(1, [])], after, notice, 'c', 0, 120)['passed'])
+        notice = [{'text': 'Session codex_wkr couldn\'t resume after the restart: x', 'createdAt': ''}]
+        self.assertTrue(R.codex_settle_gate([sample(1, [])], after, notice, 'c', 0, 120, ['codex_wkr'])['passed'])
+        self.assertFalse(R.codex_settle_gate([sample(1, [])], after, notice, 'c', 0, 120)['passed'])
         self.assertEqual(R.codex_settle_gate([sample(1, [])], after, [], 'c', 0, 120)['outcome'], 'neither')
 
 
@@ -219,7 +274,10 @@ class Plumbing(unittest.TestCase):
 
     def test_cycle_definitions_cover_the_requested_scenarios(self):
         self.assertEqual({c['order'] for c in R.CYCLES.values()}, {'hosts-first', 'daemon-first', 'kill9'})
-        self.assertTrue(R.CYCLES['flap']['flap'] and R.CYCLES['resume-failure']['fail'] == 'wkr_fail')
+        self.assertGreaterEqual(R.CYCLES['flap']['flap'], 2)  # initial start + restart + 2 kills' restarts: more than 3 starts
+        self.assertNotIn('wkr_fail', R.CYCLES['flap']['roles'])  # nothing unevaluated in the flap cycle
+        self.assertEqual(R.CYCLES['resume-failure']['fail'], 'wkr_fail')
+        self.assertIn('mgr_idle2', R.CYCLES['kill9']['roles'])
         for role in ('coord', 'mgr_idle', 'mgr_busy', 'wkr', 'codex_wkr', 'never_orch', 'stopped', 'terminated'):
             self.assertIn(role, R.CYCLES['kill9']['roles'])
 
