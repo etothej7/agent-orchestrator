@@ -56,3 +56,48 @@ func (s *Store) DeleteSessionProof(ctx context.Context, id domain.SessionID) err
 	}
 	return nil
 }
+
+// SetReviewProofHash issues or replaces a reviewer's identity proof, stored as its SHA-256 hex
+// only. A replacement makes the previous proof stop verifying at once.
+func (s *Store) SetReviewProofHash(ctx context.Context, reviewID string, hash string, now time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.UpsertReviewIdentity(ctx, gen.UpsertReviewIdentityParams{ReviewID: reviewID, ProofSha256: hash, IssuedAt: now.UTC()}); err != nil {
+		return fmt.Errorf("store reviewer identity proof for %s: %w", reviewID, err)
+	}
+	return nil
+}
+
+// ReviewIdentityByProofHash finds the reviewer a proof hash was issued to.
+func (s *Store) ReviewIdentityByProofHash(ctx context.Context, hash string) (reviewID string, storedHash string, found bool, err error) {
+	row, err := s.qr.GetReviewIdentityByProofHash(ctx, hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("look up reviewer identity proof: %w", err)
+	}
+	return row.ReviewID, row.ProofSha256, true, nil
+}
+
+// ReviewProofGeneration reports how many proofs a reviewer has had (0 when it has none).
+func (s *Store) ReviewProofGeneration(ctx context.Context, reviewID string) (int, error) {
+	row, err := s.qr.GetReviewIdentity(ctx, reviewID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read reviewer identity proof for %s: %w", reviewID, err)
+	}
+	return int(row.Generation), nil
+}
+
+// DeleteReviewProof revokes a reviewer's proof.
+func (s *Store) DeleteReviewProof(ctx context.Context, reviewID string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.DeleteReviewIdentity(ctx, reviewID); err != nil {
+		return fmt.Errorf("revoke reviewer identity proof for %s: %w", reviewID, err)
+	}
+	return nil
+}

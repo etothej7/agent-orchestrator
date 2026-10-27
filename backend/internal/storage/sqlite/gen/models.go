@@ -677,6 +677,13 @@ type Review struct {
 	IsArchived             bool
 }
 
+type ReviewIdentity struct {
+	ReviewID    string
+	ProofSha256 string
+	IssuedAt    time.Time
+	Generation  int64
+}
+
 type ReviewRun struct {
 	ID               string
 	ReviewID         string

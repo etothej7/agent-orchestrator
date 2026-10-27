@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 func TestSessionProofHashIsStoredFoundAndReplacedByARelaunch(t *testing.T) {
@@ -47,4 +50,54 @@ func TestSessionProofHashIsStoredFoundAndReplacedByARelaunch(t *testing.T) {
 	if _, _, found, _ := db.SessionIdentityByProofHash(ctx, second); found {
 		t.Fatal("a revoked proof still resolves")
 	}
+}
+
+func TestReviewProofHashIsStoredFoundReplacedAndRevoked(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	review := seedReviewRow(t, db, session)
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	first, second := strings.Repeat("a", 64), strings.Repeat("b", 64)
+
+	if _, _, found, err := db.ReviewIdentityByProofHash(ctx, first); err != nil || found {
+		t.Fatalf("lookup before any proof = found %v, %v", found, err)
+	}
+	if err := db.SetReviewProofHash(ctx, review, first, now); err != nil {
+		t.Fatal(err)
+	}
+	id, stored, found, err := db.ReviewIdentityByProofHash(ctx, first)
+	if err != nil || !found || id != review || stored != first {
+		t.Fatalf("lookup = %q %q found %v, %v; want the review and its hash", id, stored, found, err)
+	}
+	if err := db.SetReviewProofHash(ctx, review, second, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, _ := db.ReviewIdentityByProofHash(ctx, first); found {
+		t.Fatal("the previous reviewer proof still resolves after a relaunch")
+	}
+	if gen, _ := db.ReviewProofGeneration(ctx, review); gen != 2 {
+		t.Fatalf("generation after one relaunch = %d, want 2", gen)
+	}
+	// A reviewer proof never resolves as a worker/orchestrator session proof, and vice versa.
+	if _, _, found, _ := db.SessionIdentityByProofHash(ctx, second); found {
+		t.Fatal("a reviewer's proof resolved as a session proof")
+	}
+	if err := db.DeleteReviewProof(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, _ := db.ReviewIdentityByProofHash(ctx, second); found {
+		t.Fatal("a revoked reviewer proof still resolves")
+	}
+}
+
+func seedReviewRow(t *testing.T, db *sqlite.Store, session domain.SessionID) string {
+	t.Helper()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	if err := db.UpsertReview(context.Background(), domain.Review{
+		ID: "review-1", SessionID: session, ProjectID: "repo", Harness: domain.ReviewerHarness("codex"),
+		PRURL: "https://example.test/pr/1", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return "review-1"
 }
