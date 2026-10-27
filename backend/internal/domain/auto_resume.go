@@ -93,6 +93,9 @@ type ResumeIntent struct {
 	NextAttemptAt    *time.Time        `json:"nextAttemptAt,omitempty"`
 	LastError        string            `json:"lastError,omitempty"`
 	ContinueSentAt   *time.Time        `json:"continueSentAt,omitempty"`
+	// ResumedAt is when the agent came back. The continue turn's expiry runs from here,
+	// not from capture: a session that resumed on a late backoff attempt still needs it.
+	ResumedAt *time.Time `json:"resumedAt,omitempty"`
 	// RecentResumes survives a new intent replacing an old one, so the flap guard
 	// can count successful resumes across boots.
 	RecentResumes []time.Time `json:"recentResumes,omitempty"`

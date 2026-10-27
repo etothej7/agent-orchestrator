@@ -51,6 +51,7 @@ type world struct {
 	probesIn, pmx int
 	onResume      func(domain.SessionID)
 	onProbe       func()
+	continueErrs  []error
 }
 
 func newWorld() *world {
@@ -197,6 +198,11 @@ func (w *world) NotifyResumeFailure(_ context.Context, id domain.SessionID, reas
 func (w *world) SendContinue(_ context.Context, id domain.SessionID, _ string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if len(w.continueErrs) > 0 {
+		err := w.continueErrs[0]
+		w.continueErrs = w.continueErrs[1:]
+		return err
+	}
 	w.continues = append(w.continues, id)
 	return nil
 }
@@ -777,5 +783,55 @@ func TestPerHarnessClassIdleAndWorkingDecisions(t *testing.T) {
 				t.Fatalf("working: state=%s calls=%v", w.state("working"), w.resumeCalls)
 			}
 		})
+	}
+}
+
+// N1: a continue send that fails right after the controller came up is retried inside the
+// pass (the key makes a repeat harmless); only a persistent failure is given up on.
+func TestAContinueSendThatFailsTransientlyIsRetriedInThePass(t *testing.T) {
+	w := newWorld()
+	w.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	w.continueErrs = []error{errors.New("controller not ready"), errors.New("controller not ready")}
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.continues) != 1 || w.intents["w"].ContinueSentAt == nil {
+		t.Fatalf("continues=%v sentAt=%v, want the third attempt to land and be recorded", w.continues, w.intents["w"].ContinueSentAt)
+	}
+
+	w2 := newWorld()
+	w2.add("w", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, 0)
+	// The pass sends once after the resume round and once more at its end, three tries each.
+	for range 6 {
+		w2.continueErrs = append(w2.continueErrs, errors.New("down"))
+	}
+	if err := w2.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w2.continues) != 0 || w2.intents["w"].ContinueSentAt != nil {
+		t.Fatalf("a persistent failure must not be recorded as sent: %v %v", w2.continues, w2.intents["w"].ContinueSentAt)
+	}
+}
+
+// N2: the continue turn's expiry runs from when the agent came back, so a session that
+// resumed on a late backoff attempt still gets it, while one that came back long ago does not.
+func TestContinueExpiryRunsFromTheResumeNotFromCapture(t *testing.T) {
+	w := newWorld()
+	w.add("late", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, -20*time.Minute) // captured 20 min ago
+	w.resumeErrs["late"] = []error{ports.ErrChatResumeFailed, ports.ErrChatResumeFailed}                   // resumes on the 3rd attempt, ~1.5 min of backoff later
+	w.add("old", domain.KindWorker, "repo", domain.ResumeWorking, domain.ActivityActive, -20*time.Minute)
+	in := w.intents["old"]
+	resumedLongAgo := t0.Add(-16 * time.Minute)
+	in.State, in.ResumedAt = domain.ResumeResumed, &resumedLongAgo
+	w.intents["old"] = in
+	w.live["old"] = true
+	if err := w.resumer(Config{}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(w.continues, "late") {
+		t.Fatalf("a session that resumed minutes after capture lost its continue turn: %v", w.continues)
+	}
+	if slices.Contains(w.continues, "old") {
+		t.Fatalf("a session that came back 16 minutes ago got a continue turn: %v", w.continues)
 	}
 }

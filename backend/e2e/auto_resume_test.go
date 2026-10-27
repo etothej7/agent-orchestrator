@@ -253,6 +253,7 @@ type autoResumeFixture struct {
 	d                     *daemon
 	project               string
 	busy, idle, protected string
+	stopped               string // stopped on purpose by the user: must stay exited
 	protectedTree, digest string
 }
 
@@ -275,6 +276,15 @@ func newAutoResumeFixture(t *testing.T) *autoResumeFixture {
 			return len(s.Turns) == 1 && s.Turns[0].State == "completed"
 		})
 	}
+	// A session the user stopped on purpose must never be brought back.
+	f.stopped = w.spawnWorker(t, d, f.project, "Say done")
+	d.awaitConversation(f.stopped, 30*time.Second, "the to-be-stopped turn to finish", func(s snapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == "completed"
+	})
+	d.mustCall("POST", "/sessions/"+f.stopped+"/exit-agent", http.StatusOK, nil, nil)
+	d.awaitConversation(f.stopped, 30*time.Second, "the user-stopped session to stop", func(s snapshot) bool {
+		return s.Controller == "stopped"
+	})
 	d.setAutoResume(f.protected, "never")
 	f.protectedTree = w.worktreeOf(t, f.protected)
 	if err := os.WriteFile(filepath.Join(f.protectedTree, "uncommitted.txt"), []byte("do not lose me\n"), 0o600); err != nil {
@@ -303,6 +313,20 @@ func (f *autoResumeFixture) assertRecovered(t *testing.T, d *daemon, wantResumes
 	if got := len(w.callsFor(f.busy, "session/resume")); got != wantResumes {
 		t.Fatalf("provider saw %d session/resume for the busy session, want %d:\n%v", got, wantResumes, w.callsFor(f.busy, ""))
 	}
+	// At the provider level: the original prompt went out exactly once (a resume never
+	// replays it) and the continue prompt exactly once per resume.
+	hang, cont := 0, 0
+	for _, line := range w.callsFor(f.busy, "session/prompt") {
+		switch {
+		case strings.Contains(line, "HANG"):
+			hang++
+		case strings.Contains(line, "AO restarted. Continue where you left off."):
+			cont++
+		}
+	}
+	if hang != 1 || cont != wantResumes {
+		t.Fatalf("provider prompts for the busy session: original %d (want 1), continue %d (want %d):\n%v", hang, cont, wantResumes, w.callsFor(f.busy, ""))
+	}
 	if got := len(w.callsFor(f.busy, "session/new")); got != 1 {
 		t.Fatalf("provider saw %d session/new for the busy session (a fresh conversation?), want only the original: %v", got, w.callsFor(f.busy, ""))
 	}
@@ -311,6 +335,11 @@ func (f *autoResumeFixture) assertRecovered(t *testing.T, d *daemon, wantResumes
 	})
 	if got := len(w.callsFor(f.idle, "session/resume")); got != 0 {
 		t.Fatalf("an idle session was launched at boot (%d session/resume): %s", got, describe(parked))
+	}
+	// The user-stopped session stays stopped and nothing ran for it.
+	stoppedSnap := d.conversation(f.stopped)
+	if stoppedSnap.Controller != "stopped" || len(w.callsFor(f.stopped, "session/resume")) != 0 {
+		t.Fatalf("a user-stopped session was brought back: controller=%q calls=%v", stoppedSnap.Controller, w.callsFor(f.stopped, ""))
 	}
 	var read struct {
 		Session struct {
