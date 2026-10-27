@@ -52,6 +52,8 @@ import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { HumanRequestCards } from "./HumanRequestCards";
+import { useHumanRequestsQuery } from "../hooks/useHumanRequests";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useCloudNotifications } from "../hooks/useCloudNotifications";
 import { clearRemoteNotification, clearRemoteNotifications, connectRemoteNotificationStreams, fetchRemoteNotificationsPage, markRemoteNotificationsRead, remoteNotificationsQueryKey, useRemoteNotificationHosts } from "../hooks/useRemoteNotifications";
@@ -350,7 +352,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 			hostId: host.hostId, label: host.label, notification,
 		}))),
 	].sort((a, b) => b.notification.createdAt.localeCompare(a.notification.createdAt)), [notifications, remoteItems]);
-	const unreadCount = getBellUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0);
+	// Requests waiting for the person's approval are the most actionable thing the bell can hold, so they count.
+	const humanRequests = useHumanRequestsQuery().data ?? [];
+	const unreadCount = getBellUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0) + humanRequests.length;
 	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const navigateToSession = useNavigateToSession();
@@ -705,6 +709,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						{t("notify.clearAll")}
 					</button>
 				</div>
+				<HumanRequestCards requests={humanRequests} />
 				<NotificationWorkspaceState>
 					{({ retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
 						<>

@@ -10,6 +10,7 @@ import {
 	type NotificationListStatus,
 } from "../lib/notifications";
 import { useUiStore } from "../stores/ui-store";
+import { humanRequestsQueryKey } from "../hooks/useHumanRequests";
 import { NotificationCenter, NotificationRuntime } from "./NotificationCenter";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -1180,5 +1181,37 @@ describe("NotificationCenter cloud rows", () => {
 		expect(screen.getByText("acme/cloud#8 is ready to merge.")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
 		expect(refetch).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("NotificationCenter human requests", () => {
+	const pending = {
+		id: "hr-1", kind: "conversation_settings", sessionId: "sess-1", requester: { kind: "session" as const, sessionId: "sess-9" },
+		summary: "Change Checkout flow (sess-1): model to m-b.", changes: [{ field: "model", from: "m-a", to: "m-b" }], payloadHash: "hash-1",
+		state: "pending" as const, createdAt: "2026-10-27T12:00:00Z", expiresAt: "2026-10-28T12:00:00Z",
+	};
+	const bellCount = () => Number(screen.getByRole("button", { name: /unread notifications/ }).getAttribute("aria-label")?.match(/^\d+/)?.[0]);
+
+	it("counts requests waiting for the person on the bell, and lists them at the top of the panel", async () => {
+		const plain = renderNotificationCenter();
+		const without = bellCount();
+		plain.unmount();
+
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(humanRequestsQueryKey, [pending]);
+		renderNotificationCenter(client);
+		expect(bellCount()).toBe(without + 1);
+		await clickOpen();
+		const section = screen.getByRole("region", { name: "Requests waiting for your approval" });
+		expect(section).toHaveTextContent("Change Checkout flow (sess-1): model to m-b.");
+		expect(section).toHaveTextContent("Requested by sess-9");
+		const dialog = screen.getByRole("dialog", { name: "Notifications" });
+		expect(dialog.firstElementChild?.nextElementSibling).toBe(section);
+	});
+
+	it("shows no section and adds nothing to the bell when nothing is waiting", async () => {
+		renderNotificationCenter();
+		await clickOpen();
+		expect(screen.queryByRole("region", { name: "Requests waiting for your approval" })).not.toBeInTheDocument();
 	});
 });
