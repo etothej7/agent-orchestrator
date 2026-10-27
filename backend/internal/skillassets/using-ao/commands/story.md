@@ -19,7 +19,9 @@ Testing also needs `--outcome passed|failed`. Only an explicitly assigned,
 separate reviewer session can record `review_passed` or `review_failed`.
 Readiness requires implementation, passed testing and independent review for
 the same revision. Done additionally requires an explicit scope-completion
-explanation and reference, with questions and blockers resolved. Agent idle,
+explanation and reference, with questions and blockers resolved. Only the story's
+assigned manager records `done` (the overall coordinator when the story has no
+manager); a worker or reviewer finishes its part with `ao report --done`. Agent idle,
 turn completion, and report done never complete a story.
 
 Story identity is explicit on each operation; a manager may serve multiple

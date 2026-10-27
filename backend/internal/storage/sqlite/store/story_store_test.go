@@ -41,6 +41,12 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	managerRecord := sampleRecord("repo")
+	managerRecord.Kind = domain.KindOrchestrator
+	manager, err := db.CreateSession(ctx, managerRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
 	messenger := &storyMessenger{}
 	svc := &storysvc.Service{Store: db, Messenger: messenger}
 	for _, id := range []string{"one", "two"} {
@@ -70,6 +76,9 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 		t.Fatal("delivery handles crossed stories")
 	}
 	if _, err := apply("one", "assignment", "", reviewer.ID, "reviewer", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apply("one", "assignment", "", manager.ID, "manager", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := apply("one", "done", "", "", "", "sha", ""); err == nil {
@@ -119,7 +128,15 @@ func TestStoryIsolationCompletionAndReopen(t *testing.T) {
 		t.Fatalf("failed checks retained approval: %+v %v", invalidated, err)
 	}
 	for _, kind := range []string{"testing", "ready_for_approval", "done"} {
-		if _, err := apply("one", kind, worker.ID, "", "", "sha", "passed"); err != nil {
+		actor := worker.ID
+		if kind == "done" {
+			// A worker may not complete its own story; the assigned manager does.
+			if _, err := apply("one", kind, worker.ID, "", "", "sha", "passed"); err == nil {
+				t.Fatal("worker recorded Done")
+			}
+			actor = manager.ID
+		}
+		if _, err := apply("one", kind, actor, "", "", "sha", "passed"); err != nil {
 			t.Fatal(err)
 		}
 	}

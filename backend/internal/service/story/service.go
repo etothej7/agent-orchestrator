@@ -308,6 +308,9 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 		}
 		story.Status = "ready_for_approval"
 	case "done":
+		if err := s.requireDoneAuthority(ctx, story, c.SenderSessionID); err != nil {
+			return e, err
+		}
 		if story.Status != "ready_for_approval" || !ready(events) || story.BlockedReason != "" || story.Question != "" || strings.TrimSpace(c.Reference) == "" || strings.TrimSpace(c.Text) == "" {
 			return e, invalid("Resolve blockers/questions and record explicit scope completion evidence after review and checks")
 		}
@@ -333,6 +336,35 @@ func (s *Service) Apply(ctx context.Context, c Command) (domain.StoryEvent, erro
 		s.Actions.RecordStoryAction(ctx, e.SenderSessionID, e)
 	}
 	return e, nil
+}
+// requireDoneAuthority limits who may record a story Done. An agent (a sender) must be the story's
+// assigned, still-active manager, or the coordinator when the story has no manager at all; a worker or
+// reviewer finishes its part with ao report --done and the manager records Done after reviewing. An
+// empty sender is the human board (attribution is cooperative, not authentication) and stays allowed.
+// The review/checks evidence for the current revision is required in addition, by the caller.
+func (s *Service) requireDoneAuthority(ctx context.Context, story domain.Story, sender domain.SessionID) error {
+	if sender == "" {
+		return nil
+	}
+	const denied = "Only the story's assigned manager can record Done after independent review (the overall coordinator when the story has no manager). A worker or reviewer should finish with ao report --done and let the manager record Done."
+	hasManager := false
+	for _, a := range story.Assignments {
+		hasManager = hasManager || a.Role == "manager"
+	}
+	switch {
+	case hasManager && !assigned(story, sender, "manager"):
+		return invalid(denied)
+	case !hasManager && !s.coordinator(ctx, sender):
+		return invalid(denied)
+	}
+	session, ok, err := s.Store.GetSession(ctx, sender)
+	if err != nil {
+		return err
+	}
+	if !ok || session.IsTerminated {
+		return invalid("A terminated or unknown session cannot record Done; ask the assigned manager or the coordinator")
+	}
+	return nil
 }
 func assigned(s domain.Story, id domain.SessionID, role string) bool {
 	for _, a := range s.Assignments {
