@@ -877,7 +877,7 @@ func (w *Workspace) keepInsteadOfRemoving(ctx context.Context, repo, from, path,
 	}
 	if w.logger != nil {
 		w.logger.Warn("gitworktree: could not back the worktree up, so its directory was kept aside instead of being deleted",
-			"path", path, "keptAt", kept, "reason", reason.Error())
+			"path", path, "keptAt", kept, "reason", strings.ReplaceAll(reason.Error(), archiveProceedHint, ""))
 	}
 	return nil
 }

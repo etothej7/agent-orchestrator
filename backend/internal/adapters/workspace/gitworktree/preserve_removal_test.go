@@ -308,6 +308,10 @@ func TestForceDestroyKeepsTheWorktreeAsideWhenTheSecretArchiveFails(t *testing.T
 	if !strings.Contains(f.logs.String(), "kept aside instead of being deleted") {
 		t.Fatalf("no warning says where the worktree went: %s", f.logs.String())
 	}
+	// Nothing was refused here, so the refusal's "how to proceed" hint must not appear.
+	if strings.Contains(f.logs.String(), "to proceed") {
+		t.Fatalf("the keep-aside warning carries a refusal hint: %s", f.logs.String())
+	}
 	// The branch is free again: a new worktree can claim it.
 	runGit(t, f.git, f.repo, "worktree", "add", filepath.Join(filepath.Dir(f.info.Path), "again"), "feature/sess-archive-fail")
 }
