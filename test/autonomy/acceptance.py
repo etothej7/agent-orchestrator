@@ -453,6 +453,12 @@ def idle_wake_evidence(state, details, links, bound=30, idle_gate=10, now=None, 
     out['reportBatchTurnId'] = batch.get('turn_id') if batch else None
     out['preDoneStoryContinueCount'] = sum(1 for k, m in messages.items() if k.startswith('story-continue-') and stamp(m.get('created_at')) is not None and stamp(m['created_at']) < receipt)
     if not wakes:
+        # A story already Done when the worker's Done report arrived has nothing left to continue: the wake gate
+        # was not exercised, which is inconclusive, never a product failure.
+        terminal = next((e for e in detail.get('events', []) if e.get('kind') == 'done' and stamp(e.get('createdAt')) is not None
+                         and stamp(e['createdAt']) <= receipt), None)
+        if terminal:
+            return dict(out, decided=True, inconclusive=True, storyTerminalAt=terminal['createdAt'], failure='story_terminal_before_done_report')
         return dict(out, decided=now > receipt + bound + grace, failure='no_cdc_wake_turn_yet' if now <= receipt + bound + grace else 'no_cdc_wake_turn')
     wake = min(wakes, key=lambda w: (not w['passed'], w.get('seconds', float('inf'))))
     started = stamp(wake.get('turnStartedAt'))
@@ -1144,7 +1150,9 @@ class Harness:
         self.result['idleWake'] = evidence
         self.check('idle_manager_before_done', evidence.get('failure') != 'manager_not_idle_before_done' and bool(evidence.get('managerPriorTurnCount')) and not evidence.get('managerBusyTurnIds'),
                    idleGateSeconds=evidence['idleGateSeconds'], managerIdleSeconds=evidence.get('managerIdleSeconds'))
-        self.check('cdc_wake_within_bound_not_outbox', evidence['passed'], boundSeconds=evidence['boundSeconds'], failure=evidence.get('failure'))
+        self.result['idleWakeInconclusive'] = bool(evidence.get('inconclusive'))
+        self.check('cdc_wake_within_bound_not_outbox', evidence['passed'], boundSeconds=evidence['boundSeconds'], failure=evidence.get('failure'),
+                   inconclusive=bool(evidence.get('inconclusive')))
         self.check('public_privacy', not self.public_errors, reasons=sorted(self.public_errors))
         self.result['reportDeliverySeconds'] = report_delivery_timings(state)
 
@@ -1465,6 +1473,9 @@ class Harness:
                  'One-request observation only; no fabricated transitions. Static review is separate from this run.', '',
                  '| Assertion | Result |', '|---|---|']
         lines += [f'| {k} | {"PASS" if v["passed"] else "FAIL / NOT OBSERVED"} |' for k, v in assertions.items()]
+        if self.result.get('idleWakeInconclusive'):
+            lines += ['', '**INCONCLUSIVE wake gate:** the story was already Done when the worker\'s Done report arrived, so there was nothing left to continue. '
+                      'The CDC wake was not exercised; this is not a product failure and not a wake pass. Rerun for a decided sample if the claim is needed.']
         lines += ['', 'Expected baseline limitation: c833b70 does not contain the autonomy implementation. Missing actor/provider or workflow evidence is not a pass.',
                   '', 'Private raw logs/data remain in the protected scratch root; result.json contains sanitized evidence only.',
                   '', 'Deferred: native UI acceptance and installation approval.']

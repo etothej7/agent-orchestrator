@@ -681,6 +681,22 @@ class PhaseLatencyPolicyTests(unittest.TestCase):
         links = {'story-continue-x': {'storyId': 's', 'phaseReportId': cursor}}
         return state, details, links
 
+    def test_story_already_done_before_the_report_is_inconclusive_not_a_plain_failure(self):
+        state, details, links = self.idle_case()
+        state['conversation_messages'] = []  # no wake turn
+        details[0]['events'].append(dict(id='done', storyId='s', kind='done', senderSessionId='w', createdAt='2026-01-01T00:00:56Z'))
+        out = a.idle_wake_evidence(state, details, links, now=1e12)
+        self.assertTrue(out['decided'])
+        self.assertFalse(out['passed'])
+        self.assertTrue(out['inconclusive'])
+        self.assertEqual(out['failure'], 'story_terminal_before_done_report')
+        # Without an earlier Done the same missing wake is still a plain failure.
+        state, details, links = self.idle_case()
+        state['conversation_messages'] = []
+        plain = a.idle_wake_evidence(state, details, links, now=1e12)
+        self.assertEqual(plain['failure'], 'no_cdc_wake_turn')
+        self.assertFalse(plain.get('inconclusive'))
+
     def test_idle_manager_cdc_wake_requires_idle_gate_link_and_bound(self):
         out = a.idle_wake_evidence(*self.idle_case(), now=1e12)
         self.assertTrue(out['passed'] and out['decided'])
