@@ -3518,6 +3518,12 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 	}
 	result, err = m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec,
 		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil), chatOpts...)
+	if err == nil && !opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		// A resume by a person (or any ordinary path) satisfies a captured intent: drop it
+		// so the resumer leaves the session alone. The unattended resume keeps its intent
+		// for the resumer to settle.
+		m.clearAutoResumeIntent(ctx, id)
+	}
 	if err == nil && m.chat != nil && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil {
 		// A failed move to a new release kept the user's queued messages for

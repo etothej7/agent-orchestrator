@@ -158,7 +158,13 @@ func (m *Manager) parkedByAutoResume(ctx context.Context, id domain.SessionID) b
 		return false
 	}
 	intent, found, err := store.GetResumeIntent(ctx, id)
-	return err == nil && found && intent.State == domain.ResumeHibernated
+	if err != nil {
+		// Fail closed: an unreadable intent must never select the wake that may start
+		// fresh in place.
+		m.logger.Warn("auto-resume: parked intent unreadable, waking never-fresh", "sessionID", id, "error", err)
+		return true
+	}
+	return found && intent.State == domain.ResumeHibernated
 }
 
 // clearAutoResumeIntent drops the intent once its session is awake again, so a later

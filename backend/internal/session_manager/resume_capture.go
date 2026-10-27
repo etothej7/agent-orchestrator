@@ -66,6 +66,7 @@ func (m *Manager) captureResumeIntent(ctx context.Context, rec domain.SessionRec
 	// conversation activity) has nothing to resume. An unattended resume would fail it
 	// rather than start fresh, and a failure notice for an empty chat is noise.
 	if m.providerNeverPersisted(ctx, rec) {
+		m.logger.Info("auto-resume: untouched chat not captured (its provider conversation never persisted); any queued first prompt waits for a manual resume", "sessionID", rec.ID)
 		return
 	}
 	window := capture.window

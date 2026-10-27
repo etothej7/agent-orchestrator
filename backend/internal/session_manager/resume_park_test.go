@@ -230,3 +230,41 @@ func TestWorkspaceExistsOnlyTreatsNotExistAsMissing(t *testing.T) {
 		t.Fatal("a permission error was treated as a missing worktree")
 	}
 }
+
+// A resume by a person satisfies the captured intent and drops it; the unattended
+// resume leaves its intent for the resumer to settle.
+func TestAManualResumeClearsTheCapturedIntentButTheUnattendedOneDoesNot(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		resume     func(*Manager) error
+		wantIntent bool
+	}{
+		{"manual resume", func(m *Manager) error { _, err := m.ResumeAgentWithMode(ctx, "mer-1"); return err }, false},
+		{"unattended resume", func(m *Manager) error { _, err := m.ResumeAgentStrict(ctx, "mer-1"); return err }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _ := newChatManager(&recordingLauncher{})
+			seedChatResumeSession(st, domain.ActivityExited)
+			st.intents = map[domain.SessionID]domain.ResumeIntent{"mer-1": {SessionID: "mer-1", State: domain.ResumePending}}
+			if err := tc.resume(m); err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			if _, kept := st.intents["mer-1"]; kept != tc.wantIntent {
+				t.Fatalf("intent kept = %v, want %v", kept, tc.wantIntent)
+			}
+		})
+	}
+}
+
+// An unreadable parked intent must select the never-fresh wake, never the ordinary one.
+func TestAnUnreadableParkedIntentFailsClosedToTheNeverFreshWake(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	st.intentErr = errors.New("intent table unreadable")
+	if !m.parkedByAutoResume(ctx, "mer-1") {
+		t.Fatal("an unreadable intent read as 'not parked', which would allow a fresh start on wake")
+	}
+	st.intentErr = nil
+	if m.parkedByAutoResume(ctx, "mer-1") {
+		t.Fatal("a session with no intent read as parked")
+	}
+}

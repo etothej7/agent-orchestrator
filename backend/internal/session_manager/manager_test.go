@@ -78,6 +78,7 @@ type fakeStore struct {
 	// parkRevisionBump makes the next park see a row someone else just changed.
 	parkRevisionBump bool
 	intents          map[domain.SessionID]domain.ResumeIntent
+	intentErr        error
 	interrupted      map[domain.SessionID][]domain.InterruptedTurn
 	stories          []domain.Story
 	coordination     domain.CoordinationConfig
@@ -145,6 +146,20 @@ func (s *fakeStore) CaptureResumeIntent(_ context.Context, fresh domain.ResumeIn
 	}
 	s.intents[fresh.SessionID] = fresh
 	return fresh, true, nil
+}
+
+// GetResumeIntent and DeleteResumeIntent are the optional resumeIntentStore part of the store.
+func (s *fakeStore) GetResumeIntent(_ context.Context, id domain.SessionID) (domain.ResumeIntent, bool, error) {
+	if s.intentErr != nil {
+		return domain.ResumeIntent{}, false, s.intentErr
+	}
+	intent, ok := s.intents[id]
+	return intent, ok, nil
+}
+
+func (s *fakeStore) DeleteResumeIntent(_ context.Context, id domain.SessionID) error {
+	delete(s.intents, id)
+	return nil
 }
 
 // ListStories is the optional story reader part of the store.

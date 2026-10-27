@@ -59,7 +59,7 @@ Chat resume uses the provider's saved session, so what is recovered depends on t
 | ACP agent with `loadSession` (`claude-agent-acp` 0.70) | `session/load` | full replay imported | yes |
 | ACP agent with `session/resume` only | `session/resume` | none (model context only) | yes |
 | Codex app-server | `thread/resume` + `thread/read` | replay imported when the thread is settled | yes; a thread killed mid-turn may read `inProgress` until it settles (up to 45 s), then the session needs a manual resume |
-| Provider has no saved session | `ErrChatResumeFailed` | n/a | no: two retries, then one notice, never a fresh start |
+| Provider has no saved session | `ErrChatResumeFailed` (an ACP "resource not found" included) | n/a | no: two bounded retries (about 30 s and 1 min, because it cannot be told from a slow start), then one notice, never a fresh start |
 
 The adapter's history probe (claude, codex, copilot, qwen, cline, kilocode, mimocode, omp,
 opencode (v1) and opencode-v2) only decides whether an idle session whose conversation is
@@ -67,6 +67,10 @@ reported gone is reported to you instead of parked. Working sessions are always 
 (never fresh) whatever the probe says.
 
 Terminal (TUI) sessions are not auto-resumed.
+
+An untouched chat (a reserved provider id the provider never persisted) is not captured: there is
+nothing to resume, and a first prompt that was only queued locally waits for a manual resume.
+A manual resume clears a captured intent.
 
 ## Tests
 
