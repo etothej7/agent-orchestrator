@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -36,6 +37,7 @@ func writeLaunchHandoff(cfg ports.RuntimeConfig) (path string, cleanup func(), e
 		return "", func() {}, nil
 	}
 	sort.Strings(keys)
+	sweepStaleLaunchDirs(os.TempDir(), staleLaunchDirAge)
 	dir, err := os.MkdirTemp("", "ao-launch-")
 	if err != nil {
 		return "", nil, fmt.Errorf("tmux runtime: create private launch directory: %w", err)
@@ -55,4 +57,27 @@ func writeLaunchHandoff(cfg ports.RuntimeConfig) (path string, cleanup func(), e
 		return "", nil, fmt.Errorf("tmux runtime: write private launch variables: %w", err)
 	}
 	return path, cleanup, nil
+}
+
+// staleLaunchDirAge is how long a launch directory may exist before a later launch removes it. A
+// pane sources and deletes its directory within moments of starting; an hour means the launch died
+// before that and nothing will ever read the file.
+const staleLaunchDirAge = time.Hour
+
+// sweepStaleLaunchDirs removes launch directories (ao-launch-*, directories only, not symlinks)
+// older than maxAge from dir. Best effort: it never fails a launch.
+func sweepStaleLaunchDirs(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "ao-launch-") || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
+		}
+	}
 }

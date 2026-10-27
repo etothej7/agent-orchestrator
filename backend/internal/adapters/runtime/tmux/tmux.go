@@ -1677,9 +1677,8 @@ func buildLaunchCommandWithHandoff(cfg ports.RuntimeConfig, handoff string) stri
 	}
 
 	var b strings.Builder
-	b.WriteString("cd ")
-	b.WriteString(shellQuote(cfg.WorkspacePath))
-	b.WriteString(" || exit; ")
+	// The private handoff comes FIRST: if the working-directory guard exited the shell before the
+	// file was sourced and removed, the proof would sit in the temp directory.
 	if handoff != "" {
 		b.WriteString(". ")
 		b.WriteString(shellQuote(handoff))
@@ -1687,6 +1686,9 @@ func buildLaunchCommandWithHandoff(cfg ports.RuntimeConfig, handoff string) stri
 		b.WriteString(shellQuote(filepath.Dir(handoff)))
 		b.WriteString("; ")
 	}
+	b.WriteString("cd ")
+	b.WriteString(shellQuote(cfg.WorkspacePath))
+	b.WriteString(" || exit; ")
 	if _, configured := cfg.Env["NO_COLOR"]; !configured {
 		// The daemon may be launched from another agent or CI environment that
 		// sets NO_COLOR for its own captured output. Do not leak that ambient

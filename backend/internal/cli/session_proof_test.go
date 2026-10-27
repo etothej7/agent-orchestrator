@@ -89,3 +89,55 @@ func TestCLICallsFallBackToThePrivateProofFile(t *testing.T) {
 		t.Fatalf("daemon saw proof headers %q, want the filed proof", *proofs)
 	}
 }
+
+// claimServer records the proof and claim headers of every /api/v1/sessions call.
+func claimServer(t *testing.T) (*httptest.Server, *[][2]string) {
+	t.Helper()
+	var seen [][2]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/") {
+			return
+		}
+		seen = append(seen, [2]string{r.Header.Get(identity.HeaderProof), r.Header.Get(identity.HeaderClaim)})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sessionId":"demo-1","policy":"never"}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+// With no proof, the CLI says which session it believes it is (AO_SESSION_ID) so the daemon can
+// count the call against that session and prioritize its relaunch for a proof. It is a claim, not
+// an identity; with a proof the claim is not sent (the proof already says it).
+func TestCLICallsWithNoProofSendTheSessionClaimAndNeverBothWithAProof(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, seen := claimServer(t)
+	writeRunFileFor(t, cfg, srv)
+	run := func() {
+		t.Helper()
+		if _, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "set-auto-resume", "demo-1", "never"); err != nil {
+			t.Fatalf("set-auto-resume: %v\nstderr=%s", err, errOut)
+		}
+	}
+
+	t.Setenv(identity.EnvProof, "")
+	t.Setenv("AO_SESSION_ID", "coord-1")
+	run()
+	t.Setenv("AO_SESSION_ID", "")
+	run()
+	proof, _ := identity.NewProof()
+	t.Setenv(identity.EnvProof, proof)
+	t.Setenv("AO_SESSION_ID", "coord-1")
+	run()
+
+	want := [][2]string{{"", "coord-1"}, {"", ""}, {proof, ""}}
+	if len(*seen) != 3 {
+		t.Fatalf("daemon saw %d calls", len(*seen))
+	}
+	for i, w := range want {
+		if (*seen)[i] != w {
+			t.Errorf("call %d: (proof, claim) = %q, want %q", i+1, (*seen)[i], w)
+		}
+	}
+}

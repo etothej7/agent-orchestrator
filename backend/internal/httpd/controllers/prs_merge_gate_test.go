@@ -37,7 +37,6 @@ func (g *gateMerger) ResolveComments(context.Context, string, []string) (prsvc.R
 
 type gateStore struct {
 	agentMayMerge bool
-	terminated    map[domain.SessionID]bool
 }
 
 func (g gateStore) GetPR(_ context.Context, url string) (domain.PullRequest, bool, error) {
@@ -54,7 +53,7 @@ func (g gateStore) GetSession(_ context.Context, id domain.SessionID) (domain.Se
 		if id == "other-1" {
 			project = "other"
 		}
-		return domain.SessionRecord{ID: id, ProjectID: project, IsTerminated: g.terminated[id]}, true, nil
+		return domain.SessionRecord{ID: id, ProjectID: project}, true, nil
 	}
 	return domain.SessionRecord{}, false, nil
 }
@@ -80,10 +79,18 @@ func (g *gateRequests) Deny(context.Context, string) (domain.HumanRequest, error
 	return domain.HumanRequest{}, nil
 }
 
-type gateReproof struct{ asked []domain.SessionID }
+// gateReproof is -6's re-proof service in miniature: it acts only for a live session that has no proof.
+type gateReproof struct {
+	asked []domain.SessionID
+	live  map[domain.SessionID]bool
+}
 
-func (g *gateReproof) Prioritize(_ context.Context, id domain.SessionID) {
+func (g *gateReproof) Prioritize(_ context.Context, id domain.SessionID) bool {
+	if !g.live[id] {
+		return false
+	}
 	g.asked = append(g.asked, id)
+	return true
 }
 
 type gateRig struct {
@@ -96,20 +103,23 @@ type gateRig struct {
 }
 
 func newGateRig(store gateStore) *gateRig {
-	g := &gateRig{merger: &gateMerger{}, requests: &gateRequests{}, reproof: &gateReproof{}}
+	g := &gateRig{merger: &gateMerger{}, requests: &gateRequests{}, reproof: &gateReproof{live: map[domain.SessionID]bool{gateWorker: true}}}
 	g.router = chi.NewRouter()
 	g.router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r.WithContext(identity.WithCaller(r.Context(), g.caller)))
 		})
 	})
-	(&controllers.PRsController{Svc: g.merger, Store: store, Requests: g.requests, Reproof: g.reproof, Claim: func(context.Context) domain.SessionID { return g.claim }}).Register(g.router)
+	(&controllers.PRsController{Svc: g.merger, Store: store, Requests: g.requests, Reproof: g.reproof}).Register(g.router)
 	return g
 }
 
 func (g *gateRig) merge(caller identity.Caller) (int, string) {
 	g.caller = caller
 	req := httptest.NewRequest(http.MethodPost, "/prs/7/merge", strings.NewReader(gateBody))
+	if g.claim != "" {
+		req.Header.Set(identity.HeaderClaim, string(g.claim))
+	}
 	rec := httptest.NewRecorder()
 	g.router.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
@@ -194,16 +204,13 @@ func TestAnUnprovenSessionIsToldToBeRelaunchedAndGetsNoRequest(t *testing.T) {
 	}
 }
 
-func TestAClaimToBeATerminatedOrUnknownSessionIsJustATerminal(t *testing.T) {
-	for name, store := range map[string]gateStore{
-		"a terminated session": {terminated: map[domain.SessionID]bool{gateWorker: true}},
-		"an unknown session":   {},
+func TestAClaimToBeAnEndedOrUnknownSessionIsJustATerminal(t *testing.T) {
+	for name, claim := range map[string]domain.SessionID{
+		"an ended session":   "repo-2", // not live: the re-proof service does not act for it
+		"an unknown session": "ghost-1",
 	} {
-		g := newGateRig(store)
-		g.claim = gateWorker
-		if name == "an unknown session" {
-			g.claim = "ghost-1"
-		}
+		g := newGateRig(gateStore{})
+		g.claim = claim
 		status, _ := g.merge(identity.Anonymous())
 		if status != http.StatusAccepted || len(g.requests.filed) != 1 || len(g.reproof.asked) != 0 {
 			t.Errorf("%s: %d, requests %d, reproof %v", name, status, len(g.requests.filed), g.reproof.asked)

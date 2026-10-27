@@ -33,11 +33,16 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/procidentity"
 )
 
 const (
 	// HeaderProof carries a session proof on a request.
 	HeaderProof = "X-AO-Session-Proof"
+	// HeaderClaim carries the session id a proof-less `ao` process says it is (its AO_SESSION_ID).
+	// It is a CLAIM, only ever used to say which session an anonymous call should be counted
+	// against and which session to relaunch for a proof. It never identifies anyone.
+	HeaderClaim = "X-AO-Session-Claim"
 	// EnvProof is the environment variable a session's proof lives in. Its name contains none of
 	// TOKEN, KEY, SECRET, AUTH or CRED: several harnesses drop environment variables whose names
 	// look like secrets, and the proof must reach the ao subprocesses an agent runs.
@@ -68,17 +73,33 @@ const (
 	KindReviewer Kind = "reviewer"
 )
 
+// Via says how a session caller was established.
+type Via string
+
+const (
+	// ViaProof means the caller presented its session's identity proof.
+	ViaProof Via = "proof"
+	// ViaAncestry means the daemon matched the caller's process tree to a process it started for
+	// the session. Only for a session that has never been given a proof.
+	ViaAncestry Via = "ancestry"
+)
+
 // Caller is the verified identity of one request.
 type Caller struct {
 	Kind        Kind
 	Session     domain.SessionID
 	SessionKind domain.SessionKind
 	Project     domain.ProjectID
+	// Via says how a session caller was established: by its proof, or (for a session that has
+	// never been given one) by the process tree it is in. Empty for the human and anonymous.
+	Via Via
 	// Review and Worker are set for a reviewer: the review row it was launched for and the
 	// worker session whose pull request that review covers. A route that acts on a review run
 	// checks the run's review against Review, so a reviewer can act only on its own run.
 	Review string
 	Worker domain.SessionID
+	// ReviewHarness is the harness the reviewer runs on (reviewers only).
+	ReviewHarness domain.ReviewerHarness
 }
 
 // Anonymous is the caller that proved nothing.
@@ -249,6 +270,9 @@ func (i *Issuer) WithReviews(reviews ReviewStore) *Issuer {
 // the plain proof exists only on the way into the reviewer's launch environment, and issuing
 // again replaces the previous proof. Call it only when a new reviewer process is being launched.
 func (i *Issuer) IssueReview(ctx context.Context, reviewID string) (string, error) {
+	if strings.TrimSpace(reviewID) == "" {
+		return "", errors.New("issue reviewer identity proof: review id is required")
+	}
 	if i.reviews == nil {
 		return "", errors.New("reviewer proofs are not available: no review store")
 	}
@@ -281,6 +305,7 @@ type Resolver struct {
 	sessions SessionReader
 	reviews  ReviewStore
 	reviewed ReviewReader
+	ancestry Ancestry
 }
 
 // NewResolver builds a Resolver.
@@ -323,7 +348,12 @@ func (r *Resolver) Resolve(ctx context.Context, proof string) (Caller, error) {
 	if !ok || rec.IsTerminated {
 		return Anonymous(), ErrSessionEnded
 	}
-	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID}, nil
+	if confirmer, ok := r.store.(ProofConfirmer); ok {
+		// Presenting a proof confirms it (and promotes a pending successor). A failure to record it
+		// never refuses a valid proof.
+		_ = confirmer.ConfirmSessionProof(ctx, rec.ID, want, time.Now())
+	}
+	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaProof}, nil
 }
 
 // resolveReviewer verifies a proof that is not a session's: it may belong to a native reviewer.
@@ -344,7 +374,7 @@ func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, er
 	if err != nil {
 		return Anonymous(), fmt.Errorf("resolve reviewer proof: %w", err)
 	}
-	if !ok {
+	if !ok || review.IsArchived {
 		return Anonymous(), ErrSessionEnded
 	}
 	worker, ok, err := r.sessions.GetSession(ctx, review.SessionID)
@@ -354,5 +384,74 @@ func (r *Resolver) resolveReviewer(ctx context.Context, want string) (Caller, er
 	if !ok || worker.IsTerminated {
 		return Anonymous(), ErrSessionEnded
 	}
-	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID}, nil
+	return Caller{Kind: KindReviewer, Review: review.ID, Worker: review.SessionID, Project: review.ProjectID, ReviewHarness: review.Harness}, nil
+}
+
+// Ancestry finds the session a loopback caller belongs to from the socket and the kernel's
+// process table (package procidentity). Nothing the request says is an input.
+type Ancestry interface {
+	Identify(ctx context.Context, clientPort, serverPort int) (procidentity.Result, error)
+}
+
+// proofConfirmation reports whether a session has a proof that was actually presented (so a
+// running process holds and uses it). A proof that was only issued does not count.
+type proofConfirmation interface {
+	SessionProofConfirmed(ctx context.Context, id domain.SessionID) (bool, error)
+}
+
+// ProofConfirmer records that a proof of a session was presented: the first use confirms it, and
+// the first use of a PENDING proof (a relaunch's successor) promotes it so the old proof stops
+// verifying (two-phase rotation, ED8 P2).
+type ProofConfirmer interface {
+	ConfirmSessionProof(ctx context.Context, id domain.SessionID, hash string, now time.Time) error
+}
+
+// WithAncestry enables the live-identity bridge.
+func (r *Resolver) WithAncestry(a Ancestry) *Resolver {
+	r.ancestry = a
+	return r
+}
+
+// HasAncestry reports whether the bridge is wired.
+func (r *Resolver) HasAncestry() bool { return r.ancestry != nil }
+
+// ResolveByAncestry identifies a caller that presented no proof through its process tree. It is
+// the bridge for sessions that were already running when proofs arrived: they have no proof in
+// their environment, but the daemon knows which processes it started for them. The caller comes
+// from the daemon's own session record, is marked ViaAncestry, and only exists for a session
+// that has NEVER been given a proof: once a session is relaunched and its new process has presented its proof, the bridge no longer applies to it. Any failure is anonymous (fail closed).
+func (r *Resolver) ResolveByAncestry(ctx context.Context, clientPort, serverPort int) (Caller, error) {
+	if r.ancestry == nil {
+		return Anonymous(), ErrInvalid
+	}
+	res, err := r.ancestry.Identify(ctx, clientPort, serverPort)
+	if err != nil {
+		return Anonymous(), err
+	}
+	confirmation, ok := r.store.(proofConfirmation)
+	if !ok {
+		return Anonymous(), errors.New("proof state is unavailable")
+	}
+	confirmed, err := confirmation.SessionProofConfirmed(ctx, res.Session)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve by ancestry: %w", err)
+	}
+	if confirmed {
+		return Anonymous(), ErrInvalid // a session whose proof is in use is identified by that proof only
+	}
+	rec, found, err := r.sessions.GetSession(ctx, res.Session)
+	if err != nil {
+		return Anonymous(), fmt.Errorf("resolve by ancestry: %w", err)
+	}
+	if !found || rec.IsTerminated {
+		return Anonymous(), ErrSessionEnded
+	}
+	return Caller{Kind: KindAgent, Session: rec.ID, SessionKind: rec.Kind, Project: rec.ProjectID, Via: ViaAncestry}, nil
+}
+
+// CoordinatorState says who the active overall coordinator is and whether it holds a proof.
+// Session is empty when there is no active coordinator.
+type CoordinatorState struct {
+	Session    domain.SessionID
+	HoldsProof bool
 }

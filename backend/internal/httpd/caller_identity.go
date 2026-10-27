@@ -3,7 +3,9 @@ package httpd
 import (
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
@@ -32,7 +34,20 @@ func callerIdentityMiddleware(resolver *identity.Resolver, log *slog.Logger) fun
 			case requestscope.IsHumanUI(r.Context()):
 				caller = identity.Human()
 			case resolver != nil:
-				if proof := r.Header.Get(identity.HeaderProof); proof != "" {
+				proof := r.Header.Get(identity.HeaderProof)
+				if proof == "" {
+					// No proof: a session that was already running when proofs arrived may still be
+					// recognised by the process tree it is in. Never for a caller that PRESENTED a
+					// proof (a wrong one is simply refused), only for a loopback peer, and only from
+					// the socket and the kernel (never from the request).
+					if client, server, ok := loopbackPorts(r); ok && resolver.HasAncestry() {
+						if resolved, err := resolver.ResolveByAncestry(r.Context(), client, server); err == nil {
+							caller = resolved
+						} else {
+							log.Debug("process ancestry did not identify the caller", "reason", err.Error(), "method", r.Method, "path", r.URL.Path)
+						}
+					}
+				} else {
 					resolved, err := resolver.Resolve(r.Context(), proof)
 					switch {
 					case err == nil:
@@ -47,4 +62,25 @@ func callerIdentityMiddleware(resolver *identity.Resolver, log *slog.Logger) fun
 			next.ServeHTTP(w, r.WithContext(identity.WithCaller(r.Context(), caller)))
 		})
 	}
+}
+
+// loopbackPorts returns the client's and the daemon's ports of a loopback connection, taken from
+// the connection itself (never from a header).
+func loopbackPorts(r *http.Request) (client, server int, ok bool) {
+	host, port, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return 0, 0, false
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return 0, 0, false
+	}
+	local, isTCP := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
+	if !isTCP || !local.IP.IsLoopback() {
+		return 0, 0, false
+	}
+	c, err := strconv.Atoi(port)
+	if err != nil || c <= 0 {
+		return 0, 0, false
+	}
+	return c, local.Port, true
 }

@@ -66,6 +66,38 @@ func TestMaySubmitReviewIsTheReviewersOfThatRunOrThePerson(t *testing.T) {
 	}
 }
 
+// The run's worker is part of the binding: a run that does not say whose worker it is cannot be
+// matched to a reviewer, so nobody may submit it (fail closed), not even its own reviewer.
+func TestMaySubmitReviewFailsClosedWhenTheRunNamesNoWorker(t *testing.T) {
+	reviewer := Caller{Kind: KindReviewer, Review: "review-1", Worker: "worker-1", Project: "repo"}
+	if MaySubmitReview(reviewer, ReviewRunRef{Review: "review-1", Worker: ""}) {
+		t.Fatal("a run with no worker recorded was submittable by its reviewer")
+	}
+	if MaySubmitReview(Caller{Kind: KindReviewer, Review: "review-1"}, ReviewRunRef{Review: "review-1", Worker: "worker-1"}) {
+		t.Fatal("a reviewer with no worker recorded could submit")
+	}
+	if !MaySubmitReview(Human(), ReviewRunRef{}) {
+		t.Fatal("the person was refused")
+	}
+}
+
+// The overall coordinator coordinates; it does not merge. It is an orchestrator of the coordinator
+// project, so it is neither the PR's own worker nor that PR's project manager, and DecideMerge
+// refuses it for every repository PR EVEN WHEN the project turned agent merging on (Ed's no-merge
+// rule for the coordinator).
+func TestTheOverallCoordinatorIsNeverAllowedToMerge(t *testing.T) {
+	coordinator := agentCaller("coord-1", domain.KindOrchestrator, "overall-coordinator")
+	for _, allow := range []bool{false, true} {
+		if got := DecideMerge(coordinator, allow, Target{Session: "worker-1", Project: "repo"}); got != Refuse {
+			t.Errorf("agentMayMerge=%v: the overall coordinator's merge verdict = %v, want refuse", allow, got)
+		}
+	}
+	// Control: the repository's own manager is allowed when the setting is on.
+	if got := DecideMerge(agentCaller("manager-1", domain.KindOrchestrator, "repo"), true, Target{Session: "worker-1", Project: "repo"}); got != Allow {
+		t.Errorf("the project's manager = %v, want allow", got)
+	}
+}
+
 func TestSelfAndManagerPredicatesNeedAVerifiedAgent(t *testing.T) {
 	worker := agentCaller("worker-1", domain.KindWorker, "repo")
 	manager := agentCaller("manager-1", domain.KindOrchestrator, "repo")

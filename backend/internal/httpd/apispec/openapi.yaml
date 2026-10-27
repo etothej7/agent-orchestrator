@@ -3304,6 +3304,34 @@ paths:
       summary: Identify the daemon so a client can confirm which machine answered
       tags:
       - identity
+  /api/v1/identity/observations:
+    get:
+      operationId: getIdentityObservations
+      parameters:
+      - description: How many of the most-called routes, claimed sessions and processes
+          to return (default 20, at most 100).
+        in: query
+        name: top
+        schema:
+          description: How many of the most-called routes, claimed sessions and processes
+            to return (default 20, at most 100).
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityObservationsResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Top offenders among calls that arrived without an identity proof
+      tags:
+      - identity
   /api/v1/import:
     get:
       operationId: getImportStatus
@@ -16202,6 +16230,8 @@ components:
           - string
         id:
           type: string
+        identity:
+          $ref: '#/components/schemas/SessionIdentityView'
         isPinned:
           type: boolean
         isTerminated:
@@ -18025,6 +18055,61 @@ components:
       required:
       - id
       type: object
+    IdentityObservationsResponse:
+      properties:
+        allowed:
+          type: integer
+        droppedLookups:
+          type: integer
+        mode:
+          type: string
+        processes:
+          items:
+            $ref: '#/components/schemas/IdentityProcessObservation'
+          type: array
+        refused:
+          type: integer
+        routes:
+          items:
+            $ref: '#/components/schemas/IdentityRouteObservation'
+          type: array
+        sessions:
+          items:
+            $ref: '#/components/schemas/IdentitySessionObservation'
+          type: array
+        since:
+          format: date-time
+          type: string
+        total:
+          type: integer
+      required:
+      - mode
+      - since
+      - total
+      - allowed
+      - refused
+      - droppedLookups
+      - routes
+      - sessions
+      - processes
+      type: object
+    IdentityProcessObservation:
+      properties:
+        calls:
+          type: integer
+        lastSeen:
+          format: date-time
+          type: string
+        name:
+          type: string
+        pid:
+          type: integer
+      required:
+      - name
+      - calls
+      - pid
+      - lastSeen
+      type: object
     IdentityResponse:
       properties:
         apiVersion:
@@ -18034,6 +18119,46 @@ components:
       required:
       - hostId
       - apiVersion
+      type: object
+    IdentityRouteObservation:
+      properties:
+        allowed:
+          type: integer
+        calls:
+          type: integer
+        class:
+          type: string
+        lastSeen:
+          format: date-time
+          type: string
+        method:
+          type: string
+        refused:
+          type: integer
+        route:
+          type: string
+      required:
+      - method
+      - route
+      - class
+      - calls
+      - allowed
+      - refused
+      - lastSeen
+      type: object
+    IdentitySessionObservation:
+      properties:
+        anonymousCalls:
+          type: integer
+        lastSeen:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - anonymousCalls
+      - lastSeen
       type: object
     ImportReport:
       properties:
@@ -20117,6 +20242,19 @@ components:
       - userRequest
       - agentResponse
       - at
+      type: object
+    SessionIdentityView:
+      properties:
+        anonymousCalls:
+          type: integer
+        proof:
+          enum:
+          - present
+          - missing
+          type: string
+      required:
+      - proof
+      - anonymousCalls
       type: object
     SessionInterfaceTransition:
       properties:

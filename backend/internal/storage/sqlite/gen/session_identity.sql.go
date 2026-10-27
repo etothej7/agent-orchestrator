@@ -7,8 +7,24 @@ package gen
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"time"
 )
+
+const confirmSessionIdentity = `-- name: ConfirmSessionIdentity :exec
+UPDATE session_identity SET confirmed_at = COALESCE(confirmed_at, ?) WHERE session_id = ?
+`
+
+type ConfirmSessionIdentityParams struct {
+	ConfirmedAt sql.NullTime
+	SessionID   string
+}
+
+func (q *Queries) ConfirmSessionIdentity(ctx context.Context, arg ConfirmSessionIdentityParams) error {
+	_, err := q.db.ExecContext(ctx, confirmSessionIdentity, arg.ConfirmedAt, arg.SessionID)
+	return err
+}
 
 const deleteSessionIdentity = `-- name: DeleteSessionIdentity :exec
 DELETE FROM session_identity WHERE session_id = ?
@@ -20,55 +36,179 @@ func (q *Queries) DeleteSessionIdentity(ctx context.Context, sessionID string) e
 }
 
 const getSessionIdentity = `-- name: GetSessionIdentity :one
-SELECT session_id, proof_sha256, issued_at, generation FROM session_identity WHERE session_id = ?
+SELECT session_id, proof_sha256, pending_sha256, issued_at, generation, confirmed_at FROM session_identity WHERE session_id = ?
 `
 
-func (q *Queries) GetSessionIdentity(ctx context.Context, sessionID string) (SessionIdentity, error) {
+type GetSessionIdentityRow struct {
+	SessionID     string
+	ProofSha256   string
+	PendingSha256 sql.NullString
+	IssuedAt      time.Time
+	Generation    int64
+	ConfirmedAt   sql.NullTime
+}
+
+func (q *Queries) GetSessionIdentity(ctx context.Context, sessionID string) (GetSessionIdentityRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionIdentity, sessionID)
-	var i SessionIdentity
+	var i GetSessionIdentityRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.ProofSha256,
+		&i.PendingSha256,
 		&i.IssuedAt,
 		&i.Generation,
+		&i.ConfirmedAt,
 	)
 	return i, err
 }
 
 const getSessionIdentityByProofHash = `-- name: GetSessionIdentityByProofHash :one
-SELECT session_id, proof_sha256, issued_at, generation FROM session_identity WHERE proof_sha256 = ?
+SELECT session_id, proof_sha256, pending_sha256, issued_at, generation, confirmed_at
+FROM session_identity WHERE proof_sha256 = ?1 OR pending_sha256 = ?1
 `
 
-func (q *Queries) GetSessionIdentityByProofHash(ctx context.Context, proofSha256 string) (SessionIdentity, error) {
+type GetSessionIdentityByProofHashRow struct {
+	SessionID     string
+	ProofSha256   string
+	PendingSha256 sql.NullString
+	IssuedAt      time.Time
+	Generation    int64
+	ConfirmedAt   sql.NullTime
+}
+
+// A proof verifies when it is the active one or the pending one.
+func (q *Queries) GetSessionIdentityByProofHash(ctx context.Context, proofSha256 string) (GetSessionIdentityByProofHashRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionIdentityByProofHash, proofSha256)
-	var i SessionIdentity
+	var i GetSessionIdentityByProofHashRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.ProofSha256,
+		&i.PendingSha256,
 		&i.IssuedAt,
 		&i.Generation,
+		&i.ConfirmedAt,
 	)
 	return i, err
 }
 
-const upsertSessionIdentity = `-- name: UpsertSessionIdentity :exec
+const insertSessionIdentity = `-- name: InsertSessionIdentity :exec
 INSERT INTO session_identity (session_id, proof_sha256, issued_at, generation)
 VALUES (?, ?, ?, 1)
-ON CONFLICT(session_id) DO UPDATE SET
-    proof_sha256 = excluded.proof_sha256,
-    issued_at    = excluded.issued_at,
-    generation   = session_identity.generation + 1
 `
 
-type UpsertSessionIdentityParams struct {
+type InsertSessionIdentityParams struct {
 	SessionID   string
 	ProofSha256 string
 	IssuedAt    time.Time
 }
 
-// Issue or replace a session's proof hash. A replacement bumps the generation, so the old proof
-// stops verifying at once (the UNIQUE hash column means a hash can never belong to two sessions).
-func (q *Queries) UpsertSessionIdentity(ctx context.Context, arg UpsertSessionIdentityParams) error {
-	_, err := q.db.ExecContext(ctx, upsertSessionIdentity, arg.SessionID, arg.ProofSha256, arg.IssuedAt)
+// The first proof a session ever gets. Nothing depends on it yet, so it is active at once but not
+// confirmed.
+func (q *Queries) InsertSessionIdentity(ctx context.Context, arg InsertSessionIdentityParams) error {
+	_, err := q.db.ExecContext(ctx, insertSessionIdentity, arg.SessionID, arg.ProofSha256, arg.IssuedAt)
 	return err
+}
+
+const listSessionIdentitiesByIDs = `-- name: ListSessionIdentitiesByIDs :many
+SELECT session_id FROM session_identity WHERE session_id IN (/*SLICE:session_ids*/?)
+`
+
+// Which of the given sessions hold a proof right now (one batched read for the session list).
+func (q *Queries) ListSessionIdentitiesByIDs(ctx context.Context, sessionIds []string) ([]string, error) {
+	query := listSessionIdentitiesByIDs
+	var queryParams []interface{}
+	if len(sessionIds) > 0 {
+		for _, v := range sessionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", strings.Repeat(",?", len(sessionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var session_id string
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const promoteSessionIdentity = `-- name: PromoteSessionIdentity :execrows
+UPDATE session_identity
+SET proof_sha256 = pending_sha256, pending_sha256 = NULL, generation = generation + 1, confirmed_at = ?
+WHERE session_id = ? AND pending_sha256 = ?
+`
+
+type PromoteSessionIdentityParams struct {
+	ConfirmedAt   sql.NullTime
+	SessionID     string
+	PendingSha256 sql.NullString
+}
+
+// The pending proof was presented: the new process is up. It becomes the active proof and the old
+// one stops verifying.
+func (q *Queries) PromoteSessionIdentity(ctx context.Context, arg PromoteSessionIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, promoteSessionIdentity, arg.ConfirmedAt, arg.SessionID, arg.PendingSha256)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const replaceUnconfirmedSessionIdentity = `-- name: ReplaceUnconfirmedSessionIdentity :execrows
+UPDATE session_identity
+SET proof_sha256 = ?, issued_at = ?, generation = generation + 1, pending_sha256 = NULL
+WHERE session_id = ? AND confirmed_at IS NULL
+`
+
+type ReplaceUnconfirmedSessionIdentityParams struct {
+	ProofSha256 string
+	IssuedAt    time.Time
+	SessionID   string
+}
+
+// A new proof for a session whose current proof was never presented: no process can depend on the
+// old one, so it is replaced outright.
+func (q *Queries) ReplaceUnconfirmedSessionIdentity(ctx context.Context, arg ReplaceUnconfirmedSessionIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, replaceUnconfirmedSessionIdentity, arg.ProofSha256, arg.IssuedAt, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setPendingSessionIdentity = `-- name: SetPendingSessionIdentity :execrows
+UPDATE session_identity
+SET pending_sha256 = ?, issued_at = ?
+WHERE session_id = ? AND confirmed_at IS NOT NULL
+`
+
+type SetPendingSessionIdentityParams struct {
+	PendingSha256 sql.NullString
+	IssuedAt      time.Time
+	SessionID     string
+}
+
+// A new proof for a session whose current proof is in use: it waits beside the active one until its
+// first use, so a launch that fails leaves the old proof working.
+func (q *Queries) SetPendingSessionIdentity(ctx context.Context, arg SetPendingSessionIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setPendingSessionIdentity, arg.PendingSha256, arg.IssuedAt, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

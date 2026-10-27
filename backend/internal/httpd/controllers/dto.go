@@ -483,6 +483,21 @@ type SessionView struct {
 	LastEventAt   time.Time             `json:"lastEventAt"`
 	PRs           []SessionPRFacts      `json:"prs"`
 	ArtifactFiles []SessionArtifactView `json:"artifactFiles,omitempty"`
+	// Identity says whether the daemon holds an identity proof for this live session, so the app
+	// can show a quiet "needs relaunch for identity" marker that clears once a relaunch issues
+	// one. Derived from the daemon's own record, never from the request; omitted for terminated
+	// sessions and when the daemon does not track identities.
+	Identity *SessionIdentityView `json:"identity,omitempty"`
+}
+
+// SessionIdentityView is a live session's identity-proof state.
+type SessionIdentityView struct {
+	// Proof is "present" when a live proof row exists for the session now, "missing" otherwise
+	// (a session that has not been relaunched since proofs arrived).
+	Proof string `json:"proof" enum:"present,missing"`
+	// AnonymousCalls counts calls since the daemon started that arrived without a proof and
+	// claimed to come from this session (a claim, never an identity); 0 when unknown.
+	AnonymousCalls int `json:"anonymousCalls"`
 }
 
 // SessionArtifactView is one inferred file artifact for a session.
@@ -2524,6 +2539,11 @@ type TelemetryIdentityResponse struct {
 	CloudUserID string `json:"cloudUserId,omitempty"`
 	GitHubLogin string `json:"githubLogin,omitempty"`
 	OptedOut    bool   `json:"optedOut"`
+}
+
+// IdentityObservationsQuery bounds the top-offenders lists of GET /api/v1/identity/observations.
+type IdentityObservationsQuery struct {
+	Top int `query:"top" description:"How many of the most-called routes, claimed sessions and processes to return (default 20, at most 100)."`
 }
 
 // LinkPreviewQuery selects the external page to unfurl.

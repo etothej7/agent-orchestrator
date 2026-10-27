@@ -1305,6 +1305,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/identity/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Top offenders among calls that arrived without an identity proof */
+        get: operations["getIdentityObservations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/import": {
         parameters: {
             query?: never;
@@ -5530,6 +5547,7 @@ export interface components {
             /** Format: date-time */
             hibernatedAt?: null | string;
             id: string;
+            identity?: components["schemas"]["SessionIdentityView"];
             isPinned: boolean;
             isTerminated: boolean;
             issueId?: string;
@@ -6204,9 +6222,44 @@ export interface components {
         HumanDecisionResponse: {
             id: string;
         };
+        IdentityObservationsResponse: {
+            allowed: number;
+            droppedLookups: number;
+            mode: string;
+            processes: components["schemas"]["IdentityProcessObservation"][];
+            refused: number;
+            routes: components["schemas"]["IdentityRouteObservation"][];
+            sessions: components["schemas"]["IdentitySessionObservation"][];
+            /** Format: date-time */
+            since: string;
+            total: number;
+        };
+        IdentityProcessObservation: {
+            calls: number;
+            /** Format: date-time */
+            lastSeen: string;
+            name: string;
+            pid: number;
+        };
         IdentityResponse: {
             apiVersion: number;
             hostId: string;
+        };
+        IdentityRouteObservation: {
+            allowed: number;
+            calls: number;
+            class: string;
+            /** Format: date-time */
+            lastSeen: string;
+            method: string;
+            refused: number;
+            route: string;
+        };
+        IdentitySessionObservation: {
+            anonymousCalls: number;
+            /** Format: date-time */
+            lastSeen: string;
+            sessionId: string;
         };
         ImportReport: {
             dryRun: boolean;
@@ -7022,6 +7075,11 @@ export interface components {
             at: string;
             harness?: string;
             userRequest: string;
+        };
+        SessionIdentityView: {
+            anonymousCalls: number;
+            /** @enum {string} */
+            proof: "present" | "missing";
         };
         SessionInterfaceTransition: {
             /** Format: date-time */
@@ -12622,6 +12680,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IdentityResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getIdentityObservations: {
+        parameters: {
+            query?: {
+                /** @description How many of the most-called routes, claimed sessions and processes to return (default 20, at most 100). */
+                top?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityObservationsResponse"];
                 };
             };
             /** @description Not Implemented */

@@ -124,3 +124,101 @@ func TestReviewerProofResolvesThroughTheRealStore(t *testing.T) {
 		t.Fatal("a reviewer resolved as an agent session")
 	}
 }
+
+func TestSessionsWithProofIsOneBatchedAnswerForTheSessionList(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	if got, err := db.SessionsWithProof(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no ids = %v, %v", got, err)
+	}
+	if got, err := db.SessionsWithProof(ctx, []domain.SessionID{session, "never-issued"}); err != nil || len(got) != 0 {
+		t.Fatalf("before any proof = %v, %v", got, err)
+	}
+	if err := db.SetSessionProofHash(ctx, session, strings.Repeat("a", 64), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.SessionsWithProof(ctx, []domain.SessionID{session, "never-issued"})
+	if err != nil || len(got) != 1 || !got[session] {
+		t.Fatalf("after the proof = %v, %v; want only the proven session", got, err)
+	}
+}
+
+// ED8 P2, two-phase rotation: while a proof is in use, a new one only waits beside it; the old one
+// keeps working until the new one is first presented (the new process is up), and a launch that
+// never happens leaves the old proof working.
+func TestAProofInUseIsOnlyReplacedWhenItsSuccessorIsFirstUsed(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	old, next, third := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	resolves := func(hash string) bool {
+		_, _, found, err := db.SessionIdentityByProofHash(ctx, hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	// A session's FIRST proof is active at once but unconfirmed.
+	if err := db.SetSessionProofHash(ctx, session, old, now); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := db.SessionProofConfirmed(ctx, session); ok {
+		t.Fatal("a proof nobody presented is confirmed")
+	}
+	// Until it is used nothing can depend on it, so a new one replaces it outright.
+	if err := db.SetSessionProofHash(ctx, session, next, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if resolves(old) || !resolves(next) {
+		t.Fatalf("an unused proof was not replaced (old %v, next %v)", resolves(old), resolves(next))
+	}
+	// The proof is used: confirmed.
+	if err := db.ConfirmSessionProof(ctx, session, next, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := db.SessionProofConfirmed(ctx, session); !ok {
+		t.Fatal("a presented proof is not confirmed")
+	}
+
+	// A relaunch issues a successor: both verify, the old one keeps working.
+	if err := db.SetSessionProofHash(ctx, session, third, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !resolves(next) || !resolves(third) {
+		t.Fatalf("with a pending proof: active %v, pending %v; want both to verify", resolves(next), resolves(third))
+	}
+	// The launch FAILED: the pending proof is never presented. The old one still works.
+	if gen, _ := db.SessionProofGeneration(ctx, session); gen != 2 {
+		t.Fatalf("generation = %d, want 2 (the pending proof is not a new generation until used)", gen)
+	}
+	// The new process calls: the pending proof is promoted and the old one dies.
+	if err := db.ConfirmSessionProof(ctx, session, third, now.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if resolves(next) || !resolves(third) {
+		t.Fatalf("after promotion: old %v, new %v; want only the new one", resolves(next), resolves(third))
+	}
+	if gen, _ := db.SessionProofGeneration(ctx, session); gen != 3 {
+		t.Fatalf("generation after promotion = %d, want 3", gen)
+	}
+	// Presenting the (now active) proof again changes nothing.
+	if err := db.ConfirmSessionProof(ctx, session, third, now.Add(5*time.Minute)); err != nil || !resolves(third) {
+		t.Fatalf("re-confirming the active proof: %v, resolves %v", err, resolves(third))
+	}
+}
+
+func TestAnotherPendingProofReplacesThePreviousPendingOne(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	now := time.Now()
+	h := func(c string) string { return strings.Repeat(c, 64) }
+	_ = db.SetSessionProofHash(ctx, session, h("a"), now)
+	_ = db.ConfirmSessionProof(ctx, session, h("a"), now)
+	_ = db.SetSessionProofHash(ctx, session, h("b"), now) // pending (a failed launch)
+	_ = db.SetSessionProofHash(ctx, session, h("c"), now) // pending again (the retry)
+	resolves := func(x string) bool { _, _, f, _ := db.SessionIdentityByProofHash(ctx, h(x)); return f }
+	if !resolves("a") || resolves("b") || !resolves("c") {
+		t.Fatalf("a=%v b=%v c=%v; want the active and only the latest pending", resolves("a"), resolves("b"), resolves("c"))
+	}
+}

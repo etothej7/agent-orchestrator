@@ -184,6 +184,9 @@ type UsageHookRecorder interface {
 // SessionsController owns the session routes. Nil keeps routes registered but
 // returns OpenAPI-backed 501s.
 type SessionsController struct {
+	// Identity reports which sessions hold an identity proof, for the session views. Nil: no
+	// identity field.
+	Identity SessionIdentitySource
 	Svc      SessionService
 	Projects interface {
 		Get(context.Context, domain.ProjectID) (projectsvc.GetResult, error)
@@ -302,7 +305,9 @@ func (c *SessionsController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViews(r, sessions)})
+	views := sessionViews(r, sessions)
+	c.attachIdentity(r.Context(), views)
+	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: views})
 }
 
 func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
@@ -491,7 +496,11 @@ func (c *SessionsController) get(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: sessionView(r, sess)})
+	view := sessionView(r, sess)
+	if views := []SessionView{view}; c.attachIdentity(r.Context(), views) {
+		view = views[0]
+	}
+	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: view})
 }
 
 func (c *SessionsController) preview(w http.ResponseWriter, r *http.Request) {
@@ -3266,4 +3275,45 @@ func workspaceSnapshotQuery(query url.Values) (sessionsvc.WorkspaceSelectionRevi
 // Source selectors must never be silently answered with mutable worktree data.
 func workspaceSnapshotRequested(query url.Values) bool {
 	return query.Get("snapshot") == "true" || query.Has("branch") || query.Has("prNumber") || query.Has("sourceUrl") || query.Has("expectedTipSha") || query.Has("expectedBaseSha") || query.Has("commitShas")
+}
+
+// SessionIdentitySource reports the identity-proof state of sessions.
+type SessionIdentitySource interface {
+	// SessionsWithProof returns which of ids hold a proof now, in one query.
+	SessionsWithProof(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error)
+	// AnonymousCallsFor is how many anonymous calls claimed to come from the session.
+	AnonymousCallsFor(id domain.SessionID) int
+}
+
+// attachIdentity fills each live session's identity field from ONE batched lookup. It leaves the
+// views untouched (and reports false) when there is no source or the lookup fails: the field is
+// informational, so a failure must never fail the read.
+func (c *SessionsController) attachIdentity(ctx context.Context, views []SessionView) bool {
+	if c.Identity == nil {
+		return false
+	}
+	var ids []domain.SessionID
+	for _, v := range views {
+		if !v.IsTerminated {
+			ids = append(ids, v.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	proven, err := c.Identity.SessionsWithProof(ctx, ids)
+	if err != nil {
+		return false
+	}
+	for i := range views {
+		if views[i].IsTerminated {
+			continue
+		}
+		state := SessionIdentityView{Proof: "missing", AnonymousCalls: c.Identity.AnonymousCallsFor(views[i].ID)}
+		if proven[views[i].ID] {
+			state.Proof = "present"
+		}
+		views[i].Identity = &state
+	}
+	return true
 }

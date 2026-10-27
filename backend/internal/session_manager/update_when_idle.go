@@ -176,18 +176,18 @@ func (m *Manager) stopForUpdate(ctx context.Context, rec domain.SessionRecord) e
 			return err
 		}
 		if !stopped {
-			return errors.New("chat has work in progress")
+			return fmt.Errorf("%w: chat has work in progress", errUpdateBusy)
 		}
 		return nil
 	}
 	lastInputAt, releaseInput := m.beginTerminalInputDrain(rec)
 	current, err := m.getRecord(ctx, rec.ID)
 	if err == nil && (current.Metadata.RuntimeLaunchID != rec.Metadata.RuntimeLaunchID || !m.terminalIdleForRestart(ctx, current, lastInputAt)) {
-		err = errors.New("terminal received input")
+		err = fmt.Errorf("%w: terminal received input", errUpdateBusy)
 	}
 	if err == nil {
 		if _, busy := m.updateBlocker(ctx, current); busy {
-			err = errors.New("terminal became busy")
+			err = fmt.Errorf("%w: terminal became busy", errUpdateBusy)
 		}
 	}
 	if err == nil {
@@ -261,3 +261,37 @@ func (m *Manager) resumeAfterUpdate(ctx context.Context, id domain.SessionID) er
 	m.emitVersionSwitch(rec, "update_when_idle", result)
 	return err
 }
+
+// ErrRelaunchBusy means the session is not idle (a turn is running, an approval or input is
+// pending, a terminal received input or runs a command), so it was not relaunched.
+var ErrRelaunchBusy = errors.New("session is busy")
+
+// RelaunchForIdentity stops one IDLE session and starts it again resuming its conversation, so the
+// new process is launched with an identity proof in its environment (ED8: a session that began
+// before proofs arrived has none, and only a new launch can give it one). It never touches a
+// session that is not idle: the check runs first and again under the session's own lock while it
+// stops (stopForUpdate), and a refusal at either point is ErrRelaunchBusy, not a failure. A
+// terminated or sleeping session is left alone (a sleeping one gets its proof when it wakes). It
+// uses exactly the stop and resume steps of a harness update.
+func (m *Manager) RelaunchForIdentity(ctx context.Context, id domain.SessionID) error {
+	rec, err := m.getRecord(ctx, id)
+	if err != nil {
+		return err
+	}
+	if rec.IsTerminated || rec.HibernatedAt != nil {
+		return nil
+	}
+	if _, busy := m.updateBlocker(ctx, rec); busy {
+		return ErrRelaunchBusy
+	}
+	if err := m.stopForUpdate(ctx, rec); err != nil {
+		if errors.Is(err, errUpdateBusy) || errors.Is(err, ErrInterfaceTransitionInProgress) {
+			return ErrRelaunchBusy
+		}
+		return err
+	}
+	return m.resumeAfterUpdate(ctx, id)
+}
+
+// errUpdateBusy marks the refusals of stopForUpdate that mean "not idle right now".
+var errUpdateBusy = errors.New("session is not idle")

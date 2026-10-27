@@ -236,3 +236,34 @@ func TestProofFromEnvPrefersTheEnvironmentThenAPrivateFile(t *testing.T) {
 		}
 	}
 }
+
+// confirmingStore records which proofs were presented, like the real store's two-phase rotation.
+type confirmingStore struct {
+	*fakeStore
+	confirmed []string
+}
+
+func (c *confirmingStore) ConfirmSessionProof(_ context.Context, id domain.SessionID, hash string, _ time.Time) error {
+	c.confirmed = append(c.confirmed, string(id)+":"+hash)
+	return nil
+}
+
+// Presenting a valid proof confirms it (which is what promotes a pending successor in the store).
+func TestAValidProofIsConfirmedWhenPresented(t *testing.T) {
+	store := &confirmingStore{fakeStore: newFakeStore()}
+	sessions := fakeSessions{"worker-1": {ID: "worker-1", ProjectID: "repo", Kind: domain.KindWorker}}
+	issuer, resolver := NewIssuer(store, nil), NewResolver(store, sessions)
+	proof, _ := issuer.Issue(context.Background(), "worker-1")
+	if _, err := resolver.Resolve(context.Background(), proof); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.confirmed) != 1 || store.confirmed[0] != "worker-1:"+Hash(proof) {
+		t.Fatalf("confirmed = %v, want the presented proof's hash for worker-1", store.confirmed)
+	}
+	// A refused proof confirms nothing.
+	bad, _ := NewProof()
+	_, _ = resolver.Resolve(context.Background(), bad)
+	if len(store.confirmed) != 1 {
+		t.Fatalf("a refused proof was confirmed: %v", store.confirmed)
+	}
+}

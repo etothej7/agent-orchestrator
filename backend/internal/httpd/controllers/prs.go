@@ -30,9 +30,10 @@ type PRMergeStore interface {
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 }
 
-// SessionReproof asks the daemon to give a session that has no identity proof one at its next idle moment.
+// SessionReproof asks the daemon to give a live session that has no identity proof one at its next idle moment. It
+// reports whether it did: false for a session that does not exist, has ended, or already has a proof.
 type SessionReproof interface {
-	Prioritize(ctx context.Context, id domain.SessionID)
+	Prioritize(ctx context.Context, id domain.SessionID) bool
 }
 
 // PRsController owns the /prs action routes.
@@ -46,8 +47,8 @@ type PRsController struct {
 	Svc      prsvc.ActionManager
 	Store    PRMergeStore
 	Requests HumanRequestService
-	// Claim names the session an unproven caller says it is, for diagnostics only; it is never an identity.
-	Claim   func(ctx context.Context) domain.SessionID
+	// Reproof, with the caller's X-AO-Session-Claim (a claim, never an identity), tells an unproven live session
+	// from a terminal. Nil treats every unproven caller as a terminal.
 	Reproof SessionReproof
 }
 
@@ -135,15 +136,10 @@ func (c *PRsController) mayMergeNow(w http.ResponseWriter, r *http.Request, prID
 	// NeedsHuman. A caller that proved nothing but claims to be a live session is a session that started before
 	// it could be given a proof: it is asked to be relaunched, and it is not given a request the person would
 	// have to approve on its behalf for every routine action.
-	if c.Claim != nil && caller.Kind == identity.KindAnonymous {
-		if claimed := c.Claim(ctx); claimed != "" {
-			if rec, ok, err := c.Store.GetSession(ctx, claimed); err == nil && ok && !rec.IsTerminated {
-				if c.Reproof != nil {
-					c.Reproof.Prioritize(ctx, claimed)
-				}
-				envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "SESSION_NEEDS_IDENTITY", "This session has no identity proof yet; it will be relaunched automatically when idle.", nil)
-				return false
-			}
+	if caller.Kind == identity.KindAnonymous && c.Reproof != nil {
+		if claimed := domain.SessionID(strings.TrimSpace(r.Header.Get(identity.HeaderClaim))); claimed != "" && len(claimed) <= 128 && c.Reproof.Prioritize(ctx, claimed) {
+			envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "SESSION_NEEDS_IDENTITY", "This session has no identity proof yet; it will be relaunched automatically when idle.", nil)
+			return false
 		}
 	}
 	if c.Requests == nil {

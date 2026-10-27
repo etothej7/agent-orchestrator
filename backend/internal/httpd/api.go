@@ -1,7 +1,6 @@
 package httpd
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,7 +12,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
@@ -49,11 +47,9 @@ type APIDeps struct {
 	// PRMergeStore lets the merge route decide who may merge (see controllers.PRsController). The daemon sets
 	// it; nil leaves merging as it was, which only tests and headless builds rely on.
 	PRMergeStore controllers.PRMergeStore
-	// SessionReproof and CallerClaim serve the refusal an unproven session gets on a routine action: the claim
-	// names the session an anonymous caller says it is (diagnostic only) and the reproof asks for it to be
-	// relaunched at its next idle moment. Both may be nil until the identity observations step lands.
+	// SessionReproof tells an unproven live session (the caller's X-AO-Session-Claim) from a terminal on the merge
+	// route and asks for it to be relaunched at its next idle moment. May be nil.
 	SessionReproof controllers.SessionReproof
-	CallerClaim    func(ctx context.Context) domain.SessionID
 	Reviews        reviewsvc.Manager
 	Notifications  controllers.NotificationService
 	Stories        *storysvc.Service
@@ -91,12 +87,23 @@ type APIDeps struct {
 	// human-authored writes. Nil marks no request as human (a daemon the app did not
 	// start, so nothing human-only can be done through it).
 	UICapability *uicapability.Verifier
+	// ReviewRuns lets review submit bind a verified reviewer to its own active run.
+	ReviewRuns controllers.ReviewRunReader
+	// SessionProofs reports which sessions hold an identity proof (for the session views).
+	SessionProofs controllers.SessionIdentitySource
+	// IdentityObservations records the calls that reach the daemon without an identity, for the
+	// top-offenders view. Nil: the view reports not implemented.
+	IdentityObservations controllers.ObservationsSource
+	// IdentityMode reports the identity enforcement mode name for that view.
+	IdentityMode func() string
 	// SessionIdentity resolves a session's identity proof (X-AO-Session-Proof) into the
 	// session that holds it. Nil identifies no agent (embedders and tests without identity).
 	SessionIdentity *identity.Resolver
-	// RouteClassMode is how strictly each route's caller class is applied (zero = observe).
-	RouteClassMode RouteClassMode
-	SystemChecks   controllers.SystemChecker
+	// RouteGuard configures the route-class guard (human-only enforcement, identity observe or
+	// enforce, the coordinator's proof state, re-proof and observations hooks). Zero value: no
+	// human enforcement, identity in observe mode.
+	RouteGuard   GuardConfig
+	SystemChecks controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.
@@ -180,6 +187,7 @@ type API struct {
 	system          *controllers.SystemController
 	identity        *controllers.IdentityController
 	endpoints       *controllers.EndpointsController
+	identityObs     *controllers.IdentityObservationsController
 	telemetryID     *controllers.TelemetryIdentityController
 	systemInstall   *controllers.SystemInstallController
 	agentAuth       *controllers.AgentAuthController
@@ -210,6 +218,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 			Mgr: deps.Projects,
 		},
 		sessions: &controllers.SessionsController{
+			Identity:                 deps.SessionProofs,
 			Svc:                      deps.Sessions,
 			Projects:                 deps.Projects,
 			Activity:                 deps.Activity,
@@ -227,8 +236,8 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		automations:     &controllers.AutomationsController{Svc: deps.Automations},
 		desktop:         &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
 		usage:           &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
-		prs:             &controllers.PRsController{Svc: deps.PRs, Store: deps.PRMergeStore, Requests: deps.HumanRequests, Claim: deps.CallerClaim, Reproof: deps.SessionReproof},
-		reviews:         &controllers.ReviewsController{Svc: deps.Reviews},
+		prs:             &controllers.PRsController{Svc: deps.PRs, Store: deps.PRMergeStore, Requests: deps.HumanRequests, Reproof: deps.SessionReproof},
+		reviews:         &controllers.ReviewsController{Svc: deps.Reviews, Runs: deps.ReviewRuns},
 		notifications:   &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		stories:         &controllers.StoriesController{Svc: deps.Stories},
 		humanRequests:   &controllers.HumanRequestsController{Svc: deps.HumanRequests},
@@ -246,6 +255,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		system:          &controllers.SystemController{Checks: deps.SystemChecks},
 		identity:        &controllers.IdentityController{HostID: deps.HostID},
 		endpoints:       &controllers.EndpointsController{Source: deps.Endpoints},
+		identityObs:     &controllers.IdentityObservationsController{Source: deps.IdentityObservations, Mode: deps.IdentityMode},
 		telemetryID:     &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
 		systemInstall:   &controllers.SystemInstallController{Installer: deps.Installer},
 		agentAuth:       &controllers.AgentAuthController{Svc: deps.AgentAuth},
@@ -363,6 +373,7 @@ func (a *API) Register(root chi.Router) {
 			a.system.Register(r)
 			a.identity.Register(r)
 			a.endpoints.Register(r)
+			a.identityObs.Register(r)
 			a.telemetryID.Register(r)
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)
