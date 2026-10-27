@@ -167,3 +167,28 @@ The intake tells the manager to end its turn right after assigning the developer
 - Recorded, not required: the manager's next durable same-story action after the wake and its latency.
 
 The run stops as soon as the wake and a next manager action (or 45 s) are observed, or 15 s after the 30 s bound with no wake.
+
+## ED7 auto-resume acceptance (`autoresume.py`)
+
+Real-process acceptance for "agents come back by themselves after a restart". Each cycle gets its own confined scratch root (same sandbox, process tracking, zero-leftover teardown and credential purge as above), builds real state, simulates a restart, starts the daemon and then only **observes**: it never resumes, nudges or re-sends anything. The one post-restart write is a wake probe to a hibernated session.
+
+State per full cycle: coordinator (idle), repo manager (idle), second repo manager and two workers mid-turn (a long `sleep 600` command; one worker is a codex session in real runs), a session set to `autoResume=never` (stands in for the optimus pair), one stopped by the user (`exit-agent`), one terminated. Each live session's worktree gets an untracked marker file and is fingerprinted (content, modes, names, root inode and birth time) before and after.
+
+Cycles (`--cycles`, default all): `hosts-first` (hosts and providers get SIGTERM, then the daemon), `daemon-first` (daemon SIGTERM, then hosts and providers), `kill9` (everything SIGKILL), `flap` (kill -9, start, daemon killed again 3 s later, start again), `resume-failure` (one session's saved provider history is moved away inside the scratch root before the kill).
+
+Gates, per cycle: coordinator resumed actively; working sessions resumed actively in the same provider conversation; stage barrier (coordinator, then managers, then workers, each first observed live no earlier than the previous stage); idle manager hibernated (marker set, not exited, no provider launched) and woken by the next message; never/stopped/terminated stay down with no new turns, policy readback `never`, stop reason `user_stop`; worktrees byte-identical; exactly one keyed hidden-automation "AO restarted" turn per interrupted session and none elsewhere; same provider conversation, original prompt exists once, and (fixture runs) no `session/new` or prompt replay; no simultaneous hosts or duplicate continue turns (flap included); codex mid-turn session resumes within `--codex-settle` or leaves one clean stopped-work notice; resume failure produces exactly one stopped-work coordinator notice and the other sessions still resume; no manual intervention after the restart; no panics in the daemon log. A gate that has nothing to judge (for example "no duplicates" when nothing was resumed) fails instead of passing vacuously.
+
+```sh
+# Mechanics: fixture ACP provider, no credentials. Never certifies (exit 1 by design).
+python3 test/autonomy/autoresume.py --daemon /abs/path/to/ao --mode mechanics --output ARTIFACT_DIR
+# Positive control, fixture only: resumes through the public API in stage order so the process-level gates can PASS.
+# It is a manual intervention by construction, so the run still cannot pass.
+python3 test/autonomy/autoresume.py --daemon /abs/path/to/ao --mode mechanics --simulate-resumer --output ARTIFACT_DIR
+# Real run: same provider inputs as the one-request harness; claude-code for every role except codex_wkr.
+python3 test/autonomy/autoresume.py --daemon /abs/path/to/ed7/ao --mode real \
+  --auth-readonly /authorized/codex/auth.json=.codex/auth.json --pass-env ANTHROPIC_API_KEY \
+  --giveup 120 --output ARTIFACT_DIR
+python3 -m unittest discover -s test/autonomy -p 'test_autoresume.py' -v
+```
+
+Evidence in `result.json` is IDs, states, counts, timings and hashes only (no message text or provider data). Against a build without auto-resume the auto-resume gates fail and the safety gates pass, which is what proves the harness detects absence.
