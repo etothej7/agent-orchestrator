@@ -11,6 +11,9 @@ INSERT INTO session_auto_resume (session_id, policy, stop_reason, updated_at)
 VALUES (?, 'allowed', ?, ?)
 ON CONFLICT(session_id) DO UPDATE SET stop_reason = excluded.stop_reason, updated_at = excluded.updated_at;
 
+-- name: ClearStopReason :exec
+UPDATE session_auto_resume SET stop_reason = '', updated_at = ? WHERE session_id = ? AND stop_reason <> '';
+
 -- name: InsertDaemonRun :exec
 INSERT INTO daemon_runs (boot_id, started_at, heartbeat_at) VALUES (?, ?, ?);
 

@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+const clearStopReason = `-- name: ClearStopReason :exec
+UPDATE session_auto_resume SET stop_reason = '', updated_at = ? WHERE session_id = ? AND stop_reason <> ''
+`
+
+type ClearStopReasonParams struct {
+	UpdatedAt time.Time
+	SessionID string
+}
+
+func (q *Queries) ClearStopReason(ctx context.Context, arg ClearStopReasonParams) error {
+	_, err := q.db.ExecContext(ctx, clearStopReason, arg.UpdatedAt, arg.SessionID)
+	return err
+}
+
 const countDaemonRunsSince = `-- name: CountDaemonRunsSince :one
 SELECT COUNT(*) FROM daemon_runs WHERE started_at >= ?
 `

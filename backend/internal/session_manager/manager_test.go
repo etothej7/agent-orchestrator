@@ -66,11 +66,31 @@ type fakeStore struct {
 
 	createClientRequestErr error
 	promoteTaskErr         error
+	// stopReasons records why each agent was stopped on purpose (the stopReasonStore
+	// part of the store); stopReasonErr makes the write fail.
+	stopReasons   map[domain.SessionID]domain.StopReason
+	stopReasonErr error
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
+}
+
+// SetStopReason is the optional stopReasonStore part of the store.
+func (s *fakeStore) SetStopReason(_ context.Context, id domain.SessionID, reason domain.StopReason, _ time.Time) error {
+	if s.stopReasonErr != nil {
+		return s.stopReasonErr
+	}
+	if s.stopReasons == nil {
+		s.stopReasons = map[domain.SessionID]domain.StopReason{}
+	}
+	if reason == domain.StopReasonNone {
+		delete(s.stopReasons, id)
+		return nil
+	}
+	s.stopReasons[id] = reason
+	return nil
 }
 
 func newFakeStore() *fakeStore {

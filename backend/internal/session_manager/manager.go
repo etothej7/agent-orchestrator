@@ -2955,6 +2955,40 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // terminal identity, and provider-native conversation remain available for an
 // exact ResumeAgentWithMode call.
 func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	return m.exitAgent(ctx, id, domain.StopReasonUser)
+}
+
+// stopReasonStore is the optional part of the store that records why an agent was
+// stopped on purpose, so a restart can tell "Ed stopped it" from "it was running".
+type stopReasonStore interface {
+	SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error
+}
+
+// recordStopReason writes the reason BEFORE the controller is stopped, so it is
+// durable ahead of the controller's own exited write. A store that cannot record
+// reasons is skipped (nothing then distinguishes a stop); a store that can but fails
+// is an error, because a stop that cannot be recorded could later be mistaken for a
+// crash and resumed against Ed's wish.
+func (m *Manager) recordStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason) error {
+	store, ok := m.store.(stopReasonStore)
+	if !ok {
+		return nil
+	}
+	return store.SetStopReason(ctx, id, reason, m.clock())
+}
+
+// exitAgent is ExitAgent with the reason the agent is being stopped.
+func (m *Manager) exitAgent(ctx context.Context, id domain.SessionID, reason domain.StopReason) (_ domain.SessionRecord, retErr error) {
+	recorded := false
+	defer func() {
+		// An exit that did not complete leaves the agent as it was; do not leave a
+		// stop reason behind that would hide a later crash from auto-resume.
+		if retErr != nil && recorded {
+			if err := m.recordStopReason(context.WithoutCancel(ctx), id, domain.StopReasonNone); err != nil {
+				m.logger.Warn("exit agent: could not clear the stop reason after a failed exit", "sessionID", id, "error", err)
+			}
+		}
+	}()
 	if err := m.beginAgentOperation(ctx, id, agentOperationExit); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrAgentExitInProgress
@@ -2981,6 +3015,10 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 	if rec.Activity.State == domain.ActivityExited {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrAgentExited)
 	}
+	if err := m.recordStopReason(ctx, id, reason); err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: record why it stopped: %w", id, err)
+	}
+	recorded = true
 	if err := m.releaseTerminalRuntime(ctx, rec); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, err)
 	}

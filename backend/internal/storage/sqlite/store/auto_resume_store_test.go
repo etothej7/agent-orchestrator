@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,8 +13,14 @@ import (
 )
 
 func autoResumeSession(t *testing.T) (*sqlite.Store, domain.SessionID) {
+	db, id, _ := autoResumeSessionAt(t)
+	return db, id
+}
+
+func autoResumeSessionAt(t *testing.T) (*sqlite.Store, domain.SessionID, string) {
 	t.Helper()
-	db, err := sqlite.Open(t.TempDir())
+	dir := t.TempDir()
+	db, err := sqlite.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +30,22 @@ func autoResumeSession(t *testing.T) (*sqlite.Store, domain.SessionID) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return db, rec.ID
+	return db, rec.ID, dir
+}
+
+// autoResumeRows counts the rows in session_auto_resume through a separate read-only handle.
+func autoResumeRows(t *testing.T, dir string) int {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "ao.db")+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	var n int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM session_auto_resume`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestAutoResumePolicyDefaultsToAllowedAndFailsClosed(t *testing.T) {
@@ -66,7 +89,7 @@ func TestAutoResumePolicyDefaultsToAllowedAndFailsClosed(t *testing.T) {
 }
 
 func TestStopReasonIsRecordedClearedAndKeepsThePolicy(t *testing.T) {
-	db, id := autoResumeSession(t)
+	db, id, dir := autoResumeSessionAt(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -93,6 +116,18 @@ func TestStopReasonIsRecordedClearedAndKeepsThePolicy(t *testing.T) {
 	}
 	if err := db.SetStopReason(ctx, id, "because", now); err == nil {
 		t.Fatal("an unknown stop reason was accepted")
+	}
+	// Clearing a reason on a session that has none writes nothing, so every controller
+	// start (which clears) cannot grow a row per session.
+	clean, err := db.CreateSession(ctx, sampleRecord("repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetStopReason(ctx, clean.ID, domain.StopReasonNone, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := autoResumeRows(t, dir); n != 1 {
+		t.Fatalf("clearing created a row: %d rows for two sessions, want only the one that had a policy", n)
 	}
 	// Recording a stop reason first must not invent a never policy.
 	other, err := db.CreateSession(ctx, sampleRecord("repo"))

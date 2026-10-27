@@ -71,6 +71,11 @@ func (s *Store) SetStopReason(ctx context.Context, id domain.SessionID, reason d
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if reason == domain.StopReasonNone {
+		// Clearing only touches a row that has a reason. Every controller start clears,
+		// and that must not create a row per session.
+		return s.qw.ClearStopReason(ctx, gen.ClearStopReasonParams{UpdatedAt: now, SessionID: string(id)})
+	}
 	return s.qw.UpsertStopReason(ctx, gen.UpsertStopReasonParams{SessionID: string(id), StopReason: string(reason), UpdatedAt: now})
 }
 
