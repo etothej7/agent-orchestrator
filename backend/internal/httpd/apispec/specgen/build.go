@@ -78,6 +78,8 @@ func Build() ([]byte, error) {
 			"Durable dashboard notifications"),
 		*(&openapi31.Tag{Name: "reports"}).WithDescription(
 			"Durable worker reports"),
+		*(&openapi31.Tag{Name: "human-requests"}).WithDescription(
+			"Human-only actions an agent or terminal asked for and the person confirms in the app"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
 			"Token usage telemetry for AO sessions"),
 		*(&openapi31.Tag{Name: "push"}).WithDescription(
@@ -758,6 +760,7 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
+	ops = append(ops, humanRequestOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -885,6 +888,45 @@ func reportOperations() []operation {
 			{http.StatusInternalServerError, envelope.APIError{}},
 			{http.StatusNotImplemented, envelope.APIError{}},
 		},
+	}}
+}
+
+// humanRequestOperations declares the pending human-request surface: anyone may file and read,
+// only the person (a verified app capability) may approve or deny.
+func humanRequestOperations() []operation {
+	errs := func(extra ...int) []respUnit {
+		out := []respUnit{{http.StatusBadRequest, envelope.APIError{}}}
+		for _, status := range extra {
+			out = append(out, respUnit{status, envelope.APIError{}})
+		}
+		return append(out, respUnit{http.StatusInternalServerError, envelope.APIError{}}, respUnit{http.StatusNotImplemented, envelope.APIError{}})
+	}
+	return []operation{{
+		method: http.MethodPost, path: "/api/v1/human-requests", id: "fileHumanRequest", tag: "human-requests",
+		summary: "Ask the person to confirm a human-only action",
+		reqBody: controllers.FileHumanRequestRequest{},
+		resps:   append([]respUnit{{http.StatusAccepted, controllers.FileHumanRequestResponse{}}}, errs(http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests)...),
+	}, {
+		method: http.MethodGet, path: "/api/v1/human-requests", id: "listHumanRequests", tag: "human-requests",
+		summary:    "List the human requests waiting for the person, or the most recent of any state",
+		pathParams: []any{controllers.ListHumanRequestsQuery{}},
+		resps:      append([]respUnit{{http.StatusOK, controllers.ListHumanRequestsResponse{}}}, errs()...),
+	}, {
+		method: http.MethodGet, path: "/api/v1/human-requests/{id}", id: "getHumanRequest", tag: "human-requests",
+		summary:    "Read one human request",
+		pathParams: []any{controllers.HumanRequestIDParam{}},
+		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusNotFound)...),
+	}, {
+		method: http.MethodPost, path: "/api/v1/human-requests/{id}/approve", id: "approveHumanRequest", tag: "human-requests",
+		summary:    "Approve a human request as the person (requires the app's capability)",
+		pathParams: []any{controllers.HumanRequestIDParam{}},
+		reqBody:    controllers.ApproveHumanRequestRequest{},
+		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusForbidden, http.StatusNotFound, http.StatusConflict)...),
+	}, {
+		method: http.MethodPost, path: "/api/v1/human-requests/{id}/deny", id: "denyHumanRequest", tag: "human-requests",
+		summary:    "Deny a human request as the person (requires the app's capability)",
+		pathParams: []any{controllers.HumanRequestIDParam{}},
+		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusForbidden, http.StatusNotFound, http.StatusConflict)...),
 	}}
 }
 

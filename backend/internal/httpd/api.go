@@ -45,6 +45,7 @@ type APIDeps struct {
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
 	Stories            *storysvc.Service
+	HumanRequests      controllers.HumanRequestService
 	Reports            controllers.ReportService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
@@ -144,6 +145,7 @@ type API struct {
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
 	stories       *controllers.StoriesController
+	humanRequests *controllers.HumanRequestsController
 	reports       *controllers.ReportsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
@@ -208,6 +210,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		stories:       &controllers.StoriesController{Svc: deps.Stories},
+		humanRequests: &controllers.HumanRequestsController{Svc: deps.HumanRequests},
 		reports:       &controllers.ReportsController{Svc: deps.Reports},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
@@ -324,6 +327,7 @@ func (a *API) Register(root chi.Router) {
 			a.notifications.Register(r)
 			a.reports.Register(r)
 			a.stories.Register(r)
+			a.humanRequests.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.fs.Register(r)

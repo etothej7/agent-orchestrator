@@ -3022,6 +3022,269 @@ paths:
         is signed in as
       tags:
       - github
+  /api/v1/human-requests:
+    get:
+      operationId: listHumanRequests
+      parameters:
+      - description: pending (default) lists open requests; all lists the most recent
+          of any state.
+        in: query
+        name: state
+        schema:
+          description: pending (default) lists open requests; all lists the most recent
+            of any state.
+          enum:
+          - pending
+          - all
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListHumanRequestsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List the human requests waiting for the person, or the most recent
+        of any state
+      tags:
+      - human-requests
+    post:
+      operationId: fileHumanRequest
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersFileHumanRequestRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersFileHumanRequestResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Ask the person to confirm a human-only action
+      tags:
+      - human-requests
+  /api/v1/human-requests/{id}:
+    get:
+      operationId: getHumanRequest
+      parameters:
+      - description: Pending request identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Pending request identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read one human request
+      tags:
+      - human-requests
+  /api/v1/human-requests/{id}/approve:
+    post:
+      operationId: approveHumanRequest
+      parameters:
+      - description: Pending request identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Pending request identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersApproveHumanRequestRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Approve a human request as the person (requires the app's capability)
+      tags:
+      - human-requests
+  /api/v1/human-requests/{id}/deny:
+    post:
+      operationId: denyHumanRequest
+      parameters:
+      - description: Pending request identifier.
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Pending request identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Deny a human request as the person (requires the app's capability)
+      tags:
+      - human-requests
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -15555,6 +15818,132 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersApproveHumanRequestRequest:
+      properties:
+        payloadHash:
+          description: The payloadHash of the request as it was shown; anything else
+            is refused.
+          type: string
+      required:
+      - payloadHash
+      type: object
+    ControllersFileHumanRequestRequest:
+      properties:
+        kind:
+          description: What is being asked.
+          enum:
+          - auto_resume_lift
+          - conversation_settings
+          - provider_switch
+          type: string
+        payload:
+          additionalProperties: {}
+          description: The structured action; its shape depends on kind.
+          type: object
+        requesterSessionId:
+          description: The session filing the request, if any. Attribution only.
+          type: string
+        sessionId:
+          description: The session the action is about.
+          type: string
+      required:
+      - kind
+      - sessionId
+      type: object
+    ControllersFileHumanRequestResponse:
+      properties:
+        message:
+          type: string
+        request:
+          $ref: '#/components/schemas/ControllersHumanRequestResponse'
+      required:
+      - request
+      - message
+      type: object
+    ControllersHumanRequestChangeResponse:
+      properties:
+        field:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+      required:
+      - field
+      - from
+      - to
+      type: object
+    ControllersHumanRequestEnvelope:
+      properties:
+        request:
+          $ref: '#/components/schemas/ControllersHumanRequestResponse'
+      required:
+      - request
+      type: object
+    ControllersHumanRequestRequesterResponse:
+      properties:
+        kind:
+          enum:
+          - session
+          - terminal
+          type: string
+        sessionId:
+          type: string
+      required:
+      - kind
+      type: object
+    ControllersHumanRequestResponse:
+      properties:
+        changes:
+          items:
+            $ref: '#/components/schemas/ControllersHumanRequestChangeResponse'
+          type: array
+        createdAt:
+          format: date-time
+          type: string
+        decidedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        expiresAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        kind:
+          type: string
+        payloadHash:
+          type: string
+        requester:
+          $ref: '#/components/schemas/ControllersHumanRequestRequesterResponse'
+        result:
+          type: string
+        sessionId:
+          type: string
+        state:
+          enum:
+          - pending
+          - approved
+          - denied
+          - expired
+          - applied
+          - failed
+          type: string
+        summary:
+          type: string
+      required:
+      - id
+      - kind
+      - sessionId
+      - requester
+      - summary
+      - changes
+      - payloadHash
+      - state
+      - createdAt
+      - expiresAt
+      type: object
     ControllersKeepAwakeStatus:
       properties:
         active:
@@ -15583,6 +15972,15 @@ components:
       properties:
         deleteArtifacts:
           type: boolean
+      type: object
+    ControllersListHumanRequestsResponse:
+      properties:
+        requests:
+          items:
+            $ref: '#/components/schemas/ControllersHumanRequestResponse'
+          type: array
+      required:
+      - requests
       type: object
     ControllersRemoteHostAccountTokenResponse:
       properties:
@@ -23032,6 +23430,9 @@ tags:
   name: notifications
 - description: Durable worker reports
   name: reports
+- description: Human-only actions an agent or terminal asked for and the person confirms
+    in the app
+  name: human-requests
 - description: Token usage telemetry for AO sessions
   name: usage
 - description: Mobile push-device registration for OS push notifications

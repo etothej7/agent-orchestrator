@@ -66,6 +66,7 @@ import (
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/hookprocess"
+	humanrequestsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/humanrequest"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
@@ -682,6 +683,7 @@ func Run(buildVersion string) error {
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
 	storySvc := &storysvc.Service{Store: store, Messenger: chatSvc, Actions: sessionSvc}
+	humanRequestSvc := humanrequestsvc.New(humanrequestsvc.Config{Store: store, AutoResume: sessionSvc, Chat: chatSvc, Messenger: messenger, Log: log})
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()
@@ -1041,6 +1043,7 @@ func Run(buildVersion string) error {
 		Settings:           settingsSvc,
 		Coordination:       coordinationsvc.New(store, cfg.DataDir),
 		Stories:            storySvc,
+		HumanRequests:      humanRequestSvc,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           hookActivity,
@@ -1150,6 +1153,7 @@ func Run(buildVersion string) error {
 	var storyContinuationsDone <-chan struct{}
 	var standingInstructionsDone <-chan struct{}
 	var autoResumeDone <-chan struct{}
+	var humanRequestsDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1218,6 +1222,7 @@ func Run(buildVersion string) error {
 			}
 		}()
 		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
+		humanRequestsDone = startHumanRequestSweeper(ctx, humanRequestSvc, time.Minute)
 		standingInstructionsDone = startStandingInstructions(ctx, done, cdcPipe.Broadcaster, chatSvc, 30*time.Second, 5*time.Minute, 0, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone
@@ -1272,6 +1277,9 @@ func Run(buildVersion string) error {
 	}
 	if standingInstructionsDone != nil {
 		<-standingInstructionsDone
+	}
+	if humanRequestsDone != nil {
+		<-humanRequestsDone
 	}
 	if storyContinuationsDone != nil {
 		<-storyContinuationsDone
