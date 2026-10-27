@@ -1195,7 +1195,7 @@ func (s *Service) AutoResumePolicy(ctx context.Context, id domain.SessionID) (do
 	}
 	policy, err := reader.AutoResumePolicy(ctx, id)
 	if err != nil {
-		return domain.AutoResumeNever, nil
+		return domain.AutoResumeNever, nil //nolint:nilerr // an unreadable policy reads as never, the same fail-closed rule the resumer applies
 	}
 	return policy, nil
 }
