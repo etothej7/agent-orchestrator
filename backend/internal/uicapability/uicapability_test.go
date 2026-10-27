@@ -103,7 +103,6 @@ func TestSharedVectorWithTheElectronSigner(t *testing.T) {
 	}
 }
 
-
 type vectorFile struct {
 	Secret  string `json:"secret"`
 	NowMs   int64  `json:"nowMs"`

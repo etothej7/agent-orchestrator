@@ -88,7 +88,7 @@ func New(secret string) *Verifier {
 
 func mac(secret []byte, purpose, subject string, unix int64) string {
 	h := hmac.New(sha256.New, secret)
-	fmt.Fprintf(h, "ao-ui-capability:%s:%s:%s:%d", version, purpose, subject, unix)
+	_, _ = fmt.Fprintf(h, "ao-ui-capability:%s:%s:%s:%d", version, purpose, subject, unix)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 

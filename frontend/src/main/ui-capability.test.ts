@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	deriveUiCapabilitySecret,
 	signUiCapability,
 	signUiRequestCapability,
 	UI_CAPABILITY_HEADER,
@@ -16,8 +17,17 @@ describe("signUiCapability", () => {
 		).toBe("v1.1793102400.8VJhn2Mul_MHx3kNbKsRwyjuZlHU3YmE7pkfdvRUMos");
 	});
 
-	it("derives the same secret as the daemon", () => {
-		expect(deriveUiCapabilitySecret("test-token")).toBe("TFmczbvMaO3L6eBh9WJalDFprS--z2nHeaXiUAiKO7U");
+	// backend/internal/uicapability/testdata/vectors.json is read by the Go test too: the signature, and
+	// the spelling of the path on both sides (new URL(url).pathname here, EscapedPath in net/http).
+	const vectors = JSON.parse(readFileSync(resolve(__dirname, "../../../backend/internal/uicapability/testdata/vectors.json"), "utf8")) as {
+		secret: string;
+		nowMs: number;
+		vectors: { name: string; method: string; url: string; path: string; header: string }[];
+	};
+
+	it.each(vectors.vectors)("matches the daemon's vector: $name", ({ method, url, path, header }) => {
+		expect(new URL(url).pathname).toBe(path);
+		expect(signUiRequestCapability(vectors.secret, method, new URL(url).pathname, vectors.nowMs)).toBe(header);
 	});
 
 	it("binds the secret, purpose, subject and second", () => {

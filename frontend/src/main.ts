@@ -94,6 +94,8 @@ import {
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
+import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, UI_CAPABILITY_STDIN_ENV } from "./main/human-capability";
+import { forbiddenDebugSwitch } from "./main/packaged-hardening";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
 import { createCoordinatorBadge } from "./main/coordinator-badge";
@@ -524,6 +526,17 @@ protocol.registerSchemesAsPrivileged([
 // Register ao-app:// as the deep-link protocol for WorkOS auth callbacks.
 // Must run before app.whenReady().
 registerCloudProtocol();
+// A packaged build never runs with remote debugging or the Node inspector: either would let a
+// same-user process drive the shell page, and with it the human capability main signs for it.
+// Checked before any window exists, so there is nothing to attach to.
+if (app.isPackaged) {
+	const debugSwitch = forbiddenDebugSwitch(process.argv);
+	if (debugSwitch) {
+		console.error(`AO: refusing to start with ${debugSwitch.split("=", 1)[0]}; debugging switches are not allowed in a packaged build`);
+		app.exit(1);
+		process.exit(1);
+	}
+}
 if (!app.requestSingleInstanceLock()) {
 	app.exit(0);
 }
@@ -922,6 +935,16 @@ async function createWindowInternal(): Promise<void> {
 		const app = shellWebContents.mainFrame;
 		if (event.initiator?.processId === app.processId && event.initiator.routingId === app.routingId) return;
 		if (blocksRenderFrameNavigation(event.frame.url, event.url)) event.preventDefault();
+	});
+
+	// State-changing requests the shell page sends the daemon carry a per-request human capability,
+	// signed here so the key never reaches the renderer (see main/human-capability.ts).
+	installHumanCapabilityHeaders({
+		session: shellWebContents.session,
+		key: uiCapabilityKey,
+		shellWebContents: getShellWebContents,
+		daemonOrigin: () => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : undefined),
+		shellPageOrigin: () => originOf(rendererUrl()) ?? "",
 	});
 
 	// Agent pages framed in the chat (renders, HTML artifacts) stay off this
@@ -1431,6 +1454,10 @@ if (process.platform !== "win32") {
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
 const browserRuntimeToken = randomBytes(32).toString("base64url");
+// The human-capability key: minted per app run, handed to the daemon this app spawns over the same
+// private stdin pipe as the token above (second line), held in memory only. Never an env var, file,
+// argv, log or renderer value; main signs each state-changing request the shell sends the daemon.
+const uiCapabilityKey = newHumanCapabilityKey();
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -1486,6 +1513,8 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 		// same-UID worker could inspect the parent process.
 		AO_BROWSER_RUNTIME_TOKEN: "",
 		AO_BROWSER_RUNTIME_TOKEN_STDIN: "1",
+		// Marker only: line two of the same pipe carries the human-capability key.
+		[UI_CAPABILITY_STDIN_ENV]: "1",
 		// Under AppImage, APPIMAGE is the stable outer .AppImage file path (the
 		// FUSE mount in executablePath is random per launch). The daemon echoes
 		// it as appImagePath in /healthz|/readyz so the identity check can
@@ -2217,7 +2246,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// worker processes when it spawns them.
 	if (child.stdin) {
 		child.stdin.on("error", () => undefined);
-		child.stdin.end(`${browserRuntimeToken}\n`);
+		child.stdin.end(daemonStdinHandoff(browserRuntimeToken, uiCapabilityKey));
 	} else {
 		console.warn("AO: browser runtime token handoff pipe was unavailable");
 	}

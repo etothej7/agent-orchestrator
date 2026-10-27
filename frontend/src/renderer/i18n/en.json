@@ -3534,5 +3534,7 @@
 	"session.allowAutoResumeConfirm": "Allow",
 	"session.allowAutoResumeDone": "Automatic resume allowed",
 	"session.allowAutoResumeFailed": "Couldn’t allow automatic resume",
-	"session.allowAutoResumeSessionId": "Session ID: {{id}}"
+	"session.allowAutoResumeSessionId": "Session ID: {{id}}",
+	"error.humanCapabilityRequired": "AO could not confirm this was you",
+	"error.humanCapabilityRequiredBody": "Restart AO and try again. If it keeps happening, the background service was started outside the app."
 }
