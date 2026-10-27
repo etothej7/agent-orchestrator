@@ -11,7 +11,8 @@ import { isPersonalBuild } from "./personal-build";
  *
  * Trade-off (Ed's decision, 2026-10-27): logins saved in the Browser panel afterwards are protected by the file
  * permissions of the AO folder (readable only by the Mac user), not by the keychain. The cloud auth store is
- * empty today (no cloud-auth.bin), and every Browser-panel partition is temporary. To keep the first part true,
+ * empty today (no cloud-auth.bin). Named and imported Browser profiles DO persist, so cookies saved in them are
+ * protected by file permissions only. To keep the cloud part true,
  * cloud-auth refuses to persist anything while the stand-in key protects a shipped build
  * (`safeStorageUsesStandInKey`): the sign-in then lives in memory only.
  *

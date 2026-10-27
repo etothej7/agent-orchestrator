@@ -10,8 +10,10 @@ keychain (`main/keychain-policy.ts`, applied at `main.ts` before the app is read
   changes or deletes it (`keychain-policy.test.ts` checks the source for that).
 * Trade-off: logins saved in AO's Browser panel from now on are protected by the file permissions of the AO folder
   (`~/.ao/electron` is mode 0700, readable only by the Mac user), not by the keychain. They are not strongly
-  encrypted, so programs running as the same Mac user could read them. Nothing is stored in that place today (no
-  `cloud-auth.bin`; every Browser-panel partition is temporary).
+  encrypted, so programs running as the same Mac user could read them. This applies to **cookies in persistent or
+  imported Browser profiles** (named and imported profiles persist across restarts, so their cookies are protected by
+  file permissions only). Temporary Browser partitions are discarded when AO quits. Nothing sensitive is stored in
+  that place today (no `cloud-auth.bin`, and no encrypted data in the existing profile).
 * **That stays true on purpose:** while the stand-in key is in use in a packaged build, the cloud sign-in
   (`main/cloud-auth.ts`, which would otherwise write `cloud-auth.bin` with Electron's safeStorage) refuses to persist
   anything. The sign-in lives in memory for that run only, so after an AO restart the person signs in again.
