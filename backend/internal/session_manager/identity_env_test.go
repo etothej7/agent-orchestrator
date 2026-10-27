@@ -3,8 +3,12 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -158,5 +162,95 @@ func TestNoIssuerMeansNoProof(t *testing.T) {
 	}
 	if env[identity.EnvProof] != "" {
 		t.Fatalf("a manager without an identity issuer injected %q", env[identity.EnvProof])
+	}
+}
+
+// --- ED8-1 review F2/F3: a proof is issued exactly when a launch environment is built ---
+
+// The rule (docs in package identity): a session's proof changes only when a NEW process is
+// launched for it. Anything that builds an environment without launching (a preflight, a probe,
+// a cleanup, an interface-handoff check) must not call launchRuntimeEnv, or it would replace the
+// proof of a session whose process is alive and silently break every ao call that process makes.
+// launchRuntimeEnv is therefore reachable only from the two launch-environment builders.
+func TestOnlyLaunchEnvironmentBuildersIssueAProof(t *testing.T) {
+	allowed := map[string]bool{"prepareWorkerLaunchEnv": true, "prepareChatControllerEnv": true}
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offenders []string
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil || fn.Name.Name == "launchRuntimeEnv" {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "launchRuntimeEnv" && !allowed[fn.Name.Name] {
+						offenders = append(offenders, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
+					}
+					return true
+				})
+			}
+		}
+	}
+	if len(offenders) != 0 {
+		t.Fatalf("launchRuntimeEnv (which issues a proof) is called from %v; only %v may call it. Build a probe environment with runtimeEnv instead", offenders, []string{"prepareWorkerLaunchEnv", "prepareChatControllerEnv"})
+	}
+}
+
+// Probing whether a stopped terminal could resume natively (the update-when-idle check) builds
+// an environment but launches nothing, so the session's proof must not change.
+func TestProbingATerminalDoesNotRotateItsProof(t *testing.T) {
+	store := &memoryProofStore{hashes: map[domain.SessionID]string{}}
+	mgr, st, rt := newChatManager(&recordingLauncher{})
+	mgr.proofs = identity.NewIssuer(store, nil)
+	mgr.runtime = idleWorkloadRuntime{rt}
+	st.sessions["resumable"] = domain.SessionRecord{ID: "resumable", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI, Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/resumable", Branch: "ao/resumable", RuntimeHandleID: "pane-resumable", AgentSessionID: "native-1"}}
+	issued, err := identity.NewIssuer(store, nil).Issue(context.Background(), "resumable")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mgr.BusyHarnessSessions(context.Background(), domain.HarnessCodex); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.hashes["resumable"]; got != identity.Hash(issued) {
+		t.Fatal("a resume probe replaced the proof of a session whose process is still running")
+	}
+}
+
+// A restore launches a new process: its environment carries a proof that was issued while the
+// environment was built, so it is the session's current proof (and the previous one is dead).
+func TestRestoreLaunchesWithTheSessionsCurrentProof(t *testing.T) {
+	store := &memoryProofStore{hashes: map[domain.SessionID]string{}}
+	m, st, rt, _ := newManager()
+	m.proofs = identity.NewIssuer(store, nil)
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	old, err := identity.NewIssuer(store, nil).Issue(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.RestoreWithMode(context.Background(), "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	proof := rt.lastCfg.Env[identity.EnvProof]
+	if proof == "" {
+		t.Fatal("the restored process was started without a proof")
+	}
+	if store.hashes["mer-1"] != identity.Hash(proof) {
+		t.Fatal("the proof in the restored environment is not the one the daemon holds for the session")
+	}
+	if proof == old {
+		t.Fatal("a restore reused the previous process's proof")
 	}
 }

@@ -132,10 +132,9 @@ func (m *Manager) terminalResumesNatively(ctx context.Context, rec domain.Sessio
 	if err != nil || !ok {
 		return false
 	}
-	env, _, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
-	if err != nil {
-		return false
-	}
+	// A probe environment: nothing launches here, so it must not mint an identity proof (which
+	// would replace the proof of a session whose process may still be running).
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	m.augmentAgentRuntimeEnv(agent, env)
 	return !nativeConversationMissing(ctx, agent, ref, rec.Metadata.AgentSessionID, env)
 }
