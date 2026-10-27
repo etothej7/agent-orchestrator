@@ -25,9 +25,11 @@ const note = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, body
 	createdAt: "2026-10-26T12:00:01Z", target: { kind: "session", sessionId: "coord" },
 });
 
-function mount(options: { enabled?: boolean; onScreen?: boolean; items: ConversationItem[]; notifications: NotificationDTO[]; inView?: string[]; askStatusOf?: Parameters<typeof useReadCoordinatorTells>[3] }) {
+function mount(options: { enabled?: boolean; onScreen?: boolean; items: ConversationItem[]; notifications: NotificationDTO[]; inView?: string[]; askStatusOf?: Parameters<typeof useReadCoordinatorTells>[3]; openAsks?: NotificationDTO[] }) {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: options.notifications, unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] });
+	const openCount = options.openAsks?.length ?? 0;
+	client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: options.notifications, unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: openCount }] });
+	if (options.openAsks) client.setQueryData(["coordinator-open-asks", openCount], options.openAsks);
 	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 	const rendered = renderHook(() => useReadCoordinatorTells(options.enabled ?? true, options.onScreen ?? true, options.items, options.askStatusOf), { wrapper });
 	// By default every message is in the viewport; a test passes `inView` to say otherwise.
@@ -115,4 +117,31 @@ it("lists unread results and open questions outside the viewport, oldest first, 
 		askStatusOf: (message) => ({ open: message.id !== "ask-done" }),
 	});
 	expect(result.current.outOfView).toEqual(["ask-old", "tell"]);
+});
+
+// An unread tell or open ask whose message is older than the loaded window keeps the Dock badge lit, so the
+// chat must know about it even though its block is not in the loaded pages.
+it("counts unread results and open questions older than the loaded window, oldest first", () => {
+	const older = (id: string, purpose: NonNullable<NotificationDTO["purpose"]>, at: string): NotificationDTO => ({ ...note(`ntf_${id}`, purpose, "text"), messageId: id, createdAt: at });
+	const { result } = mount({
+		items: [tellMessage("loaded-tell", "verified_result", "Verified: it works.")],
+		notifications: [
+			older("old-tell", "verified_result", "2026-10-26T09:00:00Z"),
+			older("loaded-tell", "verified_result", "2026-10-26T12:00:00Z"),
+			older("read-tell", "verified_result", "2026-10-26T08:00:00Z"),
+		].map((n) => (n.messageId === "read-tell" ? { ...n, status: "read" as const } : n)),
+		openAsks: [older("decision-old", "blocking_decision", "2026-10-26T07:00:00Z")],
+	});
+	expect(result.current.older).toEqual({ count: 2, targetMessageId: "decision-old" });
+	expect(result.current.settled).toBe(true);
+});
+
+it("has nothing older when everything that waits is in the loaded window, and is not settled before notifications load", () => {
+	const loaded = mount({ items: [tellMessage("tell", "verified_result", "Verified: it works.")], notifications: [note("ntf_tell", "verified_result", "Verified: it works.")], openAsks: [] });
+	expect(loaded.result.current.older).toEqual({ count: 0, targetMessageId: undefined });
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+	const loading = renderHook(() => useReadCoordinatorTells(true, true, [tellMessage("tell", "verified_result", "x")]), { wrapper });
+	expect(loading.result.current.settled).toBe(false);
+	expect(loading.result.current.older.count).toBe(0);
 });

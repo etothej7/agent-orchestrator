@@ -3597,5 +3597,8 @@
 	"chat.coordinator.stopAnswering": "Stop answering this question",
 	"chat.coordinator.jump_one": "{{count}} message from your coordinator",
 	"chat.coordinator.jump_other": "{{count}} messages from your coordinator",
-	"chat.coordinator.jump_many": "{{count}} messages from your coordinator"
+	"chat.coordinator.jump_many": "{{count}} messages from your coordinator",
+	"chat.coordinator.jumpOlder_one": "{{count}} older message from your coordinator",
+	"chat.coordinator.jumpOlder_other": "{{count}} older messages from your coordinator",
+	"chat.coordinator.jumpOlder_many": "{{count}} older messages from your coordinator"
 }

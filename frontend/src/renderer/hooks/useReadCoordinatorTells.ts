@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CoordinatorAskStatus } from "../components/chat/coordinator-asks";
 import { coordinatorMessageKind, notificationForMessage } from "../lib/coordinator-messages";
 import { refreshCoordinatorBadge } from "../lib/coordinator-badge";
-import { isUnreadCoordinatorTell } from "../lib/notifications";
+import { isUnreadCoordinatorTell, type NotificationDTO } from "../lib/notifications";
 import type { ConversationItem, ConversationMessage } from "../types/conversation";
+import { useOpenAsks } from "./useCoordinatorAskStatus";
 import { useMarkAllNotificationsReadMutation, useNotificationsQuery } from "./useNotificationsQuery";
 
 const windowIsFocused = () => typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus();
@@ -13,6 +14,13 @@ export interface CoordinatorUnread {
 	reportVisible: (messageId: string, visible: boolean) => void;
 	/** Unread results/stops and open questions that are not in the viewport, oldest first. */
 	outOfView: readonly string[];
+	/**
+	 * Unread results/stops and open questions the daemon still counts that are OLDER than the loaded chat
+	 * window (their message is not in the loaded pages). `targetMessageId` is the oldest of them.
+	 */
+	older: { count: number; targetMessageId?: string };
+	/** The notification state needed to judge "nothing is waiting" has loaded. */
+	settled: boolean;
 }
 
 /**
@@ -29,6 +37,7 @@ export function useReadCoordinatorTells(
 ): CoordinatorUnread {
 	const history = useNotificationsQuery("all", enabled);
 	const markRead = useMarkAllNotificationsReadMutation();
+	const openAsks = useOpenAsks(enabled, history.data?.pages[0]?.unresolvedAskCount);
 	const [focused, setFocused] = useState(windowIsFocused);
 	useEffect(() => {
 		if (!enabled) return;
@@ -92,5 +101,21 @@ export function useReadCoordinatorTells(
 		() => waiting.filter((entry) => !visible.has(entry.messageId) && !(entry.notificationId && requested.current.has(entry.notificationId))).map((entry) => entry.messageId),
 		[visible, waiting],
 	);
-	return { reportVisible, outOfView };
+	// Server-side waiting items whose message is older than the loaded window: unread tells in the loaded
+	// notification history and the daemon's complete list of open questions.
+	const older = useMemo(() => {
+		if (!enabled || !items) return { count: 0 } as CoordinatorUnread["older"];
+		const loaded = new Set(items.filter((item) => item.kind === "message").map((item) => item.id));
+		const unreadTells = (history.data?.pages.flatMap((page) => page.notifications) ?? []).filter(
+			(notification) => notification.type === "coordinator_message" && (notification.purpose === "verified_result" || notification.purpose === "stopped_work") && isUnreadCoordinatorTell(notification),
+		);
+		const candidates = new Map<string, NotificationDTO>();
+		for (const notification of [...unreadTells, ...(openAsks.data ?? [])]) {
+			if (notification.messageId && !loaded.has(notification.messageId)) candidates.set(notification.messageId, notification);
+		}
+		const oldest = [...candidates.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0];
+		return { count: candidates.size, targetMessageId: oldest?.messageId };
+	}, [enabled, history.data, items, openAsks.data]);
+	const settled = enabled && history.isSuccess && (openAsks.isSuccess || openAsks.isError) && items !== undefined;
+	return { reportVisible, outOfView, older, settled };
 }

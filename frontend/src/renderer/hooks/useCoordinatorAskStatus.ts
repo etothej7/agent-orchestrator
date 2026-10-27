@@ -14,7 +14,7 @@ const RECENT_MS = 2 * 60_000;
  * complete, so it answers "is this old question still open?" even when it has scrolled out of the
  * loaded notification history. Refetched whenever the daemon's open-question count changes.
  */
-function useOpenAsks(enabled: boolean, openCount: number | undefined) {
+export function useOpenAsks(enabled: boolean, openCount: number | undefined) {
 	return useQuery({
 		queryKey: ["coordinator-open-asks", openCount ?? "unknown"],
 		enabled,
