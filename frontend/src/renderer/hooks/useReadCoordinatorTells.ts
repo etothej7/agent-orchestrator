@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CoordinatorAskStatus } from "../components/chat/coordinator-asks";
 import { coordinatorMessageKind, notificationForMessage } from "../lib/coordinator-messages";
 import { refreshCoordinatorBadge } from "../lib/coordinator-badge";
-import { isUnreadCoordinatorTell } from "../lib/notifications";
+import { isUnreadCoordinatorTell, type NotificationDTO } from "../lib/notifications";
 import type { ConversationItem, ConversationMessage } from "../types/conversation";
+import { useOpenAsks } from "./useCoordinatorAskStatus";
 import { useMarkAllNotificationsReadMutation, useNotificationsQuery } from "./useNotificationsQuery";
 
 const windowIsFocused = () => typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus();
@@ -13,6 +14,15 @@ export interface CoordinatorUnread {
 	reportVisible: (messageId: string, visible: boolean) => void;
 	/** Unread results/stops and open questions that are not in the viewport, oldest first. */
 	outOfView: readonly string[];
+	/**
+	 * Message ids of unread results/stops and open questions of THIS conversation's session that the daemon
+	 * still counts but that are OLDER than the loaded chat window (their message is not in the loaded pages),
+	 * oldest first. Unread results come from the loaded notification pages (the first 100), so this can read
+	 * lower than the Dock badge when more are unread than that; open questions come from the complete list.
+	 */
+	older: { ids: readonly string[] };
+	/** The notification state needed to judge "nothing is waiting" has loaded. */
+	settled: boolean;
 }
 
 /**
@@ -26,9 +36,12 @@ export function useReadCoordinatorTells(
 	onScreen: boolean,
 	items: readonly ConversationItem[] | undefined,
 	askStatusOf?: (message: ConversationMessage) => CoordinatorAskStatus,
+	/** The session whose chat this is: only its own notifications can have a message in it. */
+	sessionId?: string,
 ): CoordinatorUnread {
 	const history = useNotificationsQuery("all", enabled);
 	const markRead = useMarkAllNotificationsReadMutation();
+	const openAsks = useOpenAsks(enabled, history.data?.pages[0]?.unresolvedAskCount);
 	const [focused, setFocused] = useState(windowIsFocused);
 	useEffect(() => {
 		if (!enabled) return;
@@ -92,5 +105,27 @@ export function useReadCoordinatorTells(
 		() => waiting.filter((entry) => !visible.has(entry.messageId) && !(entry.notificationId && requested.current.has(entry.notificationId))).map((entry) => entry.messageId),
 		[visible, waiting],
 	);
-	return { reportVisible, outOfView };
+	// Server-side waiting items whose message is older than the loaded window: unread tells in the loaded
+	// notification history and the daemon's complete list of open questions.
+	const older = useMemo(() => {
+		if (!enabled || !items || !sessionId) return { ids: [] } as CoordinatorUnread["older"];
+		const loaded = new Set(items.filter((item) => item.kind === "message").map((item) => item.id));
+		const unreadTells = (history.data?.pages.flatMap((page) => page.notifications) ?? []).filter(
+			(notification) => notification.type === "coordinator_message" && (notification.purpose === "verified_result" || notification.purpose === "stopped_work") && isUnreadCoordinatorTell(notification),
+		);
+		const candidates = new Map<string, NotificationDTO>();
+		for (const notification of [...unreadTells, ...(openAsks.data ?? [])]) {
+			// A repo manager's chat has no coordinator blocks: only notifications addressed to this session count.
+			if (notification.sessionId === sessionId && notification.messageId && !loaded.has(notification.messageId)) {
+				candidates.set(notification.messageId, notification);
+			}
+		}
+		const stamp = (notification: NotificationDTO) => Date.parse(notification.createdAt) || 0;
+		const ids = [...candidates.values()]
+			.sort((a, b) => stamp(a) - stamp(b) || (a.messageId ?? "").localeCompare(b.messageId ?? ""))
+			.map((notification) => notification.messageId as string);
+		return { ids };
+	}, [enabled, history.data, items, openAsks.data, sessionId]);
+	const settled = enabled && history.isSuccess && (openAsks.isSuccess || openAsks.isError) && items !== undefined;
+	return { reportVisible, outOfView, older, settled };
 }

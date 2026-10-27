@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 const MAX_TRIES = 20;
+const MAX_PAGES = 60;
 const HIGHLIGHT_MS = 1800;
+
+/** How a jump ended. `missing`: the message is not in the loaded transcript and there is no older page to load. */
+export interface JumpEnd {
+	reached: boolean;
+	missing: boolean;
+	/** Another jump started before this one finished. */
+	replaced?: boolean;
+}
+
+export interface JumpCallbacks {
+	onReached?: () => void;
+	onEnd?: (end: JumpEnd) => void;
+}
 
 /**
  * Brings one coordinator block into view and marks it for a moment. The transcript may be virtualized or
@@ -26,8 +40,11 @@ export function useJumpToCoordinatorMessage({
 	onLoadOlder?: () => void;
 	/** Stop the transcript following new output so it does not pull the reader back down. */
 	stopFollow: () => void;
-}): (messageId: string, onReached?: () => void) => void {
-	const [target, setTarget] = useState<{ id: string; tries: number; onReached?: () => void }>();
+}): (messageId: string, callbacks?: JumpCallbacks) => void {
+	// The caller's callbacks live outside state so a jump that is replaced still gets to end.
+	const active = useRef<{ seq: number } & JumpCallbacks>(undefined);
+	const sequence = useRef(0);
+	const [target, setTarget] = useState<{ id: string; seq: number; tries: number; pages: number }>();
 	// The inputs churn every render; only a new target or retry should run the search.
 	const latest = useRef({ indexOf, scrollToIndex, hasOlder, loadingOlder, onLoadOlder, stopFollow });
 	latest.current = { indexOf, scrollToIndex, hasOlder, loadingOlder, onLoadOlder, stopFollow };
@@ -41,6 +58,15 @@ export function useJumpToCoordinatorMessage({
 	useEffect(() => clearHighlight, [clearHighlight]);
 	useEffect(() => {
 		if (!target) return;
+		// The jump is over: reached the block, or gave up (nothing to scroll to, no older page, out of retries).
+		const end = (reached: boolean, missing = false) => {
+			setTarget(undefined);
+			const callbacks = active.current;
+			if (callbacks?.seq !== target.seq) return;
+			active.current = undefined;
+			if (reached) callbacks.onReached?.();
+			callbacks.onEnd?.({ reached, missing });
+		};
 		const element = Array.from(root.current?.querySelectorAll<HTMLElement>("[data-coordinator-message-id]") ?? [])
 			.find((candidate) => candidate.dataset.coordinatorMessageId === target.id);
 		if (element) {
@@ -56,8 +82,7 @@ export function useJumpToCoordinatorMessage({
 				clearHighlight();
 				element.classList.add("ring-2", "ring-ring");
 				highlight.current = { element, timer: window.setTimeout(clearHighlight, HIGHLIGHT_MS) };
-				setTarget(undefined);
-				target.onReached?.();
+				end(true);
 				return;
 			}
 			const settle = window.setTimeout(() => setTarget((current) => current && { ...current, tries: current.tries + 1 }), 120);
@@ -65,18 +90,38 @@ export function useJumpToCoordinatorMessage({
 		}
 		const { indexOf: find, scrollToIndex: scrollTo, hasOlder: older, loadingOlder: loading, onLoadOlder: loadOlder } = latest.current;
 		const index = find(target.id);
+		let pages = target.pages;
 		if (index >= 0) scrollTo?.(index);
-		else if (older && !loading) loadOlder?.();
-		else if (!older) {
-			setTarget(undefined);
+		else if (older && !loading) {
+			// Page back until the message is loaded. Waiting for a page does not use up the retries.
+			if (pages >= MAX_PAGES) {
+				end(false, true);
+				return;
+			}
+			pages += 1;
+			loadOlder?.();
+		} else if (!older && index < 0) {
+			end(false, true);
 			return;
 		}
-		if (target.tries >= MAX_TRIES) {
-			setTarget(undefined);
+		const waitingForPage = index < 0 && loading;
+		if (!waitingForPage && target.tries >= MAX_TRIES) {
+			end(false);
 			return;
 		}
-		const retry = window.setTimeout(() => setTarget((current) => current && { ...current, tries: current.tries + 1 }), 80);
+		const retry = window.setTimeout(
+			() => setTarget((current) => current && { ...current, pages, tries: waitingForPage || index < 0 ? current.tries : current.tries + 1 }),
+			80,
+		);
 		return () => window.clearTimeout(retry);
 	}, [clearHighlight, root, target]);
-	return useCallback((messageId: string, onReached?: () => void) => setTarget({ id: messageId, tries: 0, onReached }), []);
+	return useCallback((messageId: string, callbacks?: JumpCallbacks) => {
+		// A new jump replaces one still under way: let the old one end, so nothing waits on it forever.
+		const previous = active.current;
+		active.current = undefined;
+		previous?.onEnd?.({ reached: false, missing: false, replaced: true });
+		sequence.current += 1;
+		active.current = { seq: sequence.current, ...callbacks };
+		setTarget({ id: messageId, seq: sequence.current, tries: 0, pages: 0 });
+	}, []);
 }

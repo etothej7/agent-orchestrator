@@ -239,7 +239,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// The chat is the tab in front: not a file, terminal or reviewer tab.
 	const chatInFront = !workspaceFileActive && !workspaceActiveTabKey && !reviewerTarget && !reviewerChatSelected && !shellTarget;
 	// Results and stops count on the Dock badge until they are seen here, in the focused window.
-	const coordinatorUnread = useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items, askStatusOf);
+	const coordinatorUnread = useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items, askStatusOf, session.id);
 	// Sending is the switch, so a pick is dropped once another tab comes forward: a message
 	// typed on coming back could otherwise go to an agent no longer meant.
 	useEffect(() => {

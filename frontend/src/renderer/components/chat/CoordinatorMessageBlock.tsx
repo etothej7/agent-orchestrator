@@ -7,6 +7,12 @@ import { Button } from "../ui/button";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { CoordinatorAskContext } from "./coordinator-asks";
 
+/** In view once a quarter of the block shows, or (for a block taller than the viewport) half a viewport of it. */
+const SEEN_RATIO = 0.25;
+const SEEN_VIEWPORT_FRACTION = 0.5;
+// Fine steps, so a block much taller than the viewport still reports as more of it scrolls in.
+const SEEN_THRESHOLDS = Array.from({ length: 21 }, (_, step) => step / 20);
+
 const ICON = { result: CheckCheck, stopped: CircleAlert, ask: MessageSquareDot } as const;
 
 /**
@@ -34,9 +40,14 @@ export function CoordinatorMessageBlock({ message }: { message: ConversationMess
 			reportVisible(message.id, true);
 			return () => reportVisible(message.id, false);
 		}
+		// Observed against the chat scroller (its viewport), not the window.
 		const observer = new IntersectionObserver((entries) => {
-			for (const entry of entries) reportVisible(message.id, entry.intersectionRatio >= 0.25);
-		}, { threshold: [0, 0.25] });
+			for (const entry of entries) {
+				const viewport = entry.rootBounds?.height ?? 0;
+				const tallSlice = viewport > 0 && (entry.intersectionRect?.height ?? 0) >= viewport * SEEN_VIEWPORT_FRACTION;
+				reportVisible(message.id, entry.intersectionRatio >= SEEN_RATIO || tallSlice);
+			}
+		}, { root: node.closest<HTMLElement>("[role=log]"), threshold: SEEN_THRESHOLDS });
 		observer.observe(node);
 		return () => {
 			observer.disconnect();

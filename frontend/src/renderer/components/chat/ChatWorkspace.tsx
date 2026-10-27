@@ -1861,7 +1861,7 @@ function ChatWorkspaceContent({
 									localEchos={localEchos}
 									startup={sessionRole === "orchestrator" ? undefined : startup}
 									arriving={arrivingInChat}
-									coordinatorOutOfView={coordinatorUnread?.outOfView}
+									coordinatorUnread={coordinatorUnread}
 								/>
 							</CoordinatorAskContext.Provider>
 							</ChatHostId.Provider>
@@ -2599,7 +2599,7 @@ export function Timeline({
 	localEchos = [],
 	startup,
 	arriving = false,
-	coordinatorOutOfView,
+	coordinatorUnread: coordinatorUnreadState,
 }: {
 	onAddToSideChat?: ChatWorkspaceProps["onAddToSideChat"];
 	/** Replaces the default "Add to chat" (write to this draft scope's composer). */
@@ -2638,8 +2638,8 @@ export function Timeline({
 	startup?: ComponentProps<typeof SessionStartup> & { openingTurnId?: string };
 	/** An interface switch is bringing this conversation in; only then does the transcript fade in. */
 	arriving?: boolean;
-	/** Unread results and open questions outside the viewport, oldest first (main coordinator only). */
-	coordinatorOutOfView?: readonly string[];
+	/** What waits for Ed in the main coordinator chat: out of view, older than the loaded window, and whether that is known yet. */
+	coordinatorUnread?: CoordinatorUnread;
 }) {
 	const hasTranscript = snapshot.items.length > 0;
 	const arrivedEmpty = useRef(false);
@@ -3540,23 +3540,78 @@ export function Timeline({
 		},
 	});
 	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = virtualized ? undefined : () => false;
+	const indexOfMessage = useCallback((messageId: string) => groups.findIndex((group) => group.items.some((item) => item.id === messageId)), [groups]);
 	const jumpToCoordinatorMessage = useJumpToCoordinatorMessage({
 		root: scrollContent,
-		indexOf: useCallback((messageId: string) => groups.findIndex((group) => group.items.some((item) => item.id === messageId)), [groups]),
+		indexOf: indexOfMessage,
 		scrollToIndex: useCallback((index: number) => { if (virtualized) virtualizer.scrollToIndex(index, { align: "center" }); }, [virtualized, virtualizer]),
 		hasOlder,
 		loadingOlder,
 		onLoadOlder,
 		stopFollow: releaseFollow,
 	});
+	// What waits for Ed: items loaded but out of view, then items older than the loaded window (the
+	// oldest of those is the jump target; the jump pages back until it is loaded).
+	// Messages a finished jump could not find (their conversation was replaced, or the notification points at
+	// a message that is gone) are not offered again: the pill would otherwise stay with nothing to jump to.
+	const [unreachableCoordinatorIds, setUnreachableCoordinatorIds] = useState<ReadonlySet<string>>(() => new Set());
+	const coordinatorOutOfView = coordinatorUnreadState?.outOfView ?? [];
+	const coordinatorOlderIds = (coordinatorUnreadState?.older.ids ?? []).filter((id) => !unreachableCoordinatorIds.has(id));
+	const coordinatorOlderCount = coordinatorOlderIds.length;
+	const coordinatorWaiting = coordinatorOutOfView.length + coordinatorOlderCount;
+	const coordinatorTarget = coordinatorOlderCount > 0 ? coordinatorOlderIds[0] : coordinatorOutOfView[0];
+	const coordinatorSettled = coordinatorUnreadState?.settled ?? false;
 	// Opening the main coordinator lands on the oldest thing that waits for Ed.
 	const jumpRequestedAt = useCoordinatorJumpStore((state) => state.requestedAt);
-	const oldestOutOfView = coordinatorOutOfView?.[0];
+	const jumpInFlight = useRef(false);
+	const coordinatorLoadedOnce = useRef(false);
+	// One way to start a jump, for the pill and for a row-click request alike, so a jump that replaces another
+	// still clears the request when it lands and still reports when it ends.
+	const startCoordinatorJump = useCallback((messageId: string) => {
+		jumpToCoordinatorMessage(messageId, {
+			// The request stays until the block is reached: the chat may still remount while it opens.
+			onReached: () => useCoordinatorJumpStore.getState().clear(),
+			onEnd: ({ missing, replaced }) => {
+				if (!replaced) jumpInFlight.current = false;
+				if (missing) setUnreachableCoordinatorIds((current) => new Set(current).add(messageId));
+			},
+		});
+		jumpInFlight.current = true; // after the call: a replaced jump's own end must not reset this
+	}, [jumpToCoordinatorMessage]);
 	useEffect(() => {
-		if (!oldestOutOfView || !coordinatorJumpRequested(jumpRequestedAt)) return;
-		// The request stays until the block is reached: the chat may still remount while it opens.
-		jumpToCoordinatorMessage(oldestOutOfView, () => useCoordinatorJumpStore.getState().clear());
-	}, [jumpRequestedAt, jumpToCoordinatorMessage, oldestOutOfView]);
+		if (!coordinatorTarget || !coordinatorJumpRequested(jumpRequestedAt)) return;
+		startCoordinatorJump(coordinatorTarget);
+	}, [coordinatorTarget, jumpRequestedAt, startCoordinatorJump]);
+	// A request that finds nothing waiting once the chat and its notifications have loaded is spent: left
+	// armed it would pull a reader scrolled up when a new message arrives within its lifetime.
+	useEffect(() => {
+		if (coordinatorSettled) coordinatorLoadedOnce.current = true;
+		if (coordinatorSettled && coordinatorWaiting === 0 && coordinatorJumpRequested(jumpRequestedAt)) useCoordinatorJumpStore.getState().clear();
+	}, [coordinatorSettled, coordinatorWaiting, jumpRequestedAt]);
+	// Leaving the chat after it loaded (and with no jump under way, which would mean it is only remounting
+	// while it opens) ends any request that was never consumed.
+	useEffect(() => () => {
+		if (coordinatorLoadedOnce.current && !jumpInFlight.current) useCoordinatorJumpStore.getState().clear();
+	}, []);
+	// Whether the pill's target is above or below what is on screen, so its arrow points the right way.
+	const [coordinatorTargetAbove, setCoordinatorTargetAbove] = useState(true);
+	useEffect(() => {
+		if (!coordinatorTarget) return;
+		const compute = () => {
+			if (coordinatorOlderCount > 0) return setCoordinatorTargetAbove(true); // older than anything loaded
+			const view = scroller.current?.getBoundingClientRect();
+			const element = Array.from(scrollContent.current?.querySelectorAll<HTMLElement>("[data-coordinator-message-id]") ?? [])
+				.find((candidate) => candidate.dataset.coordinatorMessageId === coordinatorTarget);
+			if (element && view && view.height > 0) return setCoordinatorTargetAbove(element.getBoundingClientRect().top < view.top);
+			const index = indexOfMessage(coordinatorTarget);
+			const first = virtualizer.range?.startIndex ?? 0;
+			setCoordinatorTargetAbove(index < 0 || index <= first);
+		};
+		compute();
+		const node = scroller.current;
+		node?.addEventListener("scroll", compute, { passive: true });
+		return () => node?.removeEventListener("scroll", compute);
+	}, [coordinatorOlderCount, coordinatorTarget, indexOfMessage, virtualizer]);
 	const virtualRows = virtualizer.getVirtualItems();
 	const virtualHeight = virtualizer.getTotalSize();
 	renderedVirtualHeight.current = virtualHeight;
@@ -4283,16 +4338,18 @@ export function Timeline({
 				) : null}
 			</div>
 
-			{coordinatorOutOfView && coordinatorOutOfView.length > 0 ? (
+			{coordinatorWaiting > 0 && coordinatorTarget ? (
 				<Button
 					type="button"
 					size="sm"
 					variant="outline"
-					onClick={() => jumpToCoordinatorMessage(coordinatorOutOfView[0]!)}
+					onClick={() => startCoordinatorJump(coordinatorTarget)}
 					className="absolute top-3 left-1/2 -translate-x-1/2 gap-1.5 border-border-strong bg-raised text-foreground shadow-sm hover:bg-surface dark:bg-raised dark:hover:bg-surface"
 				>
-					<ArrowUp aria-hidden="true" className="size-3.5" />
-					{t("chat.coordinator.jump", { count: coordinatorOutOfView.length })}
+					{coordinatorTargetAbove ? <ArrowUp aria-hidden="true" className="size-3.5" /> : <ArrowDown aria-hidden="true" className="size-3.5" />}
+					{coordinatorOutOfView.length === 0
+						? t("chat.coordinator.jumpOlder", { count: coordinatorWaiting })
+						: t("chat.coordinator.jump", { count: coordinatorWaiting })}
 				</Button>
 			) : null}
 			{!pinned ? (
