@@ -76,6 +76,8 @@ type APIDeps struct {
 	// human-authored writes. Nil marks no request as human (a daemon the app did not
 	// start, so nothing human-only can be done through it).
 	UICapability *uicapability.Verifier
+	// SessionProofs reports which sessions hold an identity proof (for the session views).
+	SessionProofs controllers.SessionIdentitySource
 	// IdentityObservations records the calls that reach the daemon without an identity, for the
 	// top-offenders view. Nil: the view reports not implemented.
 	IdentityObservations controllers.ObservationsSource
@@ -201,6 +203,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 			Mgr: deps.Projects,
 		},
 		sessions: &controllers.SessionsController{
+			Identity:                 deps.SessionProofs,
 			Svc:                      deps.Sessions,
 			Projects:                 deps.Projects,
 			Activity:                 deps.Activity,

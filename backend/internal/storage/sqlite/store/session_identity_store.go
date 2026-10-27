@@ -101,3 +101,24 @@ func (s *Store) DeleteReviewProof(ctx context.Context, reviewID string) error {
 	}
 	return nil
 }
+
+// SessionsWithProof reports which of the given sessions hold an identity proof right now, in one
+// query (the session list asks for every row at once).
+func (s *Store) SessionsWithProof(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error) {
+	out := map[domain.SessionID]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	raw := make([]string, len(ids))
+	for i, id := range ids {
+		raw[i] = string(id)
+	}
+	rows, err := s.qr.ListSessionIdentitiesByIDs(ctx, raw)
+	if err != nil {
+		return nil, fmt.Errorf("list session identities: %w", err)
+	}
+	for _, id := range rows {
+		out[domain.SessionID(id)] = true
+	}
+	return out, nil
+}

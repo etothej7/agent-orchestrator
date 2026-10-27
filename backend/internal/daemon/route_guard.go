@@ -111,3 +111,18 @@ func identityModeName(m httpd.RouteClassMode) string {
 	}
 	return "observe"
 }
+
+// sessionProofs feeds the session views' identity field: which sessions hold a proof (one batched
+// store read) and how many anonymous calls claimed each (the observations' counters).
+type sessionProofs struct {
+	store interface {
+		SessionsWithProof(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error)
+	}
+	obs *identityobs.Recorder
+}
+
+func (s sessionProofs) SessionsWithProof(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error) {
+	return s.store.SessionsWithProof(ctx, ids)
+}
+
+func (s sessionProofs) AnonymousCallsFor(id domain.SessionID) int { return s.obs.AnonymousCallsFor(id) }

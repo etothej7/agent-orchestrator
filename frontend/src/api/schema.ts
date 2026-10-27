@@ -5401,6 +5401,7 @@ export interface components {
             /** Format: date-time */
             hibernatedAt?: null | string;
             id: string;
+            identity?: components["schemas"]["SessionIdentityView"];
             isPinned: boolean;
             isTerminated: boolean;
             issueId?: string;
@@ -6922,6 +6923,11 @@ export interface components {
             at: string;
             harness?: string;
             userRequest: string;
+        };
+        SessionIdentityView: {
+            anonymousCalls: number;
+            /** @enum {string} */
+            proof: "present" | "missing";
         };
         SessionInterfaceTransition: {
             /** Format: date-time */

@@ -16,3 +16,7 @@ SELECT session_id, proof_sha256, issued_at, generation FROM session_identity WHE
 
 -- name: DeleteSessionIdentity :exec
 DELETE FROM session_identity WHERE session_id = ?;
+
+-- name: ListSessionIdentitiesByIDs :many
+-- Which of the given sessions hold a proof right now (one batched read for the session list).
+SELECT session_id FROM session_identity WHERE session_id IN (sqlc.slice('session_ids'));

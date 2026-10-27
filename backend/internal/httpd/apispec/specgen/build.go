@@ -623,6 +623,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersIdentityResponse":              "IdentityResponse",
 	"ControllersEndpointsResponse":             "EndpointsResponse",
 	"ControllersIdentityObservationsQuery":     "IdentityObservationsQuery",
+	"ControllersSessionIdentityView":           "SessionIdentityView",
 	"ControllersIdentityObservationsResponse":  "IdentityObservationsResponse",
 	"ControllersIdentityRouteObservation":      "IdentityRouteObservation",
 	"ControllersIdentitySessionObservation":    "IdentitySessionObservation",

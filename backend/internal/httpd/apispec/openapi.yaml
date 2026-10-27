@@ -15775,6 +15775,8 @@ components:
           - string
         id:
           type: string
+        identity:
+          $ref: '#/components/schemas/SessionIdentityView'
         isPinned:
           type: boolean
         isTerminated:
@@ -19771,6 +19773,19 @@ components:
       - userRequest
       - agentResponse
       - at
+      type: object
+    SessionIdentityView:
+      properties:
+        anonymousCalls:
+          type: integer
+        proof:
+          enum:
+          - present
+          - missing
+          type: string
+      required:
+      - proof
+      - anonymousCalls
       type: object
     SessionInterfaceTransition:
       properties:

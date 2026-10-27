@@ -124,3 +124,21 @@ func TestReviewerProofResolvesThroughTheRealStore(t *testing.T) {
 		t.Fatal("a reviewer resolved as an agent session")
 	}
 }
+
+func TestSessionsWithProofIsOneBatchedAnswerForTheSessionList(t *testing.T) {
+	db, session := autoResumeSession(t)
+	ctx := context.Background()
+	if got, err := db.SessionsWithProof(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no ids = %v, %v", got, err)
+	}
+	if got, err := db.SessionsWithProof(ctx, []domain.SessionID{session, "never-issued"}); err != nil || len(got) != 0 {
+		t.Fatalf("before any proof = %v, %v", got, err)
+	}
+	if err := db.SetSessionProofHash(ctx, session, strings.Repeat("a", 64), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.SessionsWithProof(ctx, []domain.SessionID{session, "never-issued"})
+	if err != nil || len(got) != 1 || !got[session] {
+		t.Fatalf("after the proof = %v, %v; want only the proven session", got, err)
+	}
+}

@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,44 @@ func (q *Queries) GetSessionIdentityByProofHash(ctx context.Context, proofSha256
 		&i.Generation,
 	)
 	return i, err
+}
+
+const listSessionIdentitiesByIDs = `-- name: ListSessionIdentitiesByIDs :many
+SELECT session_id FROM session_identity WHERE session_id IN (/*SLICE:session_ids*/?)
+`
+
+// Which of the given sessions hold a proof right now (one batched read for the session list).
+func (q *Queries) ListSessionIdentitiesByIDs(ctx context.Context, sessionIds []string) ([]string, error) {
+	query := listSessionIdentitiesByIDs
+	var queryParams []interface{}
+	if len(sessionIds) > 0 {
+		for _, v := range sessionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", strings.Repeat(",?", len(sessionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var session_id string
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertSessionIdentity = `-- name: UpsertSessionIdentity :exec

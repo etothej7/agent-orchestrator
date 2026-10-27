@@ -1021,6 +1021,7 @@ func Run(buildVersion string) error {
 		// Class-H routes need the human capability; identity is observed (ED8 rollout).
 		RouteGuard:           guardConfig,
 		IdentityObservations: identityObs,
+		SessionProofs:        sessionProofs{store: store, obs: identityObs},
 		IdentityMode:         func() string { return identityModeName(guardConfig.Identity) },
 		Awake:                awakeSvc,
 		Projects:             projectSvc,
