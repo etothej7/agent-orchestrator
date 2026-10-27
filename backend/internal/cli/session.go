@@ -362,7 +362,7 @@ func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
 		Long: "never protects the session: AO will not resume it, replace it or tear its project down, and a kill\n" +
 			"keeps its worktree. The main coordinator and the person may set it.\n\n" +
 			"Lifting a protection (allowed) is the person's decision and is made only in the AO app, in the\n" +
-			"session's ... menu (Allow automatic resume). No command can lift it, and none may be used to try.",
+			"session's ... menu (Allow automatic resume). This command cannot lift it, and nothing may be used to try.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := normalizeSessionID(args[0])

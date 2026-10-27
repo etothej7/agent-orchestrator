@@ -64,3 +64,25 @@ func TestReviewPromptRequiresInlineCommentsForRequiredChanges(t *testing.T) {
 		t.Fatalf("review prompt still makes inline comments optional:\n%s", prompt)
 	}
 }
+
+// AO's native reviewer is an agent too: its standing prompt forbids posing as Ed or acting
+// without its own identity, and (it cannot run `ao report`) tells it to say so in the review.
+func TestReviewerSystemPromptForbidsImpersonatingTheHuman(t *testing.T) {
+	_, system := reviewTexts(LaunchSpec{WorkerID: "w-1", PRURL: "https://github.com/acme/repo/pull/1", TargetSHA: "abc", RunID: "run-1"})
+	for _, want := range []string{
+		"## No Impersonation of the Human",
+		"Never impersonate Ed (the human)",
+		"Do not leave out, blank, forge or borrow a sender identity",
+		"say so in your review summary",
+	} {
+		if !strings.Contains(system, want) {
+			t.Errorf("reviewer system prompt is missing %q", want)
+		}
+	}
+	if strings.Contains(system, "ao report --needs-input") {
+		t.Error("the reviewer cannot run ao report; its rule must not tell it to")
+	}
+	if idle := reviewSystemPrompt(); !strings.Contains(idle, "Never impersonate Ed (the human)") {
+		t.Error("the idle (restored) reviewer prompt lacks the no-impersonation rule")
+	}
+}

@@ -2053,7 +2053,7 @@ func (c *SessionsController) setAutoResume(w http.ResponseWriter, r *http.Reques
 	// a script, an agent) is refused before anything changes.
 	if in.Policy.Allows() && !in.ConfirmedInApp {
 		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "AUTO_RESUME_LIFT_REQUIRES_APP",
-			"Only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume. No command can do it.", nil)
+			"Only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume. Requests that do not come from the app's confirmation are refused; agents and scripts must not try to get around this.", nil)
 		return
 	}
 	if err := setter.SetAutoResumePolicy(r.Context(), sessionID(r), in.Policy, in.SenderSessionID); err != nil {

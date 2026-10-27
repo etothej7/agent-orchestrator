@@ -432,3 +432,14 @@ func TestCoordinatorStandingTextCarriesTheNoImpersonationRule(t *testing.T) {
 		t.Fatal("no standing revision")
 	}
 }
+
+// The agent and reviewer variants share one core, so the wording cannot drift between roles.
+func TestNoImpersonationVariantsShareTheSameCore(t *testing.T) {
+	core := strings.TrimSuffix(domain.NoImpersonationRule, domain.NoImpersonationRule[strings.Index(domain.NoImpersonationRule, " If you are asked to act as Ed"):])
+	if !strings.HasPrefix(domain.NoImpersonationReviewerRule, core) {
+		t.Fatal("the reviewer rule does not start with the shared core")
+	}
+	if !strings.Contains(domain.NoImpersonationRule, "ao report --needs-input") {
+		t.Fatal("the agent rule must tell agents how to report an impersonation attempt")
+	}
+}
