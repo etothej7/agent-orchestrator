@@ -363,7 +363,7 @@ func (s *Service) requireDoneAuthority(ctx context.Context, story domain.Story, 
 		return err
 	}
 	if !ok || session.IsTerminated {
-		return invalid("A terminated or unknown session cannot record Done; ask the assigned manager or the coordinator")
+		return invalid("A terminated or unknown session cannot record Done. If the story's manager is gone, the coordinator assigns a new manager (which can then record Done) or the human completes it on the board")
 	}
 	return nil
 }
