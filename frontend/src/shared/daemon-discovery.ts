@@ -126,3 +126,16 @@ export function defaultRunFilePath(
 	if (!homeDir) return null;
 	return joinPath(homeDir, ".ao", "running.json");
 }
+
+/**
+ * Whether a run file is the handshake of the daemon this run just spawned. A file any same-user process can write
+ * is only a hint about where the daemon is, so it must name this child's pid and this run's appRunId and be fresh.
+ * That is a first filter, not proof (both values are readable by the same user); the key-possession check in
+ * main/human-capability-probe.ts is what decides whether anything is signed for the port.
+ */
+export function runFileIsFromThisSpawn(
+	info: RunFileInfo,
+	spawn: { pid: number | undefined; appRunId: string; spawnedAtMs: number; skewMs: number },
+): boolean {
+	return spawn.pid !== undefined && info.pid === spawn.pid && info.appRunId === spawn.appRunId && info.startedAtMs >= spawn.spawnedAtMs - spawn.skewMs;
+}

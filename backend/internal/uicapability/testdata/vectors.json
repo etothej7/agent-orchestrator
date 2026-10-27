@@ -79,5 +79,10 @@
 			"path": "/api/v1/sessions/cleanup/",
 			"header": "v1.1793102400.5iqeVR-cscpYXxOPTwP0t4RlgzHx8dm7Aa20Eod3zXw"
 		}
-	]
+	],
+	"probe": {
+		"key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+		"nonce": "AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+		"proof": "ZcfeXX7dRdPas_-ww9I15YmqPfJRzsE-hVyjqCzYT6c"
+	}
 }

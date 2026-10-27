@@ -1,9 +1,11 @@
 package httpd
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
@@ -29,5 +31,37 @@ func humanCapabilityMiddleware(v *uicapability.Verifier, now func() time.Time) f
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+type humanCapabilityProbeRequest struct {
+	Nonce string `json:"nonce"`
+}
+
+// humanCapabilityProbeHandler lets the app check that the daemon answering on a port is the one it handed
+// the run's key to, before it signs anything for that port. The answer is an HMAC of the caller's nonce
+// under a label no request capability can share, so it proves possession without revealing the key or
+// helping anyone forge a capability. A daemon without a key (one the app did not start) answers 404: it
+// has nothing to prove and must never be signed for. Like /shutdown it is for a local native caller only.
+func humanCapabilityProbeHandler(v *uicapability.Verifier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !localControlRequest(r) {
+			envelope.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "forbidden"})
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+		var in humanCapabilityProbeRequest
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+			return
+		}
+		proof, ok := v.Probe(in.Nonce)
+		if !ok {
+			// No key, or a nonce that is not well formed: say nothing about which.
+			envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "NOT_FOUND", "not found", nil)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		envelope.WriteJSON(w, http.StatusOK, map[string]string{"proof": proof})
 	}
 }

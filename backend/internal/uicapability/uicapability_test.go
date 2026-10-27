@@ -179,3 +179,46 @@ func TestOnlyTheCanonicalSpellingOfTheTimestampVerifies(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeProofMatchesTheElectronSignerAndOnlyAKeyHolderCanAnswer(t *testing.T) {
+	raw, err := os.ReadFile("testdata/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Probe struct{ Key, Nonce, Proof string } `json:"probe"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	p := file.Probe
+	if got := ProbeProof(p.Key, p.Nonce); got != p.Proof {
+		t.Fatalf("ProbeProof = %q, vector %q (update frontend/src/main/human-capability-probe.test.ts too)", got, p.Proof)
+	}
+	proof, ok := New(p.Key).Probe(p.Nonce)
+	if !ok || proof != p.Proof {
+		t.Fatalf("the verifier's answer = %q, %v", proof, ok)
+	}
+	if other, _ := New(strings.Repeat("z", 43)).Probe(p.Nonce); other == p.Proof {
+		t.Fatal("a daemon with another key produced the same proof")
+	}
+	// A proof is not a request capability, and a request capability is not a proof.
+	if err := New(p.Key).Verify(p.Proof, PurposeHumanWrite, RequestSubject("POST", "/x"), time.Unix(1, 0)); err == nil {
+		t.Fatal("a probe proof was accepted as a capability")
+	}
+}
+
+func TestAVerifierWithoutAKeyOrGivenABadNonceDoesNotAnswerAProbe(t *testing.T) {
+	good := "AbCdEfGhIjKlMnOpQrStUvWx"
+	if _, ok := (*Verifier)(nil).Probe(good); ok {
+		t.Fatal("a nil verifier answered")
+	}
+	if _, ok := New("").Probe(good); ok {
+		t.Fatal("a verifier without a key answered")
+	}
+	for _, nonce := range []string{"", "short", strings.Repeat("a", 129), "has space has space!", "ünïcödé-ünïcödé-ünï"} {
+		if _, ok := New(strings.Repeat("k", 43)).Probe(nonce); ok {
+			t.Errorf("nonce %q was answered", nonce)
+		}
+	}
+}

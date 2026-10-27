@@ -77,7 +77,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { type DaemonLaunchSpec, bundledDaemonIdentityError, resolveDaemonLaunch } from "./shared/daemon-launch";
-import { createListenPortScanner, defaultRunFilePath, parseRunFile } from "./shared/daemon-discovery";
+import { createListenPortScanner, defaultRunFilePath, parseRunFile, runFileIsFromThisSpawn } from "./shared/daemon-discovery";
 import type { DaemonStatus } from "./shared/daemon-status";
 import { canonicalPathInside, sameCanonicalPath } from "./shared/path-identity";
 import {
@@ -94,6 +94,7 @@ import {
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
+import { createKeyPossessionCheck } from "./main/human-capability-probe";
 import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, ownDaemonOrigin, UI_CAPABILITY_STDIN_ENV } from "./main/human-capability";
 import { forbiddenDebugSwitch } from "./main/packaged-hardening";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
@@ -943,7 +944,13 @@ async function createWindowInternal(): Promise<void> {
 		session: shellWebContents.session,
 		key: uiCapabilityKey,
 		shellWebContents: getShellWebContents,
-		daemonOrigin: () => ownDaemonOrigin(daemonStatus, spawnedDaemonPid),
+		daemonOrigin: () => {
+			// Only a daemon that this run spawned AND that proved it holds this run's key is signed for.
+			const origin = ownDaemonOrigin(daemonStatus, spawnedDaemonPid);
+			if (!origin) return undefined;
+			daemonKeyCheck.ensure(origin, daemonStatus.pid);
+			return daemonKeyCheck.isVerified(origin, daemonStatus.pid) ? origin : undefined;
+		},
 		shellPageOrigin: () => originOf(rendererUrl()) ?? "",
 	});
 
@@ -1461,6 +1468,7 @@ const uiCapabilityKey = newHumanCapabilityKey();
 // The pid of the daemon this run spawned (set when it reports its port). Main signs only for that daemon: one it
 // attached to never received the key.
 let spawnedDaemonPid: number | undefined;
+const daemonKeyCheck = createKeyPossessionCheck({ key: uiCapabilityKey });
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -2330,7 +2338,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 					const info = parseRunFile(contents);
 					// Ignore a stale handshake left by a previous daemon: only trust a
 					// file written at/after this spawn.
-					if (info && info.startedAtMs >= spawnedAtMs - RUN_FILE_FRESHNESS_SKEW_MS) {
+					if (info && runFileIsFromThisSpawn(info, { pid: child.pid, appRunId, spawnedAtMs, skewMs: RUN_FILE_FRESHNESS_SKEW_MS })) {
 						reportBoundPort(info.port);
 					}
 				})

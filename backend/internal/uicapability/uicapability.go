@@ -61,6 +61,34 @@ func ValidKey(key string) bool {
 	return true
 }
 
+// probeLabel keeps a possession proof from ever being usable as (or confused with) a request capability.
+const probeLabel = "ao-ui-capability-probe:" + version + ":"
+
+// ValidNonce reports whether a probe nonce is long enough to be unguessable and plain base64url text.
+func ValidNonce(nonce string) bool {
+	if len(nonce) < 16 || len(nonce) > 128 {
+		return false
+	}
+	for _, c := range nonce {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ProbeProof is what a daemon that holds the run's key answers to a nonce: an HMAC under its own label.
+// The app sends a fresh nonce to a daemon address before it ever signs a request for it, so a process that
+// merely listens on the port the app was told about (a forged run file) cannot be signed for. Mirror of the
+// Electron main process; pinned by the shared vectors file.
+func ProbeProof(key, nonce string) string {
+	h := hmac.New(sha256.New, []byte(key))
+	_, _ = h.Write([]byte(probeLabel + nonce))
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
 // Window is how long a capability stays valid after it was signed, in either
 // direction, so a captured header cannot be replayed later.
 const Window = 60 * time.Second
@@ -102,6 +130,15 @@ func Sign(secret, purpose, subject string, now time.Time) string {
 // VerifyRequest accepts a human-write capability for exactly this method and path.
 func (v *Verifier) VerifyRequest(header, method, path string, now time.Time) error {
 	return v.Verify(header, PurposeHumanWrite, RequestSubject(method, path), now)
+}
+
+// Probe answers a possession probe for nonce. ok is false for a verifier without a key (a daemon the app
+// did not start, which therefore must never be signed for) or a nonce that is not well formed.
+func (v *Verifier) Probe(nonce string) (proof string, ok bool) {
+	if v == nil || len(v.secret) == 0 || !ValidNonce(nonce) {
+		return "", false
+	}
+	return ProbeProof(string(v.secret), nonce), true
 }
 
 // Verify accepts a capability only if it was signed with this run's secret for this

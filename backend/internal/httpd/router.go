@@ -73,6 +73,8 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
 	mountTelemetryIdentity(r, deps.TelemetryIdentity)
+	// The app's possession check for the daemon it spawned (see humanCapabilityProbeHandler).
+	r.Post("/internal/human-capability/probe", humanCapabilityProbeHandler(deps.UICapability))
 	mountMobile(r, deps.Mobile)
 	mountBrowserLive(r, deps.BrowserLive)
 	mountAwake(r, &controllers.AwakeController{Svc: deps.Awake})
