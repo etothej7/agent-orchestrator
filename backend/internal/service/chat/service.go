@@ -339,6 +339,23 @@ func notifyControllerReady(
 // claudeAutoCompactWindowEnv is the token count at which Claude Code compacts on its own.
 const claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 
+// claudeAutoCompactTokens is the compaction window to start Claude Code with, or
+// 0 to leave it alone: the conversation's own choice, else a window the project's
+// environment already sets, else DefaultAutoCompactWindow. Models whose window
+// already stops at 200k have nothing to compact earlier.
+func claudeAutoCompactTokens(window string, env map[string]string, model string) int {
+	if tokens := domain.AutoCompactTokens[window]; tokens > 0 {
+		return tokens
+	}
+	if env[claudeAutoCompactWindowEnv] != "" {
+		return 0
+	}
+	if lower := strings.ToLower(model); strings.Contains(lower, "haiku") || strings.Contains(lower, "opus-4-5") {
+		return 0
+	}
+	return domain.AutoCompactTokens[domain.DefaultAutoCompactWindow]
+}
+
 func cloneStartConfig(cfg StartConfig) StartConfig {
 	cloned := cfg
 	if cfg.AwakeReconnectTarget != nil {
@@ -757,9 +774,15 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// Claude Code reads its compaction window when it starts. Auto leaves any
 	// window the project's environment sets. The map is copied because the
 	// caller's may be the one saved for later restarts.
-	if tokens := domain.AutoCompactTokens[conversation.Settings.AutoCompactWindow]; cfg.Harness == domain.HarnessClaudeCode && tokens > 0 {
-		cfg.Env = cloneStartConfig(cfg).Env
-		cfg.Env[claudeAutoCompactWindowEnv] = fmt.Sprint(tokens)
+	if cfg.Harness == domain.HarnessClaudeCode {
+		model := conversation.Settings.Model
+		if model == "" {
+			model = cfg.Model
+		}
+		if tokens := claudeAutoCompactTokens(conversation.Settings.AutoCompactWindow, cfg.Env, model); tokens > 0 {
+			cfg.Env = cloneStartConfig(cfg).Env
+			cfg.Env[claudeAutoCompactWindowEnv] = fmt.Sprint(tokens)
+		}
 	}
 	// Conversation settings are durable user choices. Restore the selected
 	// model when rebuilding a controller after a daemon restart; the caller's

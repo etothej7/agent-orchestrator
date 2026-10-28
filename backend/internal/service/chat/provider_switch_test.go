@@ -353,8 +353,10 @@ func TestProviderSwitchBackToClaudeOnAutoClearsTheSavedCompactionWindow(t *testi
 			t.Fatalf("switch to %s: %v", req.TargetHarness, err)
 		}
 	}
-	if got, ok := lastStart(driver).Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; ok {
-		t.Fatalf("compaction window after switching back on Auto = %q, want it unset", got)
+	// Auto no longer leaves Claude Code's own 1M window: it starts at AO's 200k
+	// default, and the earlier explicit 1m must not carry over.
+	if got := lastStart(driver).Env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; got != "200000" {
+		t.Fatalf("compaction window after switching back on Auto = %q, want the 200000 default", got)
 	}
 	if conversation, err := h.st.ConversationForSession(ctx, testSession); err != nil || conversation.Settings.AutoCompactWindow != "" {
 		t.Fatalf("saved window = %q, %v; want Auto", conversation.Settings.AutoCompactWindow, err)
