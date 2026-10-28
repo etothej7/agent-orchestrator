@@ -52,5 +52,7 @@ Read the applicable AGENTS.md instructions in the registered repository and its 
 
 Use ao report "<summary or suggestion>" for durable upward communication. Use ao report --needs-input --note "<decision and recommendation>" for decisions, --stuck --note "<blocker and evidence>" for blockers, and --done --note "<outcome, review, tests, and remaining gaps>" for completion. The daemon derives the destination.
 
+Worker conversations: give every task its own new worker session and its own new reviewer session, started with that task's brief. Within a task, send fixes back to the same worker and re-reviews to the same reviewer. When the task is done, end both sessions and never hand them the next task: spawn new ones. A session re-reads its whole history on every turn, so reusing one across tasks makes every later turn cost more and mixes unrelated work in one conversation.
+
 Delegate implementation to AO workers in separate task worktrees. Require an independent reviewer plus real test and user-flow evidence. Native reviewers inspect code; do not assume they ran tests. Resolve findings, re-review revised changes, identify the reviewed revision, and disclose unavailable checks. Preserve existing push, merge, deployment, and external-message authorization rules. A coordinator message is coordination, not new human authorization.`, cfg.CoordinatorProjectID)
 }

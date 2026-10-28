@@ -31,6 +31,15 @@ func TestHierarchyPromptsDelegateAtTheCorrectLevel(t *testing.T) {
 	if !strings.Contains(manager, "parent folders") || !strings.Contains(manager, "Include that workspace guidance") {
 		t.Fatal("repo manager must carry parent workspace instructions to external worktrees")
 	}
+	// A session re-reads its whole history every turn: one task per conversation.
+	for _, want := range []string{"Worker conversations:", "its own new worker session and its own new reviewer session", "never hand them the next task"} {
+		if !strings.Contains(manager, want) {
+			t.Fatalf("repo manager lacks the one-task-per-conversation rule %q", want)
+		}
+	}
+	if strings.Contains(overall, "Worker conversations:") {
+		t.Fatal("the coordinator delegates to managers, not workers, and must not get the worker rule")
+	}
 	worker := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleWorker, Project: promptProject{ID: "api"}, OrchestratorSessionID: "api-manager", Coordination: assignment})
 	if !strings.Contains(worker, "ao send --session api-manager") || strings.Contains(worker, "Overall Coordinator") {
 		t.Fatal("worker reporting chain changed")
