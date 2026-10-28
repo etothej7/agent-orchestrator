@@ -27,7 +27,7 @@ describe("quit dialogs", () => {
 	});
 
 	it("carries the verbatim titles", () => {
-		expect(quitDialogContent("sleep").title).toBe("Your Mac will go to sleep and lock");
+		expect(quitDialogContent("sleep").title).toBe("Quitting will pause your agents");
 		expect(quitDialogContent("agents").title).toBe("Your agents will pause");
 	});
 

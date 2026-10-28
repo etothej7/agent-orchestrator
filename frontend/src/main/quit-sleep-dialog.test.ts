@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import { shouldShowSleepDialog, SLEEP_DIALOG_BODY, SLEEP_DIALOG_ENABLED, SLEEP_DIALOG_TITLE } from "./quit-sleep-dialog";
 
 describe("sleep dialog", () => {
-	it("uses Ed's wording, verbatim", () => {
-		expect(SLEEP_DIALOG_TITLE).toBe("Your Mac will go to sleep and lock");
+	it("uses the agreed wording, verbatim", () => {
+		expect(SLEEP_DIALOG_TITLE).toBe("Quitting will pause your agents");
 		expect(SLEEP_DIALOG_BODY).toBe(
-			"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+			"Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		);
+	});
+
+	it("no longer says a quit sleeps or locks the Mac: a quit hands the hold to `ao wake-hold`", () => {
+		expect(`${SLEEP_DIALOG_TITLE} ${SLEEP_DIALOG_BODY}`).not.toMatch(/sleep and lock|go to sleep/i);
+		// The hold lasts at most 12 hours (backend/internal/cli/wake_hold.go, wakeHoldMaxDuration).
+		expect(SLEEP_DIALOG_BODY).toContain("12 hours");
 	});
 
 	it("is on by default and has a switch", () => {

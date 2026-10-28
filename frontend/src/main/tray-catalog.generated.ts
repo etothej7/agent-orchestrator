@@ -36,8 +36,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "Quit {{appName}}",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -54,8 +54,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "退出{{appName}}",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -72,8 +72,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "{{appName}}を終了",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -90,8 +90,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "{{appName}} 종료",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -108,8 +108,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "Salir de {{appName}}",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -126,8 +126,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "Quitter {{appName}}",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -144,8 +144,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "{{appName}} beenden",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	},
@@ -162,8 +162,8 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"menu.quit": "Encerrar {{appName}}",
 		"quit.keepRunning": "Keep Running",
 		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Your Mac will go to sleep and lock",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your Mac will go to sleep and lock, and your agents' work will pause until you wake it and reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your Mac stays awake and your agents keep working.",
+		"quit.sleep.title": "Quitting will pause your agents",
+		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
 		"quit.agents.title": "Your agents will pause",
 		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
 	}
