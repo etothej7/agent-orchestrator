@@ -95,6 +95,7 @@ import {
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController } from "./main/desktop-quit";
+import { createQuitHoldOver } from "./main/quit-holdover";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -375,6 +376,27 @@ let browserQuitCleanupPromise: Promise<void> | null = null;
 let browserCleanupComplete = false;
 let browserQuitRequested = false;
 let createWindowPromise: Promise<void> | null = null;
+// Quitting ends Stay Awake's lease, and a closed-lid Mac then sleeps and locks at once, even for
+// a restart or an update. A detached `ao wake-hold` keeps a lease of its own until AO is reopened.
+const quitHoldOver = createQuitHoldOver({
+	platform: process.platform,
+	statusPath: () => path.join(resolvedDaemonDataDir(), "wake", "status.json"),
+	readStatus: (file) => readFileSync(file, "utf8"),
+	nowSeconds: () => Date.now() / 1000,
+	command: () => {
+		const launch = resolveDaemonLaunch(process.env, app.isPackaged, process.resourcesPath, app.getAppPath(), os.homedir(), process.platform);
+		// A configured AO_DAEMON_COMMAND is a shell string, not a binary this can run directly.
+		return launch && launch.source !== "configured" ? launch.command : undefined;
+	},
+	env: () => ({
+		...process.env,
+		AO_DATA_DIR: resolvedDaemonDataDir(),
+		AO_WAKE_HELPER: bundledWakeHelperPath(),
+		...(runFilePath() ? { AO_RUN_FILE: runFilePath() as string } : {}),
+	}),
+	spawn,
+	log: (message, error) => console.warn(`AO: ${message}`, error),
+});
 const desktopQuit = createDesktopQuitController({
 	platform: process.platform,
 	hasTray: () => trayController !== null && !browserQuitRequested,
@@ -477,6 +499,13 @@ function syncNativeWindowBackground(): void {
 		rendererWindowBackground ??
 			(nativeTheme.shouldUseDarkColors ? NATIVE_WINDOW_BACKGROUND_DARK : NATIVE_WINDOW_BACKGROUND_LIGHT),
 	);
+}
+
+// The native wake helper the daemon (and a quit's hold-over) uses to keep a closed-lid Mac awake.
+function bundledWakeHelperPath(): string {
+	return app.isPackaged
+		? path.join(process.resourcesPath, "wake-helper", "ao-wake")
+		: path.join(app.getAppPath(), "wake-helper", "ao-wake");
 }
 
 function resolvedDaemonDataDir(): string {
@@ -1491,9 +1520,7 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 		AO_OWNER,
 		AO_DATA_DIR: desktopDataDir,
 		AO_APP_RUN_ID: appRunId,
-        ...(process.platform === "darwin" ? { AO_WAKE_HELPER: app.isPackaged
-            ? path.join(process.resourcesPath, "wake-helper", "ao-wake")
-            : path.join(app.getAppPath(), "wake-helper", "ao-wake") } : {}),
+		...(process.platform === "darwin" ? { AO_WAKE_HELPER: bundledWakeHelperPath() } : {}),
 		// The browser runtime token is handed over through the child's private
 		// stdin pipe below. Never put it in the daemon environment, where a
 		// same-UID worker could inspect the parent process.
@@ -3576,6 +3603,7 @@ app.on("before-quit", (event) => {
 		}
 		return;
 	}
+	quitHoldOver.start();
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
 	disposeBrowserStreamLink();

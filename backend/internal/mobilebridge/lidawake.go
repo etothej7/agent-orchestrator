@@ -288,6 +288,13 @@ func (l *LidAwake) run(ctx context.Context, done chan struct{}) {
 	}
 }
 
+// LeaseID is the id of this owner's lease file, empty until Start has written one.
+func (l *LidAwake) LeaseID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.id
+}
+
 // Stop withdraws this daemon's lease and waits for native cleanup acknowledgement.
 func (l *LidAwake) Stop() {
 	l.transitionMu.Lock()
