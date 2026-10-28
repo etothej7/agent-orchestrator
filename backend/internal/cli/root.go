@@ -207,6 +207,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	})
 
 	root.AddCommand(newDaemonCommand())
+	root.AddCommand(newWakeHoldCommand())
 	root.AddCommand(newStartCommand(ctx))
 	root.AddCommand(newStopCommand(ctx))
 	root.AddCommand(newStatusCommand(ctx))
