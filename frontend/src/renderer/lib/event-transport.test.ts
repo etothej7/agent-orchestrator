@@ -488,29 +488,6 @@ describe("createEventTransport", () => {
 		}
 	});
 
-	// The coordinator's quiet view and its full view cache apart. A reply that just
-	// became visible (or a new automation turn) must refresh whichever one is open.
-	it("refreshes the open unfiltered coordinator view when its conversation changes", async () => {
-		const queryClient = new QueryClient();
-		const fetchPage = vi.fn(async () => ({ latest: fetchPage.mock.calls.length }));
-		const observer = new InfiniteQueryObserver(queryClient, {
-			queryKey: ["conversation", "coord-1", "all"],
-			initialPageParam: undefined as number | undefined,
-			getNextPageParam: () => undefined,
-			queryFn: fetchPage,
-		});
-		const unsubscribe = observer.subscribe(() => undefined);
-		await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(1));
-		createEventTransport(queryClient).connect();
-		cdcSources()[0].emit(
-			"session_updated",
-			JSON.stringify({ seq: 9, projectId: "overall", sessionId: "coord-1", type: "session_updated", payload: { sessionId: "coord-1", conversationId: "conv-1" } }),
-		);
-		await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2));
-		unsubscribe();
-		queryClient.clear();
-	});
-
 	// An agent can start a review with `ao review trigger`, and a reviewer can
 	// finish one, without this window asking. The session's reviews must refresh
 	// or the inspector keeps showing the previous verdict.

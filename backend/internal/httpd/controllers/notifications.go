@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -69,11 +68,10 @@ func (c *NotificationsController) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListNotificationsResponse{
-		Notifications:      notificationResponses(page.Notifications),
-		NextCursor:         page.NextCursor,
-		UnreadCount:        page.UnreadCount,
-		UnresolvedCount:    page.UnresolvedCount,
-		UnresolvedAskCount: page.UnresolvedAskCount,
+		Notifications:   notificationResponses(page.Notifications),
+		NextCursor:      page.NextCursor,
+		UnreadCount:     page.UnreadCount,
+		UnresolvedCount: page.UnresolvedCount,
 	})
 }
 
@@ -276,9 +274,6 @@ func notificationResponse(n notificationsvc.Notification) NotificationResponse {
 		Type:       string(n.Type),
 		Title:      n.Title,
 		Body:       n.Body,
-		Purpose:    n.Purpose,
-		Resolution: n.Resolution, ResolutionNote: n.ResolutionNote,
-		MessageID:  coordinatorMessageID(n.NotificationRecord),
 		Status:     string(n.Status),
 		CreatedAt:  n.CreatedAt,
 		ResolvedAt: optionalTime(n.ResolvedAt),
@@ -299,9 +294,6 @@ func notificationResponseFromRecord(rec domain.NotificationRecord) NotificationR
 		Type:       string(rec.Type),
 		Title:      rec.Title,
 		Body:       rec.Body,
-		Purpose:    rec.Purpose,
-		Resolution: rec.Resolution, ResolutionNote: rec.ResolutionNote,
-		MessageID:  coordinatorMessageID(rec),
 		Status:     string(rec.Status),
 		CreatedAt:  rec.CreatedAt,
 		ResolvedAt: optionalTime(rec.ResolvedAt),
@@ -314,14 +306,4 @@ func notificationTargetFromRecord(rec domain.NotificationRecord) NotificationTar
 		return NotificationTarget{Kind: "pr", SessionID: string(rec.SessionID), PRURL: rec.PRURL}
 	}
 	return NotificationTarget{Kind: "session", SessionID: string(rec.SessionID)}
-}
-
-// coordinatorMessageID names the conversation message a coordinator notification
-// announces. Its source key is "coordinator-message:<message id>"; the key itself
-// stays internal.
-func coordinatorMessageID(rec domain.NotificationRecord) string {
-	if rec.Type != domain.NotificationCoordinatorMessage {
-		return ""
-	}
-	return strings.TrimPrefix(rec.SourceKey, "coordinator-message:")
 }

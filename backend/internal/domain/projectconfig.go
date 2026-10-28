@@ -86,16 +86,7 @@ type ProjectConfig struct {
 	// the feature but check with the user or orchestrator before using it.
 	// Read at spawn, when the worker prompt is built.
 	WorkersRequestReview bool `json:"workersRequestReview,omitempty"`
-
-	// AgentMayMerge lets an agent (the project's manager or a story owner) merge a reviewed
-	// PR with `ao pr merge` without a person approving it. It is off unless a person turns it on:
-	// a project that never set it, and every project that existed before the setting did,
-	// keeps merges with people. It binds agent callers only; the app's Merge button works either way.
-	AgentMayMerge bool `json:"agentMayMerge,omitempty"`
 }
-
-// AgentMergeAllowed reports whether agents may merge PRs for this project. The zero value is false.
-func (c ProjectConfig) AgentMergeAllowed() bool { return c.AgentMayMerge }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker
 // container reaping on session terminal state.

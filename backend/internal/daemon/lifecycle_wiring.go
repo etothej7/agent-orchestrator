@@ -24,7 +24,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/artifactversions"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	activityobserver "github.com/aoagents/agent-orchestrator/backend/internal/observe/activity"
 	artifactsobserver "github.com/aoagents/agent-orchestrator/backend/internal/observe/artifacts"
@@ -292,9 +291,6 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
 		ManagedRoot: filepath.Join(cfg.DataDir, "worktrees"),
-		// Git-ignored secret files (.env*) are archived here, privately, before a
-		// forced worktree removal.
-		BackupRoot: filepath.Join(cfg.DataDir, "backups"),
 		// Resolve each project's source repo from the projects table, so a
 		// session spawned for a registered project materialises its worktree off
 		// that repo. Unregistered projects fail loudly.
@@ -327,14 +323,12 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Preview:             previewLifecycle,
 		Browser:             browserLifecycle,
 		BrowserCapabilities: browserCapabilities,
-		// Every launch and relaunch gives the session a new identity proof (ED8).
-		Identity:           identity.NewIssuer(store, nil).WithReviews(store),
-		DataDir:            cfg.DataDir,
-		RunFilePath:        cfg.RunFilePath,
-		BackgroundContext:  ctx,
-		Logger:             log,
-		ReconcileWorkers:   startupReconcileWorkers,
-		CodexOperationGate: codexOperationGate,
+		DataDir:             cfg.DataDir,
+		RunFilePath:         cfg.RunFilePath,
+		BackgroundContext:   ctx,
+		Logger:              log,
+		ReconcileWorkers:    startupReconcileWorkers,
+		CodexOperationGate:  codexOperationGate,
 	})
 	mgr.SetAgentReadiness(agentReadiness)
 	scmProvider := newMultiSCMProvider(cfg.GitLab, log)
@@ -384,9 +378,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir,
 			reviewcore.WithRunFilePath(cfg.RunFilePath),
 			reviewcore.WithAgentAuth(reviewerAgentAuth{readiness: agentReadiness}),
-			reviewcore.WithReviewerChat(reviewerChat),
-			// Every reviewer launch carries its own identity proof (ED8).
-			reviewcore.WithReviewerProofs(identity.NewIssuer(store, nil).WithReviews(store))),
+			reviewcore.WithReviewerChat(reviewerChat)),
 
 		ChatRecoveryDone: reviewerRecoveryDone,
 	})
@@ -755,7 +747,7 @@ func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.Review
 		return "", err
 	}
 	owner := domain.ReviewConversationOwner(cfg.ReviewID)
-	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, PrepareControllerEnv: reviewerControllerEnv(cfg), Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
+	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
 	if err != nil {
 		return "", err
 	}
@@ -767,18 +759,6 @@ func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.Review
 		return "", err
 	}
 	return started.ProviderConversationID, nil
-}
-
-// reviewerControllerEnv adapts a reviewer's PrepareEnv (which mints its identity proof) to the
-// chat service's launch-time hook, so the proof is issued only when the provider is really
-// launched and never when a live provider is merely reconnected. nil when the reviewer has none.
-func reviewerControllerEnv(cfg reviewcore.ReviewerChatStart) func(context.Context, domain.SessionControllerOwner) (map[string]string, error) {
-	if cfg.PrepareEnv == nil {
-		return nil
-	}
-	return func(ctx context.Context, _ domain.SessionControllerOwner) (map[string]string, error) {
-		return cfg.PrepareEnv(ctx)
-	}
 }
 
 func (c chatLauncher) SendReviewChat(ctx context.Context, reviewID, message, batchID string) error {
@@ -935,8 +915,4 @@ func (r reviewPRRefresher) RefreshPR(ctx context.Context, workerID domain.Sessio
 	default:
 		return err
 	}
-}
-
-func (c chatLauncher) RecordChatStartupFailure(ctx context.Context, id domain.SessionID) error {
-	return c.svc.RecordStartupFailure(ctx, id)
 }

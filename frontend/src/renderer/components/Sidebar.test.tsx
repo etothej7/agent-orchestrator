@@ -11,11 +11,10 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
-import { useCoordinatorJumpStore } from "../stores/coordinator-jump-store";
 import {
 	Sidebar,
 	SIDEBAR_DEFAULT_WIDTH,
@@ -557,121 +556,6 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
-	it("puts Workspace and Team before secondary repository access without changing legacy routes", async () => {
-		renderSidebar();
-		const workspaceEntry = screen.getByRole("button", { name: "Workspace" });
-		const teamEntry = screen.getByRole("button", { name: "Team" });
-		const repositories = screen.getByRole("button", { name: "Repositories" });
-		expect(workspaceEntry.compareDocumentPosition(teamEntry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-		expect(teamEntry.compareDocumentPosition(repositories) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-		await userEvent.click(workspaceEntry);
-		expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" });
-		await userEvent.click(teamEntry);
-		expect(navigateMock).toHaveBeenLastCalledWith({ to: "/team" });
-	});
-	describe("Main coordinator entry", () => {
-		const coordinatorSession: WorkspaceSession = {
-			...session,
-			id: "coord-1",
-			workspaceId: "overall",
-			workspaceName: "Coordinator storage",
-			title: "Main conversation",
-			kind: "orchestrator",
-		};
-		const overall: WorkspaceSummary = { ...workspace, id: "overall", name: "Coordinator storage", sessions: [coordinatorSession] };
-		const configured = (client: QueryClient) => client.setQueryData(["coordination"], { coordinatorProjectId: "overall" });
-
-		it("pins Main coordinator above Workspace while the coordinator project stays out of the repository list", () => {
-			renderSidebar({ workspaces: [workspace, overall], seed: configured });
-			const main = screen.getByRole("button", { name: "Main coordinator" });
-			const home = screen.getByRole("button", { name: "Workspace" });
-			expect(main.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-			expect(document.querySelector('[data-project-id="overall"]')).not.toBeInTheDocument();
-			expect(document.querySelector(`[data-project-id="${workspace.id}"]`)).toBeInTheDocument();
-		});
-
-		it("opens the newest active coordinator conversation without spawning another", async () => {
-			renderSidebar({ workspaces: [overall], seed: configured });
-			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
-			expect(navigateMock).toHaveBeenLastCalledWith({
-				to: "/projects/$projectId/sessions/$sessionId",
-				params: { projectId: "overall", sessionId: "coord-1" },
-			});
-			expect(spawnMock).not.toHaveBeenCalled();
-		});
-
-		it("asks the coordinator chat to land on what waits for Ed, only when it actually opens it", async () => {
-			useCoordinatorJumpStore.getState().clear();
-			renderSidebar({ workspaces: [overall], seed: configured });
-			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
-			expect(useCoordinatorJumpStore.getState().requestedAt).toBeDefined();
-			useCoordinatorJumpStore.getState().clear();
-			cleanup();
-			renderSidebar({ workspaces: [], seed: configured });
-			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
-			expect(useCoordinatorJumpStore.getState().requestedAt).toBeUndefined();
-		});
-
-		it("never starts or replaces a coordinator: with none running (or the list not loaded yet) it sends you to Home", async () => {
-			renderSidebar({ workspaces: [{ ...overall, sessions: [] }], seed: configured });
-			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
-			await waitFor(() => expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" }));
-			expect(spawnMock).not.toHaveBeenCalled();
-			// A terminated coordinator is not "running" either: it is not reopened and not replaced.
-			navigateMock.mockClear();
-			cleanup();
-			renderSidebar({ workspaces: [{ ...overall, sessions: [{ ...coordinatorSession, isTerminated: true, status: "terminated" }] }], seed: configured });
-			await userEvent.click(screen.getByRole("button", { name: "Main coordinator" }));
-			await waitFor(() => expect(navigateMock).toHaveBeenLastCalledWith({ to: "/workspace" }));
-			expect(spawnMock).not.toHaveBeenCalled();
-		});
-
-		it("marks the entry current while the coordinator project is open", () => {
-			mockParams.projectId = "overall";
-			mockParams.sessionId = "coord-1";
-			renderSidebar({ workspaces: [overall], seed: configured });
-			expect(screen.getByRole("button", { name: "Main coordinator" })).toHaveAttribute("aria-current", "page");
-		});
-
-		it("is absent until coordination names a coordinator project", () => {
-			renderSidebar({ workspaces: [workspace, overall], seed: (client) => client.setQueryData(["coordination"], { coordinatorProjectId: "" }) });
-			expect(screen.queryByRole("button", { name: "Main coordinator" })).not.toBeInTheDocument();
-		});
-
-		it("shows a persistent needs-you marker while the daemon counts an unanswered coordinator question, and drops it once resolved", async () => {
-			const withAsks = (unresolvedAskCount: number) => (client: QueryClient) => {
-				configured(client);
-				// "read" (the panel was opened) is not "answered": only the daemon's unresolved count drives the dot.
-				client.setQueryData(["notifications", "history", "all"], {
-					pageParams: [""],
-					pages: [{ notifications: [], unreadCount: 0, unresolvedCount: unresolvedAskCount, unresolvedAskCount }],
-				});
-			};
-			renderSidebar({ workspaces: [overall], seed: withAsks(1) });
-			expect(await screen.findByRole("button", { name: "Main coordinator, needs you" })).toBeInTheDocument();
-			cleanup();
-			renderSidebar({ workspaces: [overall], seed: withAsks(0) });
-			expect(screen.getByRole("button", { name: "Main coordinator" })).toBeInTheDocument();
-			expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument();
-		});
-
-		it("follows live ask events: a new ask raises the dot and its resolution clears it", async () => {
-			// Keep the history request in flight: the live stream, not a refetch, is what moves the count here.
-			getMock.mockImplementation(() => new Promise(() => undefined));
-			let client!: QueryClient;
-			renderSidebar({ workspaces: [overall], seed: (queryClient) => {
-				client = queryClient;
-				configured(queryClient);
-				queryClient.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] });
-			} });
-			expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument();
-			act(() => client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 1 }] }));
-			expect(await screen.findByRole("button", { name: "Main coordinator, needs you" })).toBeInTheDocument();
-			act(() => client.setQueryData(["notifications", "history", "all"], { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] }));
-			await waitFor(() => expect(screen.queryByRole("button", { name: /needs you/ })).not.toBeInTheDocument());
-		});
-	});
-
 	it("creates local or remote projects from the header button", async () => {
 		const user = userEvent.setup();
 		renderSidebar({
@@ -883,7 +767,7 @@ describe("Sidebar", () => {
 		const content = document.querySelector('[data-sidebar="content"]');
 		expect(content).toHaveClass("overflow-y-auto", "scrollbar-none");
 		expect(content).not.toHaveClass("project-sidebar-scrollbar");
-		expect(content).not.toContainElement(screen.getByText("Repositories"));
+		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
 	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
@@ -2507,18 +2391,18 @@ describe("Sidebar", () => {
 
 		expect(screen.getByText("Project 10")).toBeInTheDocument();
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show 4 more repositories" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Show 4 more repositories" }));
+		await user.click(screen.getByRole("button", { name: "Show 4 more projects" }));
 
 		expect(screen.getByText("Project 11")).toBeInTheDocument();
 		expect(screen.getByText("Project 14")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show fewer repositories" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show fewer projects" })).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Show fewer repositories" }));
+		await user.click(screen.getByRole("button", { name: "Show fewer projects" }));
 
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show 4 more repositories" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
 	});
 
 	it("keeps the active project row at the top of the scroller", () => {
@@ -2643,7 +2527,7 @@ describe("Sidebar", () => {
 		expect(scroller).toHaveClass("min-h-0", "flex-1");
 
 		// Show more stays directly beneath the project list and reveals the remainder.
-		const showMore = screen.getByRole("button", { name: "Show 4 more repositories" });
+		const showMore = screen.getByRole("button", { name: "Show 4 more projects" });
 		expect(showMore.parentElement).toBe(scroller.parentElement?.parentElement);
 		await user.click(showMore);
 		expect(scroller.style.maxHeight).toBe("");
@@ -2654,16 +2538,16 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		renderSidebar();
 
-		await user.click(screen.getByRole("button", { name: "Repositories" }));
-		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
 		expect(screen.queryByTestId("sidebar-projects-scroller")).not.toBeInTheDocument();
 		expect(screen.queryByText("Project One")).not.toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: "Repositories" }));
-		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "true");
+		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByText("Project One")).toBeInTheDocument();
 		expect(screen.getByTestId("sidebar-projects-scroller")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /Show (more|fewer) repositories/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Show (more|fewer) projects/ })).not.toBeInTheDocument();
 	});
 
 	it("keeps the project list capped behind Show more while the sidebar is toggled off", () => {
@@ -2678,15 +2562,15 @@ describe("Sidebar", () => {
 		// The sidebar slides away (offcanvas); it has no icon rail, so its lists
 		// must not lift their caps just because it is collapsed.
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { hidden: true, name: /more repositories/ })).toBeInTheDocument();
+		expect(screen.getByRole("button", { hidden: true, name: /more projects/ })).toBeInTheDocument();
 	});
 
 	it("does not reopen a closed Projects section when the sidebar is toggled off and on", async () => {
 		const user = userEvent.setup();
 		renderSidebar();
 
-		await user.click(screen.getByRole("button", { name: "Repositories" }));
-		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
 		await waitFor(() => expect(screen.queryByText(workspace.name)).not.toBeInTheDocument());
 
 		await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
@@ -2694,7 +2578,7 @@ describe("Sidebar", () => {
 		expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
 		await user.click(screen.getAllByRole("button", { hidden: true, name: "Expand sidebar" })[0]);
 
-		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
 		expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
 	});
 
@@ -3732,12 +3616,12 @@ describe("Sidebar active-session reveal", () => {
 	it("reopens a closed Projects section to reveal the active session", async () => {
 		const user = userEvent.setup();
 		const { go } = mount([workspace.id]);
-		await user.click(screen.getByRole("button", { name: "Repositories" }));
-		expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
 
 		go(session.id);
 
-		await waitFor(() => expect(screen.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-expanded", "true"));
+		await waitFor(() => expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true"));
 		expect(await screen.findByLabelText("Open fix login")).toHaveAttribute("aria-current", "page");
 	});
 

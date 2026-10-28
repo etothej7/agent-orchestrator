@@ -363,6 +363,16 @@ const api = {
 		fetch: (url: string) => ipcRenderer.invoke("chatImage:fetch", url) as Promise<{ bytes: Uint8Array; mimeType: string }>,
 		save: (input: { name: string; bytes: Uint8Array }) => ipcRenderer.invoke("chatImage:save", input) as Promise<boolean>,
 	},
+	cloudArtifact: {
+		fetch: (url: string) => ipcRenderer.invoke("cloudArtifact:fetch", url) as Promise<Uint8Array>,
+		onFrameNavigated: (listener: (navigation: { url: string; status: number }) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, navigation: { url: string; status: number }) => listener(navigation);
+			ipcRenderer.on("cloudArtifact:frameNavigated", wrapped);
+			return () => {
+				ipcRenderer.off("cloudArtifact:frameNavigated", wrapped);
+			};
+		},
+	},
 	daemon: {
 		getStatus: () => ipcRenderer.invoke("daemon:getStatus") as Promise<DaemonStatus>,
 		start: () => ipcRenderer.invoke("daemon:start") as Promise<DaemonStatus>,
@@ -629,12 +639,8 @@ const api = {
 			};
 		},
 	},
-	coordinatorBadge: {
-		/** Re-read the Dock badge now (a result was just read, or a question answered). */
-		refresh: () => ipcRenderer.send("coordinator-badge:refresh"),
-	},
 	notifications: {
-		show: (notification: { id: string; title: string; body?: string; type?: string; purpose?: string; watched?: boolean }) =>
+		show: (notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) =>
 			ipcRenderer.invoke("notifications:show", notification) as Promise<void>,
 		setBadge: (count: number) => ipcRenderer.invoke("notifications:setBadge", count) as Promise<void>,
 		devBounce: () => ipcRenderer.invoke("notifications:devBounce") as Promise<void>,

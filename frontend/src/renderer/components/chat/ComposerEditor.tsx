@@ -52,7 +52,6 @@ import { cn } from "../../lib/utils";
 import { composerFileIcon } from "./composerFileIcon";
 import { findActiveTrigger, type TriggerKind } from "./composerSuggest";
 import { splitInlineImagePaths } from "./messageAttachments";
-import { listContinuation } from "../../lib/chat-message-lists";
 
 export type ComposerTrigger = {
 	kind: TriggerKind;
@@ -272,63 +271,6 @@ function $serializeComposer(): string {
 		.getChildren()
 		.map((child) => child.getTextContent())
 		.join("\n");
-}
-
-/** The text on the caret's line, split at the caret, within its paragraph. */
-function $lineAroundCaret(selection: RangeSelection): { before: string; after: string; node: LexicalNode | null } | null {
-	if (!selection.isCollapsed()) return null;
-	const anchor = selection.anchor;
-	const anchorNode = anchor.getNode();
-	const block = anchorNode.getTopLevelElement();
-	if (!block || !$isElementNode(block)) return null;
-	let before = "";
-	let after = "";
-	let caretNode: LexicalNode | null = null;
-	let index = 0;
-	for (const child of block.getChildren()) {
-		const text = child.getTextContent();
-		if (anchor.type === "text" && child.is(anchorNode)) {
-			before += text.slice(0, anchor.offset);
-			after += text.slice(anchor.offset);
-			caretNode = child;
-		} else if (anchor.type === "element" && anchorNode.is(block)) {
-			if (index < anchor.offset) before += text;
-			else after += text;
-		} else if (caretNode === null && anchor.type === "text") {
-			before += text;
-		} else {
-			after += text;
-		}
-		index++;
-	}
-	if (anchor.type === "text" && caretNode === null) return null;
-	return { before: before.split("\n").pop() ?? "", after: after.split("\n")[0] ?? "", node: caretNode };
-}
-
-/**
- * Shift+Enter at the end of a "- a" or "1. b" line starts the next item; on an
- * empty item it ends the list. Returns whether it handled the key.
- */
-function $continueList(): boolean {
-	const selection = $getSelection();
-	if (!$isRangeSelection(selection)) return false;
-	const line = $lineAroundCaret(selection);
-	if (!line) return false;
-	const next = listContinuation(line.before, line.after);
-	if (!next) return false;
-	if (next.kind === "continue") {
-		selection.insertLineBreak();
-		selection.insertText(next.prefix);
-		return true;
-	}
-	// Remove the empty marker where it sits in the caret's text node; anything more
-	// involved (a chip on the line) keeps the ordinary newline.
-	const node = line.node;
-	if (!node || !$isTextNode(node) || selection.anchor.type !== "text") return false;
-	const offset = selection.anchor.offset;
-	if (!node.getTextContent().slice(0, offset).endsWith(line.before)) return false;
-	node.spliceText(offset - line.before.length, line.before.length, "", true);
-	return true;
 }
 
 function $insertComposerToken(trigger: ComposerTrigger, value: string): boolean {
@@ -627,15 +569,7 @@ const EditorBridge = forwardRef<
 		const removeEnter = editor.registerCommand(
 			KEY_ENTER_COMMAND,
 			(event) => {
-				if (event?.isComposing || editor.isComposing()) return false;
-				if (event?.shiftKey) {
-					// Shift+Enter is the newline; inside a list it also continues the list.
-					if (!event.altKey && !event.ctrlKey && !event.metaKey && $continueList()) {
-						event.preventDefault();
-						return true;
-					}
-					return false;
-				}
+				if (event?.isComposing || event?.shiftKey || editor.isComposing()) return false;
 				if (complete(event, "Enter")) return true;
 				return false;
 			},

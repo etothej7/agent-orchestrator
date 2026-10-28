@@ -12,10 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
 import {
-	NODE_ARCHIVE_SHA256,
-	NODE_VERSION,
 	archiveExtraction,
 	createWorkDirectory,
 	npmInvocation,
@@ -27,7 +24,6 @@ import {
 	patchClaudeSteerSettlement,
 	pruneNodeDistribution,
 	runtimeSourceFiles,
-	verifyNodeArchive,
 } from "./build-acp-runtime-helpers.mjs";
 
 const temporaryDirectories = [];
@@ -646,41 +642,5 @@ describe("archiveExtraction", () => {
 			const { command } = archiveExtraction("/w/a", "/w", { platform, systemRoot: "C:\\Windows" });
 			expect(command).not.toMatch(/powershell|cmd\.exe|\bsh\b/i);
 		}
-	});
-});
-
-describe("bundled Node archive pin", () => {
-	const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-
-	it("pins a digest for every platform archive of exactly the bundled version", () => {
-		const names = Object.keys(NODE_ARCHIVE_SHA256);
-		expect(names.length).toBeGreaterThan(0);
-		for (const name of names) {
-			expect(name.startsWith(`node-v${NODE_VERSION}-`)).toBe(true);
-			expect(NODE_ARCHIVE_SHA256[name]).toMatch(/^[0-9a-f]{64}$/);
-		}
-	});
-
-	it("accepts an archive whose digest matches the pin", () => {
-		const archive = Buffer.from("verified node archive");
-		const name = `node-v${NODE_VERSION}-test.tar.gz`;
-		expect(() => verifyNodeArchive(name, archive, { [name]: sha256(archive) })).not.toThrow();
-	});
-
-	it("rejects a tampered archive", () => {
-		const name = `node-v${NODE_VERSION}-test.tar.gz`;
-		const pins = { [name]: sha256(Buffer.from("verified node archive")) };
-		expect(() => verifyNodeArchive(name, Buffer.from("tampered"), pins)).toThrow(/checksum mismatch/);
-	});
-
-	it("rejects an archive with no pinned digest, including inherited object keys", () => {
-		expect(() => verifyNodeArchive("node-v1.0.0-darwin-arm64.tar.gz", Buffer.from("x"))).toThrow(/No pinned SHA-256/);
-		expect(() => verifyNodeArchive("constructor", Buffer.from("x"))).toThrow(/No pinned SHA-256/);
-		expect(() => verifyNodeArchive("toString", Buffer.from("x"), {})).toThrow(/No pinned SHA-256/);
-	});
-
-	it("rejects a signed-looking digest of a different archive of the same version", () => {
-		const [first, second] = Object.keys(NODE_ARCHIVE_SHA256);
-		expect(() => verifyNodeArchive(first, Buffer.from(second))).toThrow(/checksum mismatch/);
 	});
 });

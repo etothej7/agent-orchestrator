@@ -358,27 +358,15 @@ type WorkspacePreparationBranchCleaner interface {
 	DeletePreparedBranch(ctx context.Context, info WorkspaceInfo) error
 }
 
-// WorkspaceRemovalPreflighter is implemented by workspaces that can say, without
-// changing anything, whether ForceDestroy would be able to keep a worktree's work
-// safe. A caller that terminates a session before force-removing its worktree asks
-// first, so an unsafe removal leaves the session running with a clear error.
-type WorkspaceRemovalPreflighter interface {
-	PreflightRemoval(ctx context.Context, info WorkspaceInfo) error
-}
-
 // Workspace is the isolated checkout an agent works in (a git worktree or clone).
 type Workspace interface {
 	Create(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)
 	Destroy(ctx context.Context, info WorkspaceInfo) error
 	Restore(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)
-	// ForceDestroy removes the worktree even when it is dirty, bypassing the
-	// refusal that Destroy enforces, but never loses work: before removing, it
-	// preserves uncommitted work in a verified backup ref (refs/ao-backup/...),
-	// archives git-ignored secret files (.env*) privately, keeps an unregistered
-	// directory aside instead of deleting it, and REFUSES (an error wrapping
-	// ErrWorkspaceDirty) when it cannot prove the work is saved. Callers still
-	// capture with StashUncommitted first (restore markers); ForceDestroy does
-	// not rely on it. Never call it from interactive teardown paths.
+	// ForceDestroy removes the worktree unconditionally, bypassing the
+	// dirty-worktree refusal that Destroy enforces. It is only safe to call
+	// AFTER the session's uncommitted work has been captured via StashUncommitted.
+	// Never call it from interactive teardown paths.
 	ForceDestroy(ctx context.Context, info WorkspaceInfo) error
 	// StashUncommitted captures all uncommitted work in the worktree as a git
 	// commit object stored at refs/ao/preserved/<session-id>, WITHOUT mutating
@@ -486,11 +474,6 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
-	// ErrWorkspaceSecretsNotArchived reports that a worktree's git-ignored secret
-	// files (.env*) could not be copied to the private archive, so the worktree was
-	// kept. Errors carrying it also wrap ErrWorkspaceDirty (teardown still treats
-	// the workspace as intentionally preserved) but are not "uncommitted changes".
-	ErrWorkspaceSecretsNotArchived = errors.New("workspace: git-ignored secret files could not be archived")
 	// ErrWorkspaceRepoUnavailable reports that the project's source repository
 	// is no longer reachable on disk, so git cannot be asked to remove the
 	// session's worktree. Teardown treats this like ErrWorkspaceDirty: the

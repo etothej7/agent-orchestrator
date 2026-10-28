@@ -21,16 +21,13 @@ const (
 	NotificationReviewCompleted NotificationType = "review_completed"
 	// NotificationReviewChangesRequested means an AO reviewer found changes to make.
 	NotificationReviewChangesRequested NotificationType = "review_changes_requested"
-	// NotificationCoordinatorMessage means the overall coordinator explicitly
-	// addressed the human (a decision, blocker, stopped work or verified result).
-	NotificationCoordinatorMessage NotificationType = "coordinator_message"
 )
 
 // Valid reports whether t is one of the v1 notification kinds.
 func (t NotificationType) Valid() bool {
 	switch t {
 	case NotificationNeedsInput, NotificationReadyToMerge, NotificationPRMerged, NotificationPRClosedUnmerged,
-		NotificationReviewCompleted, NotificationReviewChangesRequested, NotificationCoordinatorMessage:
+		NotificationReviewCompleted, NotificationReviewChangesRequested:
 		return true
 	default:
 		return false
@@ -43,26 +40,6 @@ func (t NotificationType) Valid() bool {
 // happened, so they are surfaced once as unseen and never held as unresolved.
 func (t NotificationType) NeedsResolution() bool {
 	return t == NotificationNeedsInput || t == NotificationReadyToMerge
-}
-
-// How a coordinator question was closed.
-const (
-	NotificationResolutionAnswered    = "answered"
-	NotificationResolutionCoordinator = "coordinator"
-)
-
-// IsCoordinatorAskPurpose reports whether a coordinator_message purpose is a
-// question or decision that needs Ed (ao ask), as opposed to a result or stop
-// notice (ao tell). Such a notification stays open until Ed replies or dismisses
-// it. The open-item lists and counts in queries/notifications.sql enumerate the
-// same three purposes; keep them in step.
-func IsCoordinatorAskPurpose(purpose string) bool {
-	switch purpose {
-	case "scope_question", "blocking_decision", "completion_decision":
-		return true
-	default:
-		return false
-	}
 }
 
 // NotificationStatus is the seen state for a stored notification. The stored
@@ -125,16 +102,6 @@ type NotificationRecord struct {
 	// its input, or the PR stopped waiting on a merge. Zero means still open.
 	// Only AO writes it; there is no user-facing "resolve" action.
 	ResolvedAt time.Time
-	// Resolution says how a resolved coordinator question was closed:
-	// NotificationResolutionAnswered (Ed's reply named it) or
-	// NotificationResolutionCoordinator (the coordinator recorded it answered).
-	// ResolutionNote is the coordinator's optional note. Both are empty otherwise.
-	Resolution     string
-	ResolutionNote string
-	// Purpose says why a coordinator_message was sent: scope_question,
-	// blocking_decision, completion_decision (ao ask) or verified_result,
-	// stopped_work (ao tell). Empty for every other notification type.
-	Purpose string
 	// SourceKey identifies the durable transition that produced a terminal
 	// notification. It is internal dedupe metadata and is not exposed over HTTP.
 	SourceKey string

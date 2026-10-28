@@ -208,9 +208,6 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionExitAgentCommand(ctx))
 	cmd.AddCommand(newSessionResumeAgentCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
-	cmd.AddCommand(newSessionSetAutoResumeCommand(ctx))
-	cmd.AddCommand(newSessionSetModelCommand(ctx))
-	cmd.AddCommand(newSessionSwitchAgentCommand(ctx))
 	cmd.AddCommand(newSessionCleanupCommand(ctx))
 	cmd.AddCommand(newSessionClaimPRCommand(ctx))
 	cmd.AddCommand(newSessionHistoryCommand(ctx))
@@ -344,51 +341,6 @@ func newSessionRenameCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
-	return cmd
-}
-
-type sessionAutoResumeRequest struct {
-	Policy          string `json:"policy"`
-	SenderSessionID string `json:"senderSessionId,omitempty"`
-}
-
-type sessionAutoResumeResponse struct {
-	SessionID string `json:"sessionId"`
-	Policy    string `json:"policy"`
-}
-
-func newSessionSetAutoResumeCommand(ctx *commandContext) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "set-auto-resume <id> allowed|never",
-		Short: "Protect a session from automatic resume, or ask the person to lift the protection",
-		Long: "never protects the session: AO will not resume it, replace it or tear its project down, and a kill\n" +
-			"keeps its worktree. The main coordinator and the person may set it.\n\n" +
-			"allowed lifts a protection, which is the person's decision. This files a request that the person\n" +
-			"approves in the AO app; nothing changes until they do, and you are told how it ends. A person can\n" +
-			"also do it directly in the session's ... menu (Allow automatic resume).",
-		Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := normalizeSessionID(args[0])
-			if err != nil {
-				return err
-			}
-			policy := strings.ToLower(strings.TrimSpace(args[1]))
-			switch policy {
-			case "never":
-			case "allowed":
-				return ctx.fileHumanRequest(cmd, "auto_resume_lift", id, nil)
-			default:
-				return fmt.Errorf("policy must be allowed or never, got %q", args[1])
-			}
-			var res sessionAutoResumeResponse
-			req := sessionAutoResumeRequest{Policy: policy, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
-			if err := ctx.putJSON(cmd.Context(), "sessions/"+url.PathEscape(id)+"/auto-resume", req, &res); err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "session %s auto-resume: %s\n", id, policy)
-			return err
-		},
-	}
 	return cmd
 }
 

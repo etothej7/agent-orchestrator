@@ -1,11 +1,3 @@
-import { InternalActivity, isInternalGroup, isInternalItem } from "./InternalActivity";
-import { CoordinatorMessageBlock } from "./CoordinatorMessageBlock";
-import { CoordinatorAskContext, type CoordinatorAskControls, type CoordinatorAskStatus } from "./coordinator-asks";
-import { useJumpToCoordinatorMessage } from "./useJumpToCoordinatorMessage";
-import type { CoordinatorUnread } from "../../hooks/useReadCoordinatorTells";
-import { coordinatorJumpRequested, useCoordinatorJumpStore } from "../../stores/coordinator-jump-store";
-import { isCoordinatorMessage } from "../../lib/coordinator-messages";
-import { refreshCoordinatorBadge } from "../../lib/coordinator-badge";
 import { TurnWorkSummary } from "./TurnWorkSummary";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
 import { isSettingsPageOpen } from "../../hooks/useAppShortcut";
@@ -43,7 +35,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, ArrowUp, Lightbulb, Loader2, MessageSquareDot, MessageSquarePlus, TriangleAlert, Undo2, X } from "lucide-react";
+import { ArrowDown, Lightbulb, Loader2, MessageSquarePlus, TriangleAlert, Undo2 } from "lucide-react";
 import { AnimatePresence, motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useChatSelectionPosition } from "../../hooks/useChatSelectionPosition";
@@ -96,7 +88,7 @@ import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../../lib/terminal-font-size";
-import { createDaemonTerminalMux } from "../../lib/terminal-mux";
+import { createTerminalMux, muxUrlFromApiBase } from "../../lib/terminal-mux";
 import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
@@ -135,6 +127,21 @@ import {
 	type TurnOutcomeRetryControl,
 	ChatHostId,
 } from "./ChatTimelineItems";
+import {
+	isTaskTitleUpdate,
+	isWorkerLead,
+	OrchestratorReply,
+	piggybackedUpdates,
+	quietWorkerReply,
+	renamedTitle,
+	SpawnedAgents,
+	spawnedSessionIds,
+	TaskNamedLine,
+	useWorkerUpdateIndex,
+	WorkerUpdateIndexContext,
+	WorkerUpdateRows,
+	workerUpdatesOf,
+} from "./WorkerUpdates";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider, ChatOpeningRef } from "./ChatMarkdown";
 import { ChatImageSourceProvider } from "./chat-image-source";
@@ -423,13 +430,7 @@ export interface ChatWorkspaceProps {
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
 		excerpts?: ChatDraftExcerptReference[],
-		/** The coordinator question this message answers (its message id). */
-		replyToAskId?: string,
 	) => void | Promise<unknown>;
-	/** Whether a coordinator question is still open; answered ones read as settled. */
-	askStatusOf?: (message: ConversationMessage) => CoordinatorAskStatus;
-	/** What waits for Ed outside the viewport, and the way blocks report being seen. */
-	coordinatorUnread?: CoordinatorUnread;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
 		requestId: string,
@@ -559,7 +560,6 @@ export interface ChatWorkspaceProps {
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
 		recoverOnly?: boolean,
-		replyToAskId?: string,
 	) => Promise<ChatSteerOutcome | void>;
 	showSteerButton?: boolean;
 	sendPending?: boolean;
@@ -706,8 +706,6 @@ function ChatWorkspaceContent({
 	onLoadOlder,
 	excerptsEnabled = false,
 	onSend,
-	askStatusOf,
-	coordinatorUnread,
 	onDecide,
 	onResolveInput,
 	onInterrupt,
@@ -781,7 +779,7 @@ function ChatWorkspaceContent({
 	const uiSessionId = draftScope.sessionId;
 	const activeRemoteHostId = remoteHostId ?? session?.hostId;
 	const remoteCreateMux = useMemo(
-		() => assetBaseUrl ? () => createDaemonTerminalMux(assetBaseUrl) : undefined,
+		() => assetBaseUrl ? () => createTerminalMux(muxUrlFromApiBase(assetBaseUrl)) : undefined,
 		[assetBaseUrl],
 	);
 	const turn = activeTurn(snapshot);
@@ -1089,24 +1087,6 @@ function ChatWorkspaceContent({
 		},
 		[queueEdit, stableCancelQueuedTurn, updateQueueDraft],
 	);
-	// The coordinator question the next message answers. It travels as `replyToAskId`, so only
-	// an explicit answer closes a question; the chip above the composer says what it answers.
-	const [answering, setAnswering] = useState<{ messageId: string; question: string; message: ConversationMessage }>();
-	const answeringRef = useRef(answering);
-	answeringRef.current = answering;
-	const answerStatus = answering ? askStatusOf?.(answering.message) : undefined;
-	useEffect(() => {
-		// Answered elsewhere (or by the coordinator): nothing left to answer.
-		if (answering && answerStatus && !answerStatus.open) setAnswering(undefined);
-	}, [answerStatus, answering]);
-	const startAnswering = useCallback((message: ConversationMessage) => {
-		setAnswering({ messageId: message.id, question: message.text.split("\n")[0]?.trim() ?? "", message });
-		composerFocusRef.current?.focus();
-	}, []);
-	const askControls = useMemo<CoordinatorAskControls>(
-		() => ({ statusOf: askStatusOf, answeringId: answering?.messageId, answer: startAnswering, reportVisible: coordinatorUnread?.reportVisible }),
-		[answering?.messageId, askStatusOf, coordinatorUnread?.reportVisible, startAnswering],
-	);
 	// Keep the dispatch target with this composer instance while attachment staging
 	// awaits. A newer queue editor must not redirect an older ordinary send.
 	const handleComposerSend = useCallback(
@@ -1157,11 +1137,7 @@ function ChatWorkspaceContent({
 				}
 				return;
 			}
-			const replyToAskId = answeringRef.current?.messageId;
-			const sent = await onSend?.(text, attachments, clientMessageId, excerpts, replyToAskId);
-			if (replyToAskId) refreshCoordinatorBadge();
-			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
-			return sent;
+			return onSend?.(text, attachments, clientMessageId, excerpts);
 		},
 		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
@@ -1199,13 +1175,7 @@ function ChatWorkspaceContent({
 			attachments?: { mimeType: string; data: string }[],
 			clientMessageId?: string,
 			recoverOnly?: boolean,
-		) => {
-			const replyToAskId = answeringRef.current?.messageId;
-			const outcome = await stableSteer(text, attachments, clientMessageId, recoverOnly, replyToAskId);
-			if (replyToAskId) refreshCoordinatorBadge();
-			if (replyToAskId && answeringRef.current?.messageId === replyToAskId) setAnswering(undefined);
-			return outcome;
-		},
+		) => stableSteer(text, attachments, clientMessageId, recoverOnly),
 		[stableSteer],
 	);
 	const acceptedClientMessageIds = useMemo(
@@ -1827,10 +1797,10 @@ function ChatWorkspaceContent({
 						>
 							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)} artifacts={session?.artifactFiles}>
 							<ChatHostId.Provider value={activeRemoteHostId}>
-							<CoordinatorAskContext.Provider value={askControls}>
 
 								<Timeline
 							onAddToSideChat={onAddToSideChat}
+									workerUpdates={sessionRole === "orchestrator"}
 									annotationNavigationRef={annotationNavigationRef}
 									key={draftScopeKey}
 									snapshot={snapshot}
@@ -1861,9 +1831,7 @@ function ChatWorkspaceContent({
 									localEchos={localEchos}
 									startup={sessionRole === "orchestrator" ? undefined : startup}
 									arriving={arrivingInChat}
-									coordinatorUnread={coordinatorUnread}
 								/>
-							</CoordinatorAskContext.Provider>
 							</ChatHostId.Provider>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1917,20 +1885,6 @@ function ChatWorkspaceContent({
 										active={!workspaceActiveTabKey && !reviewerActive && !shellActive}
 									/>
 									{composerNotice}
-									{answering ? (
-										<div className="flex min-w-0 items-center gap-2 px-3 pb-1.5 text-caption text-muted-foreground" data-testid="answering-chip">
-											<MessageSquareDot aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
-											<span className="min-w-0 flex-1 truncate">{t("chat.coordinator.answering", { question: answering.question })}</span>
-											<button
-												aria-label={t("chat.coordinator.stopAnswering")}
-												className="grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-accent/50"
-												onClick={() => setAnswering(undefined)}
-												type="button"
-											>
-												<X aria-hidden="true" className="size-3" />
-											</button>
-										</div>
-									) : null}
 									<ChatComposer
 										attachedTop={Boolean(composerNotice)}
 										onSelectAnnotation={navigateToAnnotation}
@@ -2599,7 +2553,7 @@ export function Timeline({
 	localEchos = [],
 	startup,
 	arriving = false,
-	coordinatorUnread: coordinatorUnreadState,
+	workerUpdates = false,
 }: {
 	onAddToSideChat?: ChatWorkspaceProps["onAddToSideChat"];
 	/** Replaces the default "Add to chat" (write to this draft scope's composer). */
@@ -2638,8 +2592,8 @@ export function Timeline({
 	startup?: ComponentProps<typeof SessionStartup> & { openingTurnId?: string };
 	/** An interface switch is bringing this conversation in; only then does the transcript fade in. */
 	arriving?: boolean;
-	/** What waits for Ed in the main coordinator chat: out of view, older than the loaded window, and whether that is known yet. */
-	coordinatorUnread?: CoordinatorUnread;
+	/** Orchestrator chat: draw worker messages and reports as rows, and the orchestrator's handling under them. */
+	workerUpdates?: boolean;
 }) {
 	const hasTranscript = snapshot.items.length > 0;
 	const arrivedEmpty = useRef(false);
@@ -3472,6 +3426,7 @@ export function Timeline({
 		);
 	}, [openingTurnId, snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
+	const workerUpdateIndex = useWorkerUpdateIndex(workerUpdates ? snapshot.items : undefined);
 	// Read by syncScrollLayout (a stable callback) so the initial snap only latches
 	// once real conversation content exists (history can load after the chat opens).
 	const groupCountRef = useRef(groups.length);
@@ -3540,78 +3495,6 @@ export function Timeline({
 		},
 	});
 	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = virtualized ? undefined : () => false;
-	const indexOfMessage = useCallback((messageId: string) => groups.findIndex((group) => group.items.some((item) => item.id === messageId)), [groups]);
-	const jumpToCoordinatorMessage = useJumpToCoordinatorMessage({
-		root: scrollContent,
-		indexOf: indexOfMessage,
-		scrollToIndex: useCallback((index: number) => { if (virtualized) virtualizer.scrollToIndex(index, { align: "center" }); }, [virtualized, virtualizer]),
-		hasOlder,
-		loadingOlder,
-		onLoadOlder,
-		stopFollow: releaseFollow,
-	});
-	// What waits for Ed: items loaded but out of view, then items older than the loaded window (the
-	// oldest of those is the jump target; the jump pages back until it is loaded).
-	// Messages a finished jump could not find (their conversation was replaced, or the notification points at
-	// a message that is gone) are not offered again: the pill would otherwise stay with nothing to jump to.
-	const [unreachableCoordinatorIds, setUnreachableCoordinatorIds] = useState<ReadonlySet<string>>(() => new Set());
-	const coordinatorOutOfView = coordinatorUnreadState?.outOfView ?? [];
-	const coordinatorOlderIds = (coordinatorUnreadState?.older.ids ?? []).filter((id) => !unreachableCoordinatorIds.has(id));
-	const coordinatorOlderCount = coordinatorOlderIds.length;
-	const coordinatorWaiting = coordinatorOutOfView.length + coordinatorOlderCount;
-	const coordinatorTarget = coordinatorOlderCount > 0 ? coordinatorOlderIds[0] : coordinatorOutOfView[0];
-	const coordinatorSettled = coordinatorUnreadState?.settled ?? false;
-	// Opening the main coordinator lands on the oldest thing that waits for Ed.
-	const jumpRequestedAt = useCoordinatorJumpStore((state) => state.requestedAt);
-	const jumpInFlight = useRef(false);
-	const coordinatorLoadedOnce = useRef(false);
-	// One way to start a jump, for the pill and for a row-click request alike, so a jump that replaces another
-	// still clears the request when it lands and still reports when it ends.
-	const startCoordinatorJump = useCallback((messageId: string) => {
-		jumpToCoordinatorMessage(messageId, {
-			// The request stays until the block is reached: the chat may still remount while it opens.
-			onReached: () => useCoordinatorJumpStore.getState().clear(),
-			onEnd: ({ missing, replaced }) => {
-				if (!replaced) jumpInFlight.current = false;
-				if (missing) setUnreachableCoordinatorIds((current) => new Set(current).add(messageId));
-			},
-		});
-		jumpInFlight.current = true; // after the call: a replaced jump's own end must not reset this
-	}, [jumpToCoordinatorMessage]);
-	useEffect(() => {
-		if (!coordinatorTarget || !coordinatorJumpRequested(jumpRequestedAt)) return;
-		startCoordinatorJump(coordinatorTarget);
-	}, [coordinatorTarget, jumpRequestedAt, startCoordinatorJump]);
-	// A request that finds nothing waiting once the chat and its notifications have loaded is spent: left
-	// armed it would pull a reader scrolled up when a new message arrives within its lifetime.
-	useEffect(() => {
-		if (coordinatorSettled) coordinatorLoadedOnce.current = true;
-		if (coordinatorSettled && coordinatorWaiting === 0 && coordinatorJumpRequested(jumpRequestedAt)) useCoordinatorJumpStore.getState().clear();
-	}, [coordinatorSettled, coordinatorWaiting, jumpRequestedAt]);
-	// Leaving the chat after it loaded (and with no jump under way, which would mean it is only remounting
-	// while it opens) ends any request that was never consumed.
-	useEffect(() => () => {
-		if (coordinatorLoadedOnce.current && !jumpInFlight.current) useCoordinatorJumpStore.getState().clear();
-	}, []);
-	// Whether the pill's target is above or below what is on screen, so its arrow points the right way.
-	const [coordinatorTargetAbove, setCoordinatorTargetAbove] = useState(true);
-	useEffect(() => {
-		if (!coordinatorTarget) return;
-		const compute = () => {
-			if (coordinatorOlderCount > 0) return setCoordinatorTargetAbove(true); // older than anything loaded
-			const view = scroller.current?.getBoundingClientRect();
-			const element = Array.from(scrollContent.current?.querySelectorAll<HTMLElement>("[data-coordinator-message-id]") ?? [])
-				.find((candidate) => candidate.dataset.coordinatorMessageId === coordinatorTarget);
-			if (element && view && view.height > 0) return setCoordinatorTargetAbove(element.getBoundingClientRect().top < view.top);
-			const index = indexOfMessage(coordinatorTarget);
-			const first = virtualizer.range?.startIndex ?? 0;
-			setCoordinatorTargetAbove(index < 0 || index <= first);
-		};
-		compute();
-		const node = scroller.current;
-		node?.addEventListener("scroll", compute, { passive: true });
-		return () => node?.removeEventListener("scroll", compute);
-	}, [coordinatorOlderCount, coordinatorTarget, indexOfMessage, virtualizer]);
 	const virtualRows = virtualizer.getVirtualItems();
 	const virtualHeight = virtualizer.getTotalSize();
 	renderedVirtualHeight.current = virtualHeight;
@@ -4151,9 +4034,12 @@ export function Timeline({
 								} : undefined}
 								data-chat-scroll-anchor={groupHasHumanPrompt(group) ? "" : undefined}
 							>
+								<WorkerUpdateIndexContext.Provider value={workerUpdateIndex}>
 								<TurnGroup
 									group={group}
-									startsInternalRun={!(index > 0 && isInternalGroup(groups[index - 1]!.items))}
+									workerUpdates={workerUpdates}
+									// Consecutive quiet worker turns read as one list of rows, not separate turns.
+									tight={workerUpdates && isQuietWorkerGroup(group) && isQuietWorkerGroup(groups[index - 1])}
 									startup={showStartup && group.turnId === openingTurnId ? startup : undefined}
 									onSelectAnnotation={selectAnnotation}
 									activityDisclosureOverrides={activityDisclosureOverrides}
@@ -4196,6 +4082,7 @@ export function Timeline({
 									busy={busy}
 									queued={Boolean(group.turnId && queued.has(group.turnId))}
 								/>
+								</WorkerUpdateIndexContext.Provider>
 							</div>
 						);
 					})}
@@ -4338,20 +4225,6 @@ export function Timeline({
 				) : null}
 			</div>
 
-			{coordinatorWaiting > 0 && coordinatorTarget ? (
-				<Button
-					type="button"
-					size="sm"
-					variant="outline"
-					onClick={() => startCoordinatorJump(coordinatorTarget)}
-					className="absolute top-3 left-1/2 -translate-x-1/2 gap-1.5 border-border-strong bg-raised text-foreground shadow-sm hover:bg-surface dark:bg-raised dark:hover:bg-surface"
-				>
-					{coordinatorTargetAbove ? <ArrowUp aria-hidden="true" className="size-3.5" /> : <ArrowDown aria-hidden="true" className="size-3.5" />}
-					{coordinatorOutOfView.length === 0
-						? t("chat.coordinator.jumpOlder", { count: coordinatorWaiting })
-						: t("chat.coordinator.jump", { count: coordinatorWaiting })}
-				</Button>
-			) : null}
 			{!pinned ? (
 				<Button
 					type="button"
@@ -4410,7 +4283,8 @@ const TurnGroup = memo(function TurnGroup({
 	newHumanMessageIds,
 	startup,
 	onSelectAnnotation,
-	startsInternalRun = true,
+	workerUpdates = false,
+	tight = false,
 }: {
 	group: TimelineGroup;
 	activityDisclosureOverrides: Readonly<Record<string, boolean>>;
@@ -4451,8 +4325,8 @@ const TurnGroup = memo(function TurnGroup({
 	/** The opening turn of a starting session: its setup checklist. */
 	startup?: ComponentProps<typeof SessionStartup>;
 	onSelectAnnotation?: (annotation: { text: string; messageId?: string; revision?: number }) => void;
-	/** First of a run of consecutive internal turns: the only one that shows the visible label. */
-	startsInternalRun?: boolean;
+	workerUpdates?: boolean;
+	tight?: boolean;
 }) {
 	const { t } = useTranslation();
 	const hasTerminalFailure =
@@ -4475,7 +4349,7 @@ const TurnGroup = memo(function TurnGroup({
 	);
 	const lastAssistantId = [...group.items]
 		.reverse()
-		.find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim() !== "" && !isCoordinatorMessage(item))?.id;
+		.find((item) => item.kind === "message" && item.role === "assistant" && item.text.trim() !== "")?.id;
 	// A running turn offers copy only while its newest item is the reply itself, so the
 	// action does not flash under prose the agent is about to follow with more work.
 	const copyableMessageId = group.outcome
@@ -4487,7 +4361,7 @@ const TurnGroup = memo(function TurnGroup({
 	if (group.outcome) {
 		for (let index = runs.length - 1; index >= 0; index -= 1) {
 			const item = runs[index]?.items[0];
-			if (item?.kind === "message" && item.role === "assistant" && item.text.trim() !== "" && !isCoordinatorMessage(item)) {
+			if (item?.kind === "message" && item.role === "assistant" && item.text.trim() !== "") {
 				finalAssistantRunIndex = index;
 				break;
 			}
@@ -4520,7 +4394,10 @@ const TurnGroup = memo(function TurnGroup({
 		const timer = window.setTimeout(() => setShowSettledStatus(true), 440);
 		return () => window.clearTimeout(timer);
 	}, [group.live]);
-	const renderRunBase = (run: TimelineRun) =>
+	// Only the run the agent is working in stays open while the turn runs; earlier
+	// runs fold to their summary, so a long turn does not keep every call mounted.
+	const liveRunKey = group.live ? runs.findLast((run) => run.kind === "activities")?.key : undefined;
+	const renderRun = (run: TimelineRun) =>
 		run.kind === "activities" ? (
 			<ActivityRun
 				key={run.key}
@@ -4530,6 +4407,7 @@ const TurnGroup = memo(function TurnGroup({
 				activities={run.items.filter(
 					(item): item is ConversationActivity => item.kind === "activity",
 				)}
+				live={run.key === liveRunKey}
 			/>
 		) : (
 			<TimelineItem
@@ -4569,19 +4447,24 @@ const TurnGroup = memo(function TurnGroup({
 				onSelectAnnotation={onSelectAnnotation}
 			/>
 		);
-	// On the unfiltered coordinator view, a turn is marked once as a whole; inside a
-	// turn Ed started, only the runs the default view would hide are marked.
-	const internalGroup = isInternalGroup(group.items);
-	const renderRun = (run: TimelineRun) =>
-		!internalGroup && run.items.every(isInternalItem) ? (
-			<InternalActivity key={run.key}>{renderRunBase(run)}</InternalActivity>
-		) : (
-			renderRunBase(run)
-		);
 	// One flat keyed list rather than a slot per section, so a run keeps its element
 	// when the turn settles: the final answer leaving the worked runs, or a notice
 	// moving out from among them, does not remount it or drop the reader's selection.
-	const body: ReactNode[] = humanRuns.map(renderRun);
+	// Orchestrator chat: whatever a worker sent (a message, a mid-turn steer, a
+	// report batch, or reports folded into the user's message) draws as rows, and
+	// AO's task-naming prompt as the name it produced.
+	const renderWorkerRun = (run: TimelineRun): ReactNode | ReactNode[] => {
+		const item = run.kind === "single" ? run.items[0] : undefined;
+		if (!workerUpdates || !item) return renderRun(run);
+		const updates = workerUpdatesOf(item);
+		if (updates.length > 0) return <WorkerUpdateRows key={run.key} updates={updates} />;
+		const namedTitle = isTaskTitleUpdate(item) ? renamedTitle(group.items) : undefined;
+		if (namedTitle) return <TaskNamedLine key={run.key} title={namedTitle} />;
+		const piggybacked = piggybackedUpdates(item);
+		if (piggybacked.length === 0) return renderRun(run);
+		return [<WorkerUpdateRows key={`${run.key}:reports`} updates={piggybacked} />, renderRun(run)];
+	};
+	const body: ReactNode[] = humanRuns.flatMap(renderWorkerRun);
 	// A live provider failure replaces the Working row with its reconnect card, and a
 	// turn that stops without an outcome (cancelled) has no settled row to hand over to.
 	// The setup checklist sits exactly where the Working row will, so the handoff
@@ -4600,10 +4483,15 @@ const TurnGroup = memo(function TurnGroup({
 		);
 	}
 	const outcome = showSettledStatus ? group.outcome : undefined;
+	// A settled worker turn whose answer asks the user nothing draws that answer as
+	// one line under the rows, with the work folded into it instead of "Worked for".
+	const quietReply = workerUpdates && outcome?.state === "completed" ? quietWorkerReply(group.items) : undefined;
+	// A worker turn the orchestrator only read has nothing to unfold; its duration alone is noise.
+	const onlyRead = workerUpdates && foldedRuns.length === 0 && !finalRun && isWorkerLead(group.items[0]);
+	const disclosureKey = `${group.key}:worked`;
 	if (!outcome) {
-		body.push(...workedRuns.map(renderRun));
-	} else {
-		const disclosureKey = `${group.key}:worked`;
+		body.push(...workedRuns.flatMap(renderWorkerRun));
+	} else if (!quietReply && !onlyRead) {
 		body.push(
 			<TurnWorkSummary
 				key="turn-worked"
@@ -4611,14 +4499,30 @@ const TurnGroup = memo(function TurnGroup({
 				open={Boolean(activityDisclosureOverrides[disclosureKey])}
 				onOpenChange={(open) => onActivityDisclosureChange(disclosureKey, open)}
 			>
-				{foldedRuns.length > 0 ? foldedRuns.map(renderRun) : undefined}
+				{foldedRuns.length > 0 ? foldedRuns.flatMap(renderWorkerRun) : undefined}
 			</TurnWorkSummary>,
 		);
 	}
 	if (outcome) body.push(...noticeRuns.map(renderRun));
-	if (finalRun) body.push(renderRun(finalRun));
-	const turn = (
-		<div className="flex min-w-0 flex-col gap-2.5">
+	if (quietReply && finalRun) {
+		body.push(
+			<OrchestratorReply
+				key={finalRun.key}
+				message={quietReply}
+				work={foldedRuns.length > 0 ? foldedRuns.flatMap(renderWorkerRun) : undefined}
+				workOpen={Boolean(activityDisclosureOverrides[disclosureKey])}
+				onWorkOpenChange={(open) => onActivityDisclosureChange(disclosureKey, open)}
+				onRollback={canRollback ? () => onRollback(group.turnId as string) : undefined}
+				rollbackDisabled={rollbackDisabled}
+			/>,
+		);
+	} else if (finalRun) {
+		body.push(renderRun(finalRun));
+	}
+	const spawned = workerUpdates && outcome ? spawnedSessionIds(group.items) : [];
+	if (spawned.length > 0) body.push(<SpawnedAgents key="spawned" sessionIds={spawned} />);
+	return (
+		<div className={cn("flex min-w-0 flex-col gap-2.5", tight && "-mt-3.5")}>
 			{body}
 			{/* Both of these are current state of the turn rather than steps in it, which
 			    is why they sit at its end: a checklist that ticks itself off and a file
@@ -4665,7 +4569,6 @@ const TurnGroup = memo(function TurnGroup({
 			) : null}
 		</div>
 	);
-	return internalGroup ? <InternalActivity showLabel={startsInternalRun}>{turn}</InternalActivity> : turn;
 });
 
 function TurnLiveStatus({
@@ -4782,7 +4685,6 @@ function TimelineItem({
 	 * followed by tool activity. */
 }) {
 	if (item.kind === "message") {
-		if (isCoordinatorMessage(item)) return <CoordinatorMessageBlock message={item} />;
 		if (item.role === "assistant") {
 			return (
 				<AssistantMessage
@@ -5181,41 +5083,13 @@ function previewText(value: string, limit: number): string {
  * Items with no turn (an automation relay that arrived between turns) form their
  * own group and keep their sequence position.
  */
-/**
- * The turn a message the coordinator addressed to Ed belongs beside. `ao tell` / `ao ask`
- * store it with no turn, but it is written from inside whatever the coordinator is doing:
- * when the items around it belong to one turn (or that turn is still running), it sits in
- * that turn at its own sequence, so it appears where it happened instead of after the whole
- * block. Between turns it stays its own group.
- */
-function coordinatorMessageTurns(
-	snapshot: ConversationSnapshot,
-	byTurn: ReadonlyMap<string, ConversationSnapshot["turns"][number]>,
-): Map<string, string> {
-	const attached = new Map<string, string>();
-	const items = snapshot.items;
-	items.forEach((item, index) => {
-		if (item.turnId !== undefined || !isCoordinatorMessage(item)) return;
-		const before = items.slice(0, index).findLast((candidate) => candidate.turnId !== undefined && !attached.has(candidate.id));
-		if (!before?.turnId) return;
-		const after = items.slice(index + 1).find((candidate) => candidate.turnId !== undefined);
-		const turnState = byTurn.get(before.turnId)?.state;
-		if (after?.turnId === before.turnId || (after === undefined && (turnState === "running" || turnState === "queued"))) {
-			attached.set(item.id, before.turnId);
-		}
-	});
-	return attached;
-}
-
 function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 	const byTurn = new Map(snapshot.turns.map((turn) => [turn.id, turn]));
 	const groups: TimelineGroup[] = [];
 	const groupForTurn = new Map<string, TimelineGroup>();
-	const attachedTurn = coordinatorMessageTurns(snapshot, byTurn);
 
 	for (const item of snapshot.items) {
-		const turnId = item.turnId ?? attachedTurn.get(item.id);
-		if (turnId === undefined) {
+		if (item.turnId === undefined) {
 			// Consecutive turn-less items share one group rather than getting one each.
 			// A provider can run a turn AO never dispatched — a compaction, or a turn
 			// resumed inside the provider's own history — and every item it emits then
@@ -5236,19 +5110,19 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 			});
 			continue;
 		}
-		const existing = groupForTurn.get(turnId);
+		const existing = groupForTurn.get(item.turnId);
 		if (existing) {
 			existing.items.push(item);
 			continue;
 		}
 		const group: TimelineGroup = {
 			// A turn opened by a keyed human message keeps the key its echo had.
-			key: itemKey(item) === item.id ? `${turnId}-${item.sequence}` : itemKey(item),
-			turnId,
+			key: itemKey(item) === item.id ? `${item.turnId}-${item.sequence}` : itemKey(item),
+			turnId: item.turnId,
 			anchor: item.sequence,
 			items: [item],
 		};
-		groupForTurn.set(turnId, group);
+		groupForTurn.set(item.turnId, group);
 		groups.push(group);
 	}
 
@@ -5360,13 +5234,36 @@ function isHumanRun(item: ConversationItem | undefined): boolean {
 
 /** Conversation records that stay readable outside a settled turn's folded work. */
 function isNoticeRun(run: TimelineRun): boolean {
-	const item = run.items[0];
-	// A message the coordinator addressed to Ed is never folded away with the work.
-	if (run.kind === "single" && isCoordinatorMessage(item)) return true;
-	if (run.kind !== "single" || item?.kind !== "activity") return false;
+	return run.kind === "single" && isNoticeItem(run.items[0]);
+}
+
+function isNoticeItem(item: ConversationItem | undefined): boolean {
+	if (item?.kind !== "activity") return false;
 	if (item.activityKind === "error") return true;
 	if (item.activityKind === "user_input") return item.status !== "pending";
 	return item.detail?.event !== undefined && !isSteer(item) && !isCompaction(item) && item.activityKind !== "plan";
+}
+
+const quietWorkerGroups = new WeakMap<TimelineGroup, boolean>();
+
+/**
+ * A settled worker turn that draws only rows and a quiet reply, so it can sit
+ * tight against its neighbours. Groups keep their identity while unchanged, so
+ * each is judged once rather than on every streamed delta.
+ */
+function isQuietWorkerGroup(group: TimelineGroup | undefined): boolean {
+	if (!group) return false;
+	let quiet = quietWorkerGroups.get(group);
+	if (quiet === undefined) {
+		quiet = group.outcome?.state === "completed"
+			&& !group.plan
+			&& !group.diff
+			&& quietWorkerReply(group.items) !== undefined
+			&& !group.items.some(isNoticeItem)
+			&& spawnedSessionIds(group.items).length === 0;
+		quietWorkerGroups.set(group, quiet);
+	}
+	return quiet;
 }
 
 /** Mirrors the items `TimelineItem` draws nothing for, so they cannot fill an empty accordion. */

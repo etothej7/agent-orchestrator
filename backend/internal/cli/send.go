@@ -13,7 +13,6 @@ import (
 )
 
 type sendOptions struct {
-	story           string
 	session         string
 	message         string
 	steer           bool
@@ -58,7 +57,6 @@ func newSendCommand(ctx *commandContext) *cobra.Command {
 			return ctx.sendMessage(cmd.Context(), opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.story, "story", "", "Explicit story context; requires --client-message-id")
 	cmd.Flags().StringVar(&opts.session, "session", "", "Session id (required)")
 	cmd.Flags().StringVar(&opts.message, "message", "", "Message body (required unless --recover-only)")
 	cmd.Flags().BoolVar(&opts.steer, "steer", false, "Steer an active Chat turn, or start the next turn when idle")
@@ -68,20 +66,6 @@ func newSendCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) sendMessage(ctx context.Context, opts sendOptions) error {
-	if opts.story != "" {
-		if opts.clientMessageID == "" || opts.session == "" || strings.TrimSpace(opts.message) == "" || opts.recoverOnly {
-			return usageError{errors.New("story sends require --session, --message and --client-message-id; retry the same request to recover")}
-		}
-		var detail struct {
-			Story struct {
-				Revision int64 `json:"revision"`
-			} `json:"story"`
-		}
-		if err := c.getJSON(ctx, "workspace/stories/"+url.PathEscape(opts.story), &detail); err != nil {
-			return err
-		}
-		return c.postJSON(ctx, "workspace/commands", storyCommandAPIRequest{ID: opts.clientMessageID, StoryID: opts.story, Revision: detail.Story.Revision, Kind: "message", SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")), RecipientSessionID: opts.session, Text: opts.message}, nil)
-	}
 	if opts.recoverOnly && !opts.steer {
 		return usageError{errors.New("usage: --recover-only requires --steer")}
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 const (
@@ -48,41 +47,19 @@ const (
 // The token is never placed in a file, command line, or daemon environment, and
 // the daemon does not pass the consumed stdin handle to worker processes.
 func ReadRuntimeToken(r io.Reader) (string, error) {
-	token, _, err := ReadRuntimeHandoff(r, false)
-	return token, err
-}
-
-// ReadRuntimeHandoff reads the app's private stdin handoff: the browser-runtime token on
-// the first line and, when withUIKey is set, the human-capability key on the second. One
-// buffered reader serves both lines, so reading the first cannot swallow the second. The
-// key is validated here and an invalid or missing one is an error: a daemon that was told
-// to expect a key and did not get one must not silently run with human authority off.
-func ReadRuntimeHandoff(r io.Reader, withUIKey bool) (token, uiKey string, err error) {
-	const maxLineBytes = 256
-	reader := bufio.NewReader(io.LimitReader(r, 2*(maxLineBytes+1)))
-	line, readErr := reader.ReadString('\n')
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return "", "", fmt.Errorf("read browser runtime token: %w", readErr)
+	const maxTokenBytes = 256
+	line, err := bufio.NewReader(io.LimitReader(r, maxTokenBytes+1)).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read browser runtime token: %w", err)
 	}
-	token = strings.TrimSpace(line)
+	token := strings.TrimSpace(line)
 	if token == "" {
-		return "", "", errors.New("browser runtime token handoff was empty")
+		return "", errors.New("browser runtime token handoff was empty")
 	}
-	if len(token) > maxLineBytes {
-		return "", "", errors.New("browser runtime token handoff was too long")
+	if len(token) > maxTokenBytes {
+		return "", errors.New("browser runtime token handoff was too long")
 	}
-	if !withUIKey {
-		return token, "", nil
-	}
-	line, readErr = reader.ReadString('\n')
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return "", "", fmt.Errorf("read ui capability key: %w", readErr)
-	}
-	uiKey = strings.TrimSpace(line)
-	if !uicapability.ValidKey(uiKey) || len(uiKey) > maxLineBytes {
-		return "", "", errors.New("ui capability key handoff was missing or malformed")
-	}
-	return token, uiKey, nil
+	return token, nil
 }
 
 // ErrUnavailable indicates that no Electron browser runtime can accept a command.

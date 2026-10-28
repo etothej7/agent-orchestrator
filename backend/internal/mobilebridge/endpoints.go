@@ -18,9 +18,6 @@ const (
 // tunnelPort is the port a Cloudflare tunnel hostname is always reached on.
 const tunnelPort = 443
 
-// secureTailscalePort is where `tailscale serve --https=443` answers.
-const secureTailscalePort = 443
-
 // TunnelEndpoint is the current state of the managed cloudflared sidecar.
 // Ready is false until the connector has registered with an edge; a hostname
 // alone is not enough, because cloudflared prints one seconds before the
@@ -42,11 +39,7 @@ type Endpoint struct {
 type EndpointInputs struct {
 	LANHosts       []string
 	TailscaleHosts []string
-	// SecureTailscale is this node's MagicDNS name once `tailscale serve` is
-	// verified fronting the bound bridge port with a real certificate; "" when
-	// secure pairing is not active.
-	SecureTailscale string
-	Port            int
+	Port           int
 	// Tunnel is nil when remote access is off.
 	Tunnel *TunnelEndpoint
 }
@@ -63,19 +56,11 @@ func Endpoints(in EndpointInputs) []Endpoint {
 	if in.Port <= 0 {
 		return nil
 	}
-	// The TLS route leads, and replaces the raw 100.x addresses rather than
-	// joining them: iOS blocks that plaintext, and dropping it also stops the
-	// bridge being offered in cleartext over the tailnet.
-	if in.SecureTailscale != "" {
-		out = append(out, Endpoint{Kind: KindTailscale, Host: in.SecureTailscale, Port: secureTailscalePort, Secure: true})
-	}
 	for _, h := range in.LANHosts {
 		out = append(out, Endpoint{Kind: KindLAN, Host: h, Port: in.Port})
 	}
-	if in.SecureTailscale == "" {
-		for _, h := range in.TailscaleHosts {
-			out = append(out, Endpoint{Kind: KindTailscale, Host: h, Port: in.Port})
-		}
+	for _, h := range in.TailscaleHosts {
+		out = append(out, Endpoint{Kind: KindTailscale, Host: h, Port: in.Port})
 	}
 	if in.Tunnel != nil && in.Tunnel.Ready && in.Tunnel.Hostname != "" {
 		out = append(out, Endpoint{Kind: KindTunnel, Host: in.Tunnel.Hostname, Port: tunnelPort, Secure: true})

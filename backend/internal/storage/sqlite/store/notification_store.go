@@ -40,7 +40,6 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		Status:    rec.Status,
 		CreatedAt: rec.CreatedAt,
 		SourceKey: rec.SourceKey,
-		Purpose:   rec.Purpose,
 	})
 	if err != nil {
 		if isSQLiteUnique(err) {
@@ -397,10 +396,6 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 		CreatedAt:  row.CreatedAt,
 		ResolvedAt: timeFromNull(row.ResolvedAt),
 		SourceKey:  row.SourceKey,
-		Purpose:    row.Purpose,
-
-		Resolution:     row.Resolution,
-		ResolutionNote: row.ResolutionNote,
 	}
 }
 
@@ -410,41 +405,4 @@ func notificationsFromGen(rows []gen.Notification) []domain.NotificationRecord {
 		out = append(out, notificationFromGen(row))
 	}
 	return out
-}
-
-// ResolveCoordinatorAsk closes the one open coordinator question whose message is
-// askMessageID and returns the rows it changed for publication. It is idempotent:
-// a question already resolved or dismissed changes nothing.
-func (s *Store) ResolveCoordinatorAsk(ctx context.Context, askMessageID, resolution, note string, at time.Time) ([]domain.NotificationRecord, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	rows, err := s.qw.ResolveCoordinatorAsk(ctx, gen.ResolveCoordinatorAskParams{
-		ResolvedAt: nullTime(at), Resolution: resolution, ResolutionNote: note, SourceKey: "coordinator-message:" + askMessageID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("resolve coordinator ask %s: %w", askMessageID, err)
-	}
-	return notificationsFromGen(rows), nil
-}
-
-// CoordinatorAskMessage reports the conversation and purpose of a coordinator
-// message that addresses the human, or false when no such message exists.
-func (s *Store) CoordinatorAskMessage(ctx context.Context, messageID string) (conversationID, purpose string, found bool, err error) {
-	row, err := s.qr.GetCoordinatorHumanMessage(ctx, messageID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, fmt.Errorf("read coordinator message %s: %w", messageID, err)
-	}
-	return row.ConversationID, row.Purpose, true, nil
-}
-
-// CountUnresolvedCoordinatorAsks counts coordinator questions still waiting on Ed.
-func (s *Store) CountUnresolvedCoordinatorAsks(ctx context.Context) (int64, error) {
-	n, err := s.qr.CountUnresolvedCoordinatorAsks(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("count unresolved coordinator asks: %w", err)
-	}
-	return n, nil
 }

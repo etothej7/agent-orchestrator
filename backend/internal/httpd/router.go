@@ -22,7 +22,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
-	"github.com/aoagents/agent-orchestrator/backend/internal/terminalticket"
 )
 
 // ControlDeps carries the daemon-control hooks the router exposes, such as the
@@ -49,27 +48,16 @@ type ControlDeps struct {
 func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager, deps APIDeps, control ControlDeps) chi.Router {
 	log = loggerOrDefault(log)
 	deps = normalizeAPIDeps(deps, log)
-	// A daemon the app started (it holds the human-capability key) requires a ticket to attach a terminal; one it
-	// did not start keeps /mux as it was, since nothing there can be tied to the person.
-	if deps.TerminalTickets == nil && deps.UICapability.Enabled() {
-		deps.TerminalTickets = terminalticket.New(nil)
-	}
 	r := chi.NewRouter()
 	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
-	// Marks (never refuses) requests carrying a valid human-UI capability.
-	r.Use(humanCapabilityMiddleware(deps.UICapability, nil))
-	// Resolves the caller (human, a session, or nobody) for the handlers; refuses nothing.
-	r.Use(callerIdentityMiddleware(deps.SessionIdentity, log))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
-	// Deny by default: a mutating route with no class is refused; classes are enforced per mode.
-	r.Use(routeClassGuard(r, deps.RouteGuard, log))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are
@@ -78,13 +66,11 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.NotFound(notFoundJSON)
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
-	mountHealth(r, cfg, deps.UICapability != nil)
-	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins, deps.TerminalTickets)
+	mountHealth(r, cfg)
+	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
 	mountTelemetryIdentity(r, deps.TelemetryIdentity)
-	// The app's possession check for the daemon it spawned (see humanCapabilityProbeHandler).
-	r.Post("/internal/human-capability/probe", humanCapabilityProbeHandler(deps.UICapability))
 	mountMobile(r, deps.Mobile)
 	mountBrowserLive(r, deps.BrowserLive)
 	mountAwake(r, &controllers.AwakeController{Svc: deps.Awake})
@@ -107,12 +93,12 @@ func previewOriginMiddleware(sessions *controllers.SessionsController) func(http
 
 // mountHealth registers the liveness and readiness probes the Electron
 // supervisor polls before letting the renderer connect.
-func mountHealth(r chi.Router, cfg config.Config, humanCapability bool) {
+func mountHealth(r chi.Router, cfg config.Config) {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg, humanCapability))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg, humanCapability))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg))
 	})
 }
 
@@ -407,17 +393,11 @@ func localControlRequest(r *http.Request) bool {
 // daemonProbePayload is shared by /healthz and /readyz. Dependency
 // initialization happens before the server is constructed, so a listening
 // daemon is ready to answer requests.
-//
-// humanCapability says whether this daemon verifies the human-write capability, i.e. was started by
-// the desktop app with its per-launch key. The app's supervisor and an operator use it to tell a
-// daemon that enforces person-only routes from a scratch one that cannot. It is a flag only.
-func daemonProbePayload(status string, cfg config.Config, humanCapability bool) map[string]any {
+func daemonProbePayload(status string, cfg config.Config) map[string]any {
 	payload := map[string]any{
 		"status":  status,
 		"service": daemonmeta.ServiceName,
 		"pid":     os.Getpid(),
-
-		"humanCapability": humanCapability,
 	}
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		payload["executablePath"] = exe

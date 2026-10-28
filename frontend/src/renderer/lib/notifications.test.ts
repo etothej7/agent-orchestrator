@@ -44,8 +44,6 @@ import {
 	applyResolvedNotification,
 	clearAllNotifications,
 	createNotificationsTransport,
-	getBellUnreadCount,
-	isBellNotification,
 	deleteNotification,
 	fetchNotificationsPage,
 	getCachedNotifications,
@@ -172,7 +170,7 @@ describe("notification cache helpers", () => {
 		{ cursor: "", nextCursor: undefined, status: "unread" as const, unreadCount: 1 },
 	])("requests a bounded $status page", async ({ cursor, nextCursor, status, unreadCount }) => {
 		apiGetMock.mockResolvedValue({
-			data: { notifications: [notification()], nextCursor, unreadCount, unresolvedCount: 3, unresolvedAskCount: 0 },
+			data: { notifications: [notification()], nextCursor, unreadCount, unresolvedCount: 3 },
 		});
 
 		const controller = new AbortController();
@@ -180,7 +178,7 @@ describe("notification cache helpers", () => {
 			notifications: [notification()],
 			nextCursor,
 			unreadCount,
-			unresolvedCount: 3, unresolvedAskCount: 0,
+			unresolvedCount: 3,
 		});
 
 		expect(apiGetMock).toHaveBeenCalledWith("/api/v1/notifications", {
@@ -211,7 +209,7 @@ describe("notification cache helpers", () => {
 		mergeUnreadNotification(qc, notification());
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1 }],
 		});
 
 		markAllCachedNotificationsRead(qc, ["ntf_1"]);
@@ -232,7 +230,7 @@ describe("notification cache helpers", () => {
 				{
 					notifications: [notification({ id: "ntf_1" }), notification({ id: "ntf_2" })],
 					unreadCount: 2,
-					unresolvedCount: 2, unresolvedAskCount: 0,
+					unresolvedCount: 2,
 				},
 			],
 		});
@@ -265,7 +263,7 @@ describe("notification cache helpers", () => {
 					notifications: loaded,
 					nextCursor: "older",
 					unreadCount: NOTIFICATION_PAGE_SIZE + 1,
-					unresolvedCount: 0, unresolvedAskCount: 0,
+					unresolvedCount: 0,
 				},
 			],
 		});
@@ -305,7 +303,7 @@ describe("notification cache helpers", () => {
 					notifications: loaded,
 					nextCursor: "older-unread",
 					unreadCount: 1,
-					unresolvedCount: 0, unresolvedAskCount: 0,
+					unresolvedCount: 0,
 				},
 			],
 		});
@@ -316,12 +314,12 @@ describe("notification cache helpers", () => {
 					notifications: loaded.slice(0, 2),
 					nextCursor: "older",
 					unreadCount: 1,
-					unresolvedCount: 0, unresolvedAskCount: 0,
+					unresolvedCount: 0,
 				},
 				{
 					notifications: [notification({ id: "ntf_101", type: "pr_merged" })],
 					unreadCount: 1,
-					unresolvedCount: 0, unresolvedAskCount: 0,
+					unresolvedCount: 0,
 				},
 			],
 		});
@@ -343,8 +341,8 @@ describe("notification cache helpers", () => {
 		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
 			pageParams: ["", "older"],
 			pages: [
-				{ notifications: [notification({ id: "new" })], nextCursor: "older", unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 },
-				{ notifications: [notification({ id: "old" })], unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 },
+				{ notifications: [notification({ id: "new" })], nextCursor: "older", unreadCount: 2, unresolvedCount: 2 },
+				{ notifications: [notification({ id: "old" })], unreadCount: 2, unresolvedCount: 2 },
 			],
 		});
 
@@ -366,7 +364,7 @@ describe("notification cache helpers", () => {
 		);
 		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: firstPage, unreadCount: firstPage.length, unresolvedCount: firstPage.length, unresolvedAskCount: 0 }],
+			pages: [{ notifications: firstPage, unreadCount: firstPage.length, unresolvedCount: firstPage.length }],
 		});
 
 		mergeUnreadNotification(qc, notification({ id: "ntf_live" }));
@@ -388,7 +386,7 @@ describe("notification cache helpers", () => {
 		mergeUnreadNotification(qc, notification());
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1 }],
 		});
 
 		expect(applyResolvedNotification(qc, notification({ resolvedAt: "2026-06-16T11:00:00Z" }))).toBe(true);
@@ -411,7 +409,7 @@ describe("notification cache helpers", () => {
 		const qc = queryClient();
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [notification(), notification({ id: "ntf_2" })], unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [notification(), notification({ id: "ntf_2" })], unreadCount: 2, unresolvedCount: 2 }],
 		});
 		const resolved = notification({ resolvedAt: "2026-06-16T11:00:00Z" });
 
@@ -427,7 +425,7 @@ describe("notification cache helpers", () => {
 		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 			qc.setQueryData<NotificationsCache>(queryKey, {
 				pageParams: [""],
-				pages: [{ notifications: [other], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 0 }],
+				pages: [{ notifications: [other], unreadCount: 1, unresolvedCount: 1 }],
 			});
 		}
 
@@ -447,7 +445,7 @@ describe("notification cache helpers", () => {
 		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 			qc.setQueryData<NotificationsCache>(queryKey, {
 				pageParams: [""],
-				pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1, unresolvedAskCount: 0 }],
+				pages: [{ notifications: [notification()], unreadCount: 1, unresolvedCount: 1 }],
 			});
 		}
 
@@ -470,13 +468,13 @@ describe("notification cache helpers", () => {
 		const deleted = notification({ status: "read" });
 		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 }],
 		});
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: ["", "older"],
 			pages: [
-				{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2, unresolvedAskCount: 0 },
-				{ notifications: [deleted], unreadCount: 1, unresolvedCount: 2, unresolvedAskCount: 0 },
+				{ notifications: [notification({ id: "other" })], unreadCount: 1, unresolvedCount: 2 },
+				{ notifications: [deleted], unreadCount: 1, unresolvedCount: 2 },
 			],
 		});
 
@@ -484,7 +482,7 @@ describe("notification cache helpers", () => {
 		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0]?.unresolvedCount).toBe(2);
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [notification({ id: "replacement" })], unreadCount: 0, unresolvedCount: 1, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [notification({ id: "replacement" })], unreadCount: 0, unresolvedCount: 1 }],
 		});
 
 		expect(rollbackOptimisticNotificationDelete(qc, deleted.id)).toBe(true);
@@ -539,8 +537,8 @@ describe("notification cache helpers", () => {
 		qc.setQueryData<NotificationsCache>(unreadNotificationsQueryKey, {
 			pageParams: ["", "older"],
 			pages: [
-				{ notifications: [notification({ id: "new" })], nextCursor: "older", unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 },
-				{ notifications: [notification({ id: "old" })], unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 },
+				{ notifications: [notification({ id: "new" })], nextCursor: "older", unreadCount: 2, unresolvedCount: 2 },
+				{ notifications: [notification({ id: "old" })], unreadCount: 2, unresolvedCount: 2 },
 			],
 		});
 
@@ -586,48 +584,6 @@ describe("createNotificationsTransport", () => {
 		});
 	});
 
-	it("surfaces a coordinator ask live without any desktop alert, and holds it unresolved until AO resolves it", () => {
-		const qc = queryClient();
-		createNotificationsTransport(qc).connect();
-		const source = EventSourceStub.instances[0];
-
-		source.dispatch("notification_created", notification({
-			id: "ntf_ask",
-			sessionId: "coord-1",
-			projectId: "overall",
-			type: "coordinator_message",
-			purpose: "blocking_decision",
-			title: "Pick the migration order",
-			body: "Both plans touch billing.",
-			target: { kind: "session", sessionId: "coord-1" },
-		}));
-
-		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([
-			expect.objectContaining({ id: "ntf_ask", type: "coordinator_message", purpose: "blocking_decision" }),
-		]);
-		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0].unresolvedCount).toBe(1);
-		// It never reaches the OS: no banner, bounce or sound for a coordinator message.
-		expect(showNotificationMock).not.toHaveBeenCalled();
-
-		// Reading it (opening the panel) is not answering it; AO resolving it is.
-		source.dispatch("notification_resolved", notification({
-			id: "ntf_ask", sessionId: "coord-1", projectId: "overall", type: "coordinator_message", purpose: "blocking_decision",
-			title: "Pick the migration order", body: "Both plans touch billing.", resolvedAt: "2026-06-16T11:00:00Z",
-			target: { kind: "session", sessionId: "coord-1" },
-		}));
-		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0].unresolvedCount).toBe(0);
-	});
-
-	it.each(["verified_result", "stopped_work"] as const)("does not hold a coordinator %s as unresolved", (purpose) => {
-		const qc = queryClient();
-		createNotificationsTransport(qc).connect();
-		EventSourceStub.instances[0].dispatch("notification_created", notification({
-			id: `ntf_${purpose}`, sessionId: "coord-1", projectId: "overall", type: "coordinator_message", purpose,
-			target: { kind: "session", sessionId: "coord-1" },
-		}));
-		expect(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey)?.pages[0].unresolvedCount).toBe(0);
-	});
-
 	it("patches resolvedAt on live unread/all caches when AO closes the issue", () => {
 		const qc = queryClient();
 		createNotificationsTransport(qc).connect();
@@ -652,7 +608,7 @@ describe("createNotificationsTransport", () => {
 		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 			qc.setQueryData<NotificationsCache>(queryKey, {
 				pageParams: [""],
-				pages: [{ notifications: [other], unreadCount: 2, unresolvedCount: 2, unresolvedAskCount: 0 }],
+				pages: [{ notifications: [other], unreadCount: 2, unresolvedCount: 2 }],
 			});
 		}
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
@@ -729,7 +685,7 @@ describe("createNotificationsTransport", () => {
 		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 			qc.setQueryData<NotificationsCache>(queryKey, {
 				pageParams: [""],
-				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }],
+				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 			});
 		}
 		expect(getCachedNotifications(qc.getQueryData<NotificationsCache>(unreadNotificationsQueryKey))).toEqual([]);
@@ -795,7 +751,7 @@ describe("createNotificationsTransport", () => {
 		for (const queryKey of [unreadNotificationsQueryKey, recentNotificationsQueryKey] as const) {
 			qc.setQueryData<NotificationsCache>(queryKey, {
 				pageParams: [""],
-				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }],
+				pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 			});
 		}
 
@@ -813,7 +769,7 @@ describe("createNotificationsTransport", () => {
 		const qc = queryClient();
 		qc.setQueryData<NotificationsCache>(recentNotificationsQueryKey, {
 			pageParams: [""],
-			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }],
+			pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }],
 		});
 		expect(isNotificationsCacheFromClear(qc)).toBe(false);
 
@@ -841,7 +797,7 @@ describe("createNotificationsTransport", () => {
 							data: {
 								notifications: [notification({ id: "stale-fetch" })],
 								unreadCount: 1,
-								unresolvedCount: 1, unresolvedAskCount: 0,
+								unresolvedCount: 1,
 							},
 						});
 					});
@@ -958,28 +914,5 @@ describe("createNotificationsTransport", () => {
 		expect(first.closed).toBe(true);
 		expect(EventSourceStub.instances).toHaveLength(2);
 		expect(EventSourceStub.instances[1].url).toBe("http://127.0.0.1:4555/api/v1/notifications/stream");
-	});
-});
-
-describe("coordinator message helpers", () => {
-	const coordinator = (purpose: NonNullable<NotificationDTO["purpose"]>, status: "read" | "unread", over: Partial<NotificationDTO> = {}) =>
-		notification({ id: `${purpose}-${status}`, type: "coordinator_message", purpose, status, ...over });
-	const cache = (notifications: NotificationDTO[], unreadCount: number, unresolvedAskCount = 0): NotificationsCache => ({
-		pages: [{ notifications, unreadCount, unresolvedCount: unresolvedAskCount, unresolvedAskCount }],
-		pageParams: [""],
-	});
-
-	it("keeps coordinator messages out of the bell and its unread number", () => {
-		const items = [notification({ id: "agent", status: "unread" }), coordinator("verified_result", "unread"), coordinator("blocking_decision", "unread")];
-		expect(items.map(isBellNotification)).toEqual([true, false, false]);
-		expect(getBellUnreadCount(cache(items, 3))).toBe(1);
-		expect(getBellUnreadCount(cache([coordinator("stopped_work", "unread")], 1))).toBe(0);
-	});
-
-	it("lists only needs_input and ready_to_merge; routine progress and coordinator messages are dropped", () => {
-		const types = ["needs_input", "ready_to_merge", "review_changes_requested", "review_completed", "pr_merged", "pr_closed_unmerged", "coordinator_message"] as const;
-		expect(types.filter((type) => isBellNotification({ type }))).toEqual(["needs_input", "ready_to_merge"]);
-		const unread = types.map((type) => notification({ id: type, type, status: "unread" }));
-		expect(getBellUnreadCount(cache(unread, unread.length))).toBe(2);
 	});
 });

@@ -47,15 +47,6 @@ describe("checkDesktopVersionFloor", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("never fetches, prompts, opens a release or quits a personal build", async () => {
-    const { mod, fetchMock, dialog, shellMock, quit } = await importModule({ version: "0.14.5-ed.4", floor: { min: "99.0.0" } });
-    await mod.checkDesktopVersionFloor();
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(dialog.showMessageBox).not.toHaveBeenCalled();
-    expect(shellMock.openExternal).not.toHaveBeenCalled();
-    expect(quit).not.toHaveBeenCalled();
-  });
-
   it("does nothing when floor is empty", async () => {
     const { mod, dialog } = await importModule({ floor: { min: "", latest: "" } });
     await mod.checkDesktopVersionFloor();

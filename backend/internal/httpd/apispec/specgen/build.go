@@ -78,10 +78,6 @@ func Build() ([]byte, error) {
 			"Durable dashboard notifications"),
 		*(&openapi31.Tag{Name: "reports"}).WithDescription(
 			"Durable worker reports"),
-		*(&openapi31.Tag{Name: "terminals"}).WithDescription(
-			"Terminal attachment tickets"),
-		*(&openapi31.Tag{Name: "human-requests"}).WithDescription(
-			"Human-only actions an agent or terminal asked for and the person confirms in the app"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
 			"Token usage telemetry for AO sessions"),
 		*(&openapi31.Tag{Name: "push"}).WithDescription(
@@ -200,25 +196,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"DomainHarnessDefault":                                 "HarnessDefault",
 	"ControllersUpdateHarnessDefaultRequest":               "UpdateHarnessDefaultRequest",
 	"ControllersSettingsResponse":                          "SettingsResponse",
-	"ControllersWorkspaceResponse":                         "WorkspaceResponse",
-	"ControllersCreateEpicRequest":                         "CreateEpicRequest",
-	"ControllersCreateStoryRequest":                        "CreateStoryRequest",
-	"ControllersStoryIntakeRequest":                        "StoryIntakeRequest",
-	"ControllersStoryIntakeItem":                           "StoryIntakeItem",
-	"ControllersHumanDecisionRequest":                      "HumanDecisionRequest",
-	"ControllersHumanDecisionResponse":                     "HumanDecisionResponse",
-	"ControllersResolveHumanDecisionRequest":               "ResolveHumanDecisionRequest",
-	"ControllersStoryContinuationResponse":                 "StoryContinuationResponse",
-	"ControllersResumeStoryContinuationRequest":            "ResumeStoryContinuationRequest",
-	"ControllersStoryDetailResponse":                       "StoryDetailResponse",
-	"ControllersStoryCommandRequest":                       "StoryCommandRequest",
-	"ControllersStoryEventResponse":                        "StoryEventResponse",
-	"DomainEpic":                                           "Epic",
-	"DomainStory":                                          "Story",
-	"DomainStoryAssignment":                                "StoryAssignment",
-	"DomainStoryEvent":                                     "StoryEvent",
-	"DomainStoryReplyThread":                               "StoryReplyThread",
-	"DomainStoryReply":                                     "StoryReply",
 	"ControllersCoordinationResponse":                      "CoordinationResponse",
 	"ControllersCreateCoordinatorProjectRequest":           "CreateCoordinatorProjectRequest",
 	"ControllersCreateCoordinatorProjectResponse":          "CreateCoordinatorProjectResponse",
@@ -626,12 +603,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"MobilebridgeTunnelStatus":                 "MobileTunnelStatus",
 	"ControllersIdentityResponse":              "IdentityResponse",
 	"ControllersEndpointsResponse":             "EndpointsResponse",
-	"ControllersIdentityObservationsQuery":     "IdentityObservationsQuery",
-	"ControllersSessionIdentityView":           "SessionIdentityView",
-	"ControllersIdentityObservationsResponse":  "IdentityObservationsResponse",
-	"ControllersIdentityRouteObservation":      "IdentityRouteObservation",
-	"ControllersIdentitySessionObservation":    "IdentitySessionObservation",
-	"ControllersIdentityProcessObservation":    "IdentityProcessObservation",
 	"ControllersLinkPreviewQuery":              "LinkPreviewQuery",
 	"ControllersLinkPreviewResponse":           "LinkPreviewResponse",
 	"ControllersMobileDeviceResponse":          "MobileDeviceResponse",
@@ -768,8 +739,6 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
-	ops = append(ops, humanRequestOperations()...)
-	ops = append(ops, terminalTicketOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -784,7 +753,6 @@ func operations() []operation {
 	ops = append(ops, systemOperations()...)
 	ops = append(ops, identityOperations()...)
 	ops = append(ops, endpointsOperations()...)
-	ops = append(ops, identityObservationsOperations()...)
 	ops = append(ops, telemetryIdentityOperations()...)
 	ops = append(ops, linkPreviewOperations()...)
 	return ops
@@ -838,22 +806,6 @@ func endpointsOperations() []operation {
 			summary: "List the ways this daemon can currently be reached",
 			resps: []respUnit{
 				{http.StatusOK, controllers.EndpointsResponse{}},
-				{http.StatusNotImplemented, envelope.APIError{}},
-			},
-		},
-	}
-}
-
-// identityObservationsOperations declares the top-offenders view of calls that arrive without an
-// identity (ED8 observe mode). Loopback only: the LAN listener blocks the prefix.
-func identityObservationsOperations() []operation {
-	return []operation{
-		{
-			method: http.MethodGet, path: "/api/v1/identity/observations", id: "getIdentityObservations", tag: "identity",
-			summary:    "Top offenders among calls that arrived without an identity proof",
-			pathParams: []any{controllers.IdentityObservationsQuery{}},
-			resps: []respUnit{
-				{http.StatusOK, controllers.IdentityObservationsResponse{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
@@ -914,60 +866,6 @@ func reportOperations() []operation {
 			{http.StatusInternalServerError, envelope.APIError{}},
 			{http.StatusNotImplemented, envelope.APIError{}},
 		},
-	}}
-}
-
-// terminalTicketOperations declares the ticket the app asks for before attaching a terminal WebSocket.
-func terminalTicketOperations() []operation {
-	return []operation{{
-		method: http.MethodPost, path: "/api/v1/terminal-tickets", id: "issueTerminalTicket", tag: "terminals",
-		summary: "Get a single-use ticket to attach a terminal on /mux (requires the app's capability)",
-		resps: []respUnit{
-			{http.StatusCreated, controllers.TerminalTicketResponse{}},
-			{http.StatusForbidden, envelope.APIError{}},
-			{http.StatusTooManyRequests, envelope.APIError{}},
-			{http.StatusInternalServerError, envelope.APIError{}},
-			{http.StatusNotImplemented, envelope.APIError{}},
-		},
-	}}
-}
-
-// humanRequestOperations declares the pending human-request surface: anyone may file and read,
-// only the person (a verified app capability) may approve or deny.
-func humanRequestOperations() []operation {
-	errs := func(extra ...int) []respUnit {
-		out := []respUnit{{http.StatusBadRequest, envelope.APIError{}}}
-		for _, status := range extra {
-			out = append(out, respUnit{status, envelope.APIError{}})
-		}
-		return append(out, respUnit{http.StatusInternalServerError, envelope.APIError{}}, respUnit{http.StatusNotImplemented, envelope.APIError{}})
-	}
-	return []operation{{
-		method: http.MethodPost, path: "/api/v1/human-requests", id: "fileHumanRequest", tag: "human-requests",
-		summary: "Ask the person to confirm a human-only action",
-		reqBody: controllers.FileHumanRequestRequest{},
-		resps:   append([]respUnit{{http.StatusAccepted, controllers.FileHumanRequestResponse{}}}, errs(http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests)...),
-	}, {
-		method: http.MethodGet, path: "/api/v1/human-requests", id: "listHumanRequests", tag: "human-requests",
-		summary:    "List the human requests waiting for the person, or the most recent of any state",
-		pathParams: []any{controllers.ListHumanRequestsQuery{}},
-		resps:      append([]respUnit{{http.StatusOK, controllers.ListHumanRequestsResponse{}}}, errs()...),
-	}, {
-		method: http.MethodGet, path: "/api/v1/human-requests/{id}", id: "getHumanRequest", tag: "human-requests",
-		summary:    "Read one human request",
-		pathParams: []any{controllers.HumanRequestIDParam{}},
-		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusNotFound)...),
-	}, {
-		method: http.MethodPost, path: "/api/v1/human-requests/{id}/approve", id: "approveHumanRequest", tag: "human-requests",
-		summary:    "Approve a human request as the person (requires the app's capability)",
-		pathParams: []any{controllers.HumanRequestIDParam{}},
-		reqBody:    controllers.ApproveHumanRequestRequest{},
-		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusForbidden, http.StatusNotFound, http.StatusConflict)...),
-	}, {
-		method: http.MethodPost, path: "/api/v1/human-requests/{id}/deny", id: "denyHumanRequest", tag: "human-requests",
-		summary:    "Deny a human request as the person (requires the app's capability)",
-		pathParams: []any{controllers.HumanRequestIDParam{}},
-		resps:      append([]respUnit{{http.StatusOK, controllers.HumanRequestEnvelope{}}}, errs(http.StatusForbidden, http.StatusNotFound, http.StatusConflict)...),
 	}}
 }
 
@@ -1073,12 +971,6 @@ type conversationSnapshotQuery struct {
 	Limit          *int64 `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum combined messages and activities to return. Defaults to 200."`
 }
 
-type sessionConversationSnapshotQuery struct {
-	BeforeSequence *int64  `query:"beforeSequence,omitempty" minimum:"1" description:"Read items older than this conversation sequence. Omit for the newest page."`
-	Limit          *int64  `query:"limit,omitempty" minimum:"1" maximum:"500" description:"Maximum combined messages and activities to return. Defaults to 200."`
-	Audience       *string `query:"audience,omitempty" enum:"all" description:"Set to all to open the internal-activity view of the overall coordinator conversation: every stored message, turn and activity instead of what is shown to the human. Omit for the default view."`
-}
-
 func usageOperations() []operation {
 	return []operation{
 		{
@@ -1139,16 +1031,6 @@ func shellTerminalOperations() []operation {
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
-		{method: http.MethodGet, path: "/api/v1/workspace", id: "getWorkspace", tag: "workspace", summary: "getWorkspace", resps: []respUnit{{http.StatusOK, controllers.WorkspaceResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/workspace/epics", id: "createEpic", tag: "workspace", summary: "createEpic", reqBody: controllers.CreateEpicRequest{}, resps: []respUnit{{http.StatusOK, controllers.CreateEpicRequest{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/workspace/stories", id: "createStory", tag: "workspace", summary: "createStory", reqBody: controllers.CreateStoryRequest{}, resps: []respUnit{{http.StatusOK, controllers.CreateStoryRequest{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodGet, path: "/api/v1/workspace/stories/{storyId}", id: "getStory", tag: "workspace", summary: "getStory", pathParams: []any{controllers.StoryIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.StoryDetailResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/workspace/commands", id: "applyStoryCommand", tag: "workspace", summary: "applyStoryCommand", reqBody: controllers.StoryCommandRequest{}, resps: []respUnit{{http.StatusOK, controllers.StoryEventResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/workspace/intake", id: "adoptStoryIntake", tag: "workspace", summary: "Adopt one human request into an epic and stories atomically", reqBody: controllers.StoryIntakeRequest{}, resps: []respUnit{{http.StatusOK, controllers.StoryIntakeRequest{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/conversation/human-decisions", id: "recordHumanDecision", tag: "conversations", summary: "Record an explicit human blocking question", pathParams: []any{controllers.SessionIDParam{}}, reqBody: controllers.HumanDecisionRequest{}, resps: []respUnit{{http.StatusOK, controllers.HumanDecisionResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/conversation/human-decisions/resolve", id: "resolveHumanDecision", tag: "conversations", summary: "Record that the human answered one of the coordinator's questions", pathParams: []any{controllers.SessionIDParam{}}, reqBody: controllers.ResolveHumanDecisionRequest{}, resps: []respUnit{{http.StatusOK, controllers.HumanDecisionResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodGet, path: "/api/v1/workspace/stories/{storyId}/continuation", id: "getStoryContinuation", tag: "workspace", summary: "getStoryContinuation", pathParams: []any{controllers.StoryIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.StoryContinuationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPost, path: "/api/v1/workspace/stories/{storyId}/continuation", id: "resumeStoryContinuation", tag: "workspace", summary: "resumeStoryContinuation", pathParams: []any{controllers.StoryIDParam{}}, reqBody: controllers.ResumeStoryContinuationRequest{}, resps: []respUnit{{http.StatusOK, controllers.StoryContinuationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{
 			method: http.MethodGet, path: "/api/v1/settings/coordination", id: "getCoordination", tag: "settings",
 			summary: "Read the overall coordinator and repo-manager assignments",
@@ -1240,7 +1122,7 @@ func shellTerminalOperations() []operation {
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/conversation", id: "getSessionConversation", tag: "conversations",
 			summary:    "Read a chat session's durable conversation",
-			pathParams: []any{controllers.SessionIDParam{}, sessionConversationSnapshotQuery{}},
+			pathParams: []any{controllers.SessionIDParam{}, conversationSnapshotQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.ConversationSnapshotResponse{}},
 				{http.StatusNotFound, envelope.APIError{}},
@@ -3538,31 +3420,6 @@ func sessionOperations() []operation {
 			},
 		},
 		{
-			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/auto-resume", id: "getSessionAutoResume", tag: "sessions",
-			summary:    "Read a session's auto-resume policy",
-			pathParams: []any{controllers.SessionIDParam{}},
-			resps: []respUnit{
-				{http.StatusOK, controllers.SessionAutoResumeResponse{}},
-				{http.StatusNotFound, envelope.APIError{}},
-				{http.StatusInternalServerError, envelope.APIError{}},
-				{http.StatusNotImplemented, envelope.APIError{}},
-			},
-		},
-		{
-			method: http.MethodPut, path: "/api/v1/sessions/{sessionId}/auto-resume", id: "setSessionAutoResume", tag: "sessions",
-			summary:    "Set whether AO may resume, replace or tear down a session on its own",
-			pathParams: []any{controllers.SessionIDParam{}},
-			reqBody:    controllers.SetSessionAutoResumeRequest{},
-			resps: []respUnit{
-				{http.StatusOK, controllers.SessionAutoResumeResponse{}},
-				{http.StatusBadRequest, envelope.APIError{}},
-				{http.StatusForbidden, envelope.APIError{}},
-				{http.StatusNotFound, envelope.APIError{}},
-				{http.StatusInternalServerError, envelope.APIError{}},
-				{http.StatusNotImplemented, envelope.APIError{}},
-			},
-		},
-		{
 			method: http.MethodPost, path: "/api/v1/sessions/cleanup", id: "cleanupSessions", tag: "sessions",
 			summary:    "Clean up terminated session workspaces",
 			pathParams: []any{controllers.CleanupSessionsQuery{}},
@@ -3812,26 +3669,13 @@ func sessionOperations() []operation {
 func prOperations() []operation {
 	return []operation{
 		{
-			method: http.MethodGet, path: "/api/v1/prs/{id}", id: "getPR", tag: "prs",
-			summary:    "Read a tracked pull request's URL and head commit by number",
-			pathParams: []any{controllers.PRIDParam{}},
-			resps: []respUnit{
-				{http.StatusBadRequest, envelope.APIError{}},
-				{http.StatusOK, controllers.PRSummaryResponse{}},
-				{http.StatusNotFound, envelope.APIError{}},
-				{http.StatusNotImplemented, envelope.APIError{}},
-			},
-		},
-		{
 			method: http.MethodPost, path: "/api/v1/prs/{id}/merge", id: "mergePR", tag: "prs",
-			summary:    "Squash-merge a pull request (an agent on a project that has not allowed agent merges files a request for the person instead)",
+			summary:    "Squash-merge a pull request",
 			pathParams: []any{controllers.PRIDParam{}},
 			reqBody:    controllers.MergePRRequest{},
 			resps: []respUnit{
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusOK, controllers.MergePRResponse{}},
-				{http.StatusAccepted, controllers.FileHumanRequestResponse{}},
-				{http.StatusForbidden, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusUnprocessableEntity, envelope.APIError{}},

@@ -27,13 +27,11 @@ import (
 // loopback API, it is not cryptographic proof of worker authorship. Reports do
 // not mutate or derive authoritative session status.
 type CreateReportRequest struct {
-	StoryID        string                `json:"storyId,omitempty"`
-	ClientReportID string                `json:"clientReportId,omitempty"`
-	SessionID      string                `json:"sessionId"`
-	State          string                `json:"state,omitempty" enum:"checkpoint,needs_input,stuck,done"`
-	Note           string                `json:"note,omitempty" maxLength:"1000"`
-	Message        string                `json:"message,omitempty" maxLength:"1000"`
-	Outputs        []ReportOutputRequest `json:"outputs,omitempty"`
+	SessionID string                `json:"sessionId"`
+	State     string                `json:"state,omitempty" enum:"checkpoint,needs_input,stuck,done"`
+	Note      string                `json:"note,omitempty" maxLength:"1000"`
+	Message   string                `json:"message,omitempty" maxLength:"1000"`
+	Outputs   []ReportOutputRequest `json:"outputs,omitempty"`
 }
 
 // ReportOutputRequest is one ordered structured output reference.
@@ -58,22 +56,15 @@ type ReportOutputResponse struct {
 
 // ReportResponse is one persisted worker claim, independent of delivery state.
 type ReportResponse struct {
-	RecipientProjectID string                 `json:"recipientProjectId,omitempty"`
-	RecipientSessionID string                 `json:"recipientSessionId,omitempty"`
-	DeliveryState      string                 `json:"deliveryState,omitempty"`
-	DeliveryBatchID    string                 `json:"deliveryBatchId,omitempty"`
-	DeliveryAttempts   int64                  `json:"deliveryAttempts,omitempty"`
-	AcknowledgedAt     *time.Time             `json:"acknowledgedAt,omitempty"`
-	StoryID            string                 `json:"storyId,omitempty"`
-	ID                 string                 `json:"id"`
-	SessionID          string                 `json:"sessionId"`
-	ProjectID          string                 `json:"projectId"`
-	State              string                 `json:"state,omitempty"`
-	Note               string                 `json:"note,omitempty"`
-	Message            string                 `json:"message,omitempty"`
-	Outputs            []ReportOutputResponse `json:"outputs,omitempty"`
-	CreatedAt          time.Time              `json:"createdAt"`
-	RepeatCount        int64                  `json:"repeatCount"`
+	ID          string                 `json:"id"`
+	SessionID   string                 `json:"sessionId"`
+	ProjectID   string                 `json:"projectId"`
+	State       string                 `json:"state,omitempty"`
+	Note        string                 `json:"note,omitempty"`
+	Message     string                 `json:"message,omitempty"`
+	Outputs     []ReportOutputResponse `json:"outputs,omitempty"`
+	CreatedAt   time.Time              `json:"createdAt"`
+	RepeatCount int64                  `json:"repeatCount"`
 }
 
 // ListReportsResponse contains a project's ordered persisted reports.
@@ -483,21 +474,6 @@ type SessionView struct {
 	LastEventAt   time.Time             `json:"lastEventAt"`
 	PRs           []SessionPRFacts      `json:"prs"`
 	ArtifactFiles []SessionArtifactView `json:"artifactFiles,omitempty"`
-	// Identity says whether the daemon holds an identity proof for this live session, so the app
-	// can show a quiet "needs relaunch for identity" marker that clears once a relaunch issues
-	// one. Derived from the daemon's own record, never from the request; omitted for terminated
-	// sessions and when the daemon does not track identities.
-	Identity *SessionIdentityView `json:"identity,omitempty"`
-}
-
-// SessionIdentityView is a live session's identity-proof state.
-type SessionIdentityView struct {
-	// Proof is "present" when a live proof row exists for the session now, "missing" otherwise
-	// (a session that has not been relaunched since proofs arrived).
-	Proof string `json:"proof" enum:"present,missing"`
-	// AnonymousCalls counts calls since the daemon started that arrived without a proof and
-	// claimed to come from this session (a claim, never an identity); 0 when unknown.
-	AnonymousCalls int `json:"anonymousCalls"`
 }
 
 // SessionArtifactView is one inferred file artifact for a session.
@@ -942,27 +918,6 @@ type RenameSessionRequest struct {
 type SetSessionReviewerRequest struct {
 	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig domain.AgentConfig     `json:"agentConfig,omitempty"`
-}
-
-// SetSessionAutoResumeRequest is the body of PUT /api/v1/sessions/{sessionId}/auto-resume.
-type SetSessionAutoResumeRequest struct {
-	Policy domain.AutoResumePolicy `json:"policy" enum:"allowed,never" description:"allowed lets AO resume the session after a reboot; never protects it from automatic resume, replacement and teardown."`
-	// SenderSessionID is cooperative loopback attribution, not authentication.
-	// Empty is the human, who may set either value; the main coordinator may only
-	// set never; any other session is refused.
-	SenderSessionID domain.SessionID `json:"senderSessionId,omitempty"`
-	// ConfirmedInApp must be true to set allowed (lift a never protection). Only the AO
-	// app sets it, after the person confirmed in the app's own dialog; the CLI never does,
-	// so no command can lift a protection and a request to allow without it is refused
-	// (403 AUTO_RESUME_LIFT_REQUIRES_APP). It is a cooperative marker, not authentication:
-	// the daemon has no caller identity yet.
-	ConfirmedInApp bool `json:"confirmedInApp,omitempty"`
-}
-
-// SessionAutoResumeResponse reports the policy now in force.
-type SessionAutoResumeResponse struct {
-	SessionID domain.SessionID        `json:"sessionId"`
-	Policy    domain.AutoResumePolicy `json:"policy" enum:"allowed,never"`
 }
 
 // SetSessionAutoReviewRequest configures daemon-side review automation.
@@ -2268,28 +2223,15 @@ type NotificationTarget struct {
 
 // NotificationResponse is one stored notification returned by the API.
 type NotificationResponse struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	ProjectID string `json:"projectId"`
-	PRURL     string `json:"prUrl"`
-	Type      string `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged,review_completed,review_changes_requested,coordinator_message"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	// Purpose is set only for coordinator_message notifications: the ao ask
-	// purposes (scope_question, blocking_decision, completion_decision) or the
-	// ao tell purposes (verified_result, stopped_work).
-	Purpose string `json:"purpose,omitempty" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
-	// MessageID is the coordinator conversation message this notification announces
-	// (decision-<askId> for a question), set only for coordinator_message. It lets a
-	// chat block find its notification, and it is the value replyToAskId takes.
-	MessageID string `json:"messageId,omitempty"`
-	// Resolution says how a resolved coordinator question was closed: answered (the
-	// reply named it) or coordinator (the coordinator recorded it answered).
-	Resolution string `json:"resolution,omitempty" enum:"answered,coordinator"`
-	// ResolutionNote is the coordinator's optional note when it recorded the answer.
-	ResolutionNote string    `json:"resolutionNote,omitempty"`
-	Status         string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
-	CreatedAt      time.Time `json:"createdAt"`
+	ID        string    `json:"id"`
+	SessionID string    `json:"sessionId"`
+	ProjectID string    `json:"projectId"`
+	PRURL     string    `json:"prUrl"`
+	Type      string    `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged,review_completed,review_changes_requested"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	Status    string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
+	CreatedAt time.Time `json:"createdAt"`
 	// ResolvedAt is set by AO when the underlying issue goes away (the session
 	// received its input, the PR stopped waiting on a merge). Absent means the
 	// issue is still open. There is no user-facing action that sets it.
@@ -2303,10 +2245,6 @@ type ListNotificationsResponse struct {
 	NextCursor      string                 `json:"nextCursor,omitempty"`
 	UnreadCount     int                    `json:"unreadCount"`
 	UnresolvedCount int                    `json:"unresolvedCount"`
-	// UnresolvedAskCount is how many coordinator questions (ao ask) still wait on
-	// the human. It is included in unresolvedCount, and drops when the human
-	// replies in the coordinator conversation or dismisses the notification.
-	UnresolvedAskCount int `json:"unresolvedAskCount"`
 }
 
 // MarkNotificationReadRequest is the body of PATCH /api/v1/notifications/{id}.
@@ -2486,18 +2424,6 @@ type PRIDParam struct {
 	ID string `path:"id" description:"PR number."`
 }
 
-// PRSummaryResponse is the tracked pull request GET /api/v1/prs/{id} reads: the facts a merge names (its URL and
-// the head commit the daemon last saw), so a caller that only knows the number can ask to merge exactly that.
-type PRSummaryResponse struct {
-	PRNumber  int    `json:"prNumber"`
-	PRURL     string `json:"prUrl"`
-	HeadSHA   string `json:"headSha"`
-	State     string `json:"state" enum:"draft,open,merged,closed"`
-	Title     string `json:"title,omitempty"`
-	SessionID string `json:"sessionId"`
-	ProjectID string `json:"projectId,omitempty"`
-}
-
 // MergePRRequest is the body of POST /api/v1/prs/{id}/merge.
 type MergePRRequest struct {
 	PRURL           string `json:"prUrl" minLength:"1"`
@@ -2548,14 +2474,10 @@ type IdentityResponse struct {
 // phone honors OptedOut. This response carries no email.
 type TelemetryIdentityResponse struct {
 	DistinctID  string `json:"distinctId"`
+	InstallID   string `json:"installId,omitempty"`
 	CloudUserID string `json:"cloudUserId,omitempty"`
 	GitHubLogin string `json:"githubLogin,omitempty"`
 	OptedOut    bool   `json:"optedOut"`
-}
-
-// IdentityObservationsQuery bounds the top-offenders lists of GET /api/v1/identity/observations.
-type IdentityObservationsQuery struct {
-	Top int `query:"top" description:"How many of the most-called routes, claimed sessions and processes to return (default 20, at most 100)."`
 }
 
 // LinkPreviewQuery selects the external page to unfurl.
@@ -2643,9 +2565,7 @@ type SecurePairingStatus struct {
 	Host      string `json:"host"`      // MagicDNS name; "" when unknown
 	Port      int    `json:"port"`      // 443 when active, else 0
 	// Reason is a fixed enum the renderer maps to localized setup steps:
-	// no_cli, no_magicdns, no_certs, serve_failed, port_mismatch, clear_failed,
-	// foreign_serve (:443 holds a config AO does not own; left untouched),
-	// funnel_exposed (Tailscale Funnel is on for :443; AO refuses to use it).
+	// no_cli, no_magicdns, no_certs, serve_failed, port_mismatch, clear_failed.
 	// Empty when Available. Never a raw error string — those are untranslated
 	// and can leak paths.
 	Reason string `json:"reason"`
@@ -2756,10 +2676,6 @@ type SendConversationMessageRequest struct {
 	Excerpts        []ConversationExcerptReferenceRequest `json:"excerpts,omitempty"`
 	// Continuation marks the user's request to continue an interrupted task.
 	Continuation bool `json:"continuation,omitempty"`
-	// ReplyToAskID answers one open coordinator question (the Answer control): the
-	// id of the question's conversation message (decision-<id>) or the bare ask id.
-	// An unknown or non-question id is rejected before anything is sent.
-	ReplyToAskID string `json:"replyToAskId,omitempty"`
 }
 
 // ConversationExcerptReferenceRequest attaches verified selected transcript
@@ -2866,8 +2782,6 @@ type SteerConversationRequest struct {
 	// RecoverOnly reads the saved result for ClientMessageID without contacting the
 	// provider. Native image bytes need not be resent after a renderer restart.
 	RecoverOnly bool `json:"recoverOnly,omitempty"`
-	// ReplyToAskID answers one open coordinator question, as on a send.
-	ReplyToAskID string `json:"replyToAskId,omitempty"`
 }
 
 // SteerConversationResponse reports the turn the guidance joined.
@@ -3074,8 +2988,6 @@ type CompactConversationResponse struct {
 
 // ConversationTurnResponse is one request and the work that followed it.
 type ConversationTurnResponse struct {
-	// Audience is present only in the internal-activity view (audience=all).
-	Audience       string `json:"audience,omitempty" enum:"human,internal"`
 	ID             string `json:"id"`
 	State          string `json:"state" enum:"queued,running,completed,recovered,interrupted,failed,cancelled"`
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
@@ -3165,10 +3077,6 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	// Audience is human for what the default view shows and internal for what
-	// only the internal-activity view (audience=all) returns.
-	Audience          string                               `json:"audience,omitempty" enum:"human,internal"`
-	Purpose           string                               `json:"purpose,omitempty"`
 	Kind              string                               `json:"kind" enum:"message"`
 	ID                string                               `json:"id"`
 	TurnID            string                               `json:"turnId,omitempty"`
@@ -3195,8 +3103,6 @@ type ConversationMessageResponse struct {
 
 // ConversationActivityResponse is one non-message timeline entry.
 type ConversationActivityResponse struct {
-	// Audience is present only in the internal-activity view (audience=all).
-	Audience string `json:"audience,omitempty" enum:"human,internal"`
 	Kind     string `json:"kind" enum:"activity"`
 	ID       string `json:"id"`
 	TurnID   string `json:"turnId,omitempty"`
@@ -3665,7 +3571,6 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
-	StoryID       string                       `json:"storyId,omitempty"`
 	Harness       domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig   domain.AgentConfig           `json:"agentConfig,omitempty"`
 	InterfaceMode domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
@@ -3930,106 +3835,4 @@ type SwitchSessionAgentAccountRequest struct {
 	// StopTurn cancels a turn in progress, for an agent stuck waiting on the old
 	// account's limit. Otherwise the move waits for the turn to finish.
 	StopTurn bool `json:"stopTurn,omitempty"`
-}
-
-// WorkspaceResponse is the integrated epic/story board projection.
-type WorkspaceResponse struct {
-	Continuations []domain.StoryContinuationStatus `json:"continuations,omitempty"`
-	Epics         []domain.Epic                    `json:"epics"`
-	Stories       []domain.Story                   `json:"stories"`
-}
-
-// CreateEpicRequest creates a durable grouping.
-type CreateEpicRequest struct {
-	Epic domain.Epic `json:"epic"`
-}
-
-// CreateStoryRequest creates the scope and repository links.
-type CreateStoryRequest struct {
-	Story domain.Story `json:"story"`
-}
-
-// StoryDetailResponse contains public events, never provider payloads.
-type StoryDetailResponse struct {
-	Continuation *domain.StoryContinuationStatus `json:"continuation,omitempty"`
-	ReplyThreads []domain.StoryReplyThread       `json:"replyThreads"`
-	Reports      []ReportResponse                `json:"reports"`
-	Story        domain.Story                    `json:"story"`
-	Events       []domain.StoryEvent             `json:"events"`
-}
-
-// StoryIDParam selects one durable story.
-type StoryIDParam struct {
-	StoryID string `path:"storyId"`
-}
-
-// StoryCommandRequest is one explicit idempotent public action.
-type StoryCommandRequest struct {
-	QuestionEventID    string           `json:"questionEventId,omitempty"`
-	ReplyMessageID     string           `json:"replyMessageId,omitempty"`
-	Outcome            string           `json:"outcome"`
-	ID                 string           `json:"id"`
-	StoryID            string           `json:"storyId"`
-	Revision           int64            `json:"revision"`
-	Kind               string           `json:"kind"`
-	SenderSessionID    domain.SessionID `json:"senderSessionId"`
-	RecipientSessionID domain.SessionID `json:"recipientSessionId"`
-	Text               string           `json:"text"`
-	Reference          string           `json:"reference"`
-	Role               string           `json:"role"`
-}
-
-// StoryEventResponse returns the persisted decision or delivery receipt.
-type StoryEventResponse struct {
-	Event domain.StoryEvent `json:"event"`
-}
-
-// StoryContinuationResponse exposes durable progress and bounded retry decisions.
-type StoryContinuationResponse struct {
-	Continuation domain.StoryContinuationStatus `json:"continuation"`
-}
-
-// ResumeStoryContinuationRequest confirms one retry budget with a stable handle.
-type ResumeStoryContinuationRequest struct {
-	ID       string `json:"id"`
-	Revision int64  `json:"revision"`
-}
-
-// HumanDecisionRequest is an explicit Ed-required question, not ordinary prose.
-type HumanDecisionRequest struct {
-	StoryID    string `json:"storyId,omitempty"`
-	ID         string `json:"id"`
-	Purpose    string `json:"purpose" enum:"scope_question,blocking_decision,completion_decision,verified_result,stopped_work"`
-	Question   string `json:"question"`
-	WhyBlocked string `json:"whyBlocked,omitempty"`
-}
-
-// ResolveHumanDecisionRequest records that Ed answered one of the coordinator's questions.
-type ResolveHumanDecisionRequest struct {
-	// ID is the question's ask id (as given to ao ask --id) or its message id.
-	ID string `json:"id"`
-	// Note is an optional short note, for example a summary of the answer.
-	Note string `json:"note,omitempty"`
-}
-
-// HumanDecisionResponse identifies the durable human-facing decision.
-type HumanDecisionResponse struct {
-	ID string `json:"id"`
-}
-
-// StoryIntakeRequest atomically adopts one actual human request into canonical stories.
-type StoryIntakeRequest struct {
-	ID              string            `json:"id"`
-	SourceMessageID string            `json:"sourceMessageId"`
-	SessionID       domain.SessionID  `json:"sessionId"`
-	Epic            domain.Epic       `json:"epic"`
-	Stories         []StoryIntakeItem `json:"stories"`
-}
-
-// StoryIntakeItem declares a story and its authorized repositories.
-type StoryIntakeItem struct {
-	ID         string             `json:"id"`
-	Title      string             `json:"title"`
-	Scope      string             `json:"scope"`
-	ProjectIDs []domain.ProjectID `json:"projectIds"`
 }

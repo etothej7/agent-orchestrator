@@ -15,48 +15,33 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/presence"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
-	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
-	"github.com/aoagents/agent-orchestrator/backend/internal/terminalticket"
-	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
-	Awake             controllers.AwakeService
-	Agents            controllers.AgentCatalog
-	CodexAccounts     controllers.CodexAccountService
-	AgentAccounts     controllers.AgentAccountService
-	Projects          projectsvc.Manager
-	Sessions          controllers.SessionService
-	ArtifactVersions  controllers.ArtifactVersionService
-	Automations       controllers.AutomationService
-	DesktopWorkspaces controllers.DesktopWorkspaceService
-	Activity          controllers.ActivityRecorder
-	NativeSessions    ports.AgentNativeSessionResolver
-	UsageHooks        controllers.UsageHookRecorder
-	UsageSummary      controllers.UsageSummaryService
-	SessionMemory     controllers.SessionMemoryService
-	SessionSteps      controllers.SessionStepsReader
-	PRs               prsvc.ActionManager
-	// PRMergeStore lets the merge route decide who may merge (see controllers.PRsController). The daemon sets
-	// it; nil leaves merging as it was, which only tests and headless builds rely on.
-	PRMergeStore controllers.PRMergeStore
-	// SessionReproof tells an unproven live session (the caller's X-AO-Session-Claim) from a terminal on the merge
-	// route and asks for it to be relaunched at its next idle moment. May be nil.
-	SessionReproof controllers.SessionReproof
-	Reviews        reviewsvc.Manager
-	Notifications  controllers.NotificationService
-	Stories        *storysvc.Service
-	HumanRequests  controllers.HumanRequestService
-	// TerminalTickets issues the tickets the app's terminals attach /mux with. Set by the router when the
-	// daemon holds a human-capability key; nil means /mux stays open as before (no app started this daemon).
-	TerminalTickets    *terminalticket.Store
+	Awake              controllers.AwakeService
+	Agents             controllers.AgentCatalog
+	CodexAccounts      controllers.CodexAccountService
+	AgentAccounts      controllers.AgentAccountService
+	Projects           projectsvc.Manager
+	Sessions           controllers.SessionService
+	ArtifactVersions   controllers.ArtifactVersionService
+	Automations        controllers.AutomationService
+	DesktopWorkspaces  controllers.DesktopWorkspaceService
+	Activity           controllers.ActivityRecorder
+	NativeSessions     ports.AgentNativeSessionResolver
+	UsageHooks         controllers.UsageHookRecorder
+	UsageSummary       controllers.UsageSummaryService
+	SessionMemory      controllers.SessionMemoryService
+	SessionSteps       controllers.SessionStepsReader
+	PRs                prsvc.ActionManager
+	Reviews            reviewsvc.Manager
+	Notifications      controllers.NotificationService
 	Reports            controllers.ReportService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
@@ -83,27 +68,7 @@ type APIDeps struct {
 	PreviewServer            controllers.ManagedPreviewServer
 	SessionCapabilities      controllers.SessionCapabilityValidator
 	ShellPreviewCapabilities controllers.ShellPreviewCapabilityValidator
-	// UICapability verifies the per-request capability the desktop UI attaches to
-	// human-authored writes. Nil marks no request as human (a daemon the app did not
-	// start, so nothing human-only can be done through it).
-	UICapability *uicapability.Verifier
-	// ReviewRuns lets review submit bind a verified reviewer to its own active run.
-	ReviewRuns controllers.ReviewRunReader
-	// SessionProofs reports which sessions hold an identity proof (for the session views).
-	SessionProofs controllers.SessionIdentitySource
-	// IdentityObservations records the calls that reach the daemon without an identity, for the
-	// top-offenders view. Nil: the view reports not implemented.
-	IdentityObservations controllers.ObservationsSource
-	// IdentityMode reports the identity enforcement mode name for that view.
-	IdentityMode func() string
-	// SessionIdentity resolves a session's identity proof (X-AO-Session-Proof) into the
-	// session that holds it. Nil identifies no agent (embedders and tests without identity).
-	SessionIdentity *identity.Resolver
-	// RouteGuard configures the route-class guard (human-only enforcement, identity observe or
-	// enforce, the coordinator's proof state, re-proof and observations hooks). Zero value: no
-	// human enforcement, identity in observe mode.
-	RouteGuard   GuardConfig
-	SystemChecks controllers.SystemChecker
+	SystemChecks             controllers.SystemChecker
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.
@@ -158,42 +123,38 @@ func normalizeAPIDeps(deps APIDeps, log *slog.Logger) APIDeps {
 // API owns one controller per resource and is the single Register call the
 // router invokes to mount the /api/v1 surface.
 type API struct {
-	cfg             config.Config
-	deps            APIDeps
-	agents          *controllers.AgentsController
-	codexAccounts   *controllers.CodexAccountsController
-	agentAccounts   *controllers.AgentAccountsController
-	projects        *controllers.ProjectsController
-	sessions        *controllers.SessionsController
-	automations     *controllers.AutomationsController
-	desktop         *controllers.DesktopWorkspaceController
-	usage           *controllers.UsageController
-	prs             *controllers.PRsController
-	reviews         *controllers.ReviewsController
-	notifications   *controllers.NotificationsController
-	stories         *controllers.StoriesController
-	humanRequests   *controllers.HumanRequestsController
-	terminalTickets *controllers.TerminalTicketsController
-	reports         *controllers.ReportsController
-	push            *controllers.PushController
-	imports         *controllers.ImportController
-	fs              *controllers.FSController
-	shellTerms      *controllers.ShellTerminalsController
-	cues            *controllers.CuesController
-	conversations   *controllers.ConversationsController
-	settings        *controllers.SettingsController
-	dev             *controllers.DevController
-	browser         *controllers.BrowserController
-	system          *controllers.SystemController
-	identity        *controllers.IdentityController
-	endpoints       *controllers.EndpointsController
-	identityObs     *controllers.IdentityObservationsController
-	telemetryID     *controllers.TelemetryIdentityController
-	systemInstall   *controllers.SystemInstallController
-	agentAuth       *controllers.AgentAuthController
-	linkPreview     *controllers.LinkPreviewController
-	github          *controllers.GitHubController
-	events          *EventsController
+	cfg           config.Config
+	deps          APIDeps
+	agents        *controllers.AgentsController
+	codexAccounts *controllers.CodexAccountsController
+	agentAccounts *controllers.AgentAccountsController
+	projects      *controllers.ProjectsController
+	sessions      *controllers.SessionsController
+	automations   *controllers.AutomationsController
+	desktop       *controllers.DesktopWorkspaceController
+	usage         *controllers.UsageController
+	prs           *controllers.PRsController
+	reviews       *controllers.ReviewsController
+	notifications *controllers.NotificationsController
+	reports       *controllers.ReportsController
+	push          *controllers.PushController
+	imports       *controllers.ImportController
+	fs            *controllers.FSController
+	shellTerms    *controllers.ShellTerminalsController
+	cues          *controllers.CuesController
+	conversations *controllers.ConversationsController
+	settings      *controllers.SettingsController
+	dev           *controllers.DevController
+	browser       *controllers.BrowserController
+	system        *controllers.SystemController
+	identity      *controllers.IdentityController
+	endpoints     *controllers.EndpointsController
+	telemetryID   *controllers.TelemetryIdentityController
+	systemInstall *controllers.SystemInstallController
+	agentAuth     *controllers.AgentAuthController
+	linkPreview   *controllers.LinkPreviewController
+	github        *controllers.GitHubController
+	events        *EventsController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -218,7 +179,6 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 			Mgr: deps.Projects,
 		},
 		sessions: &controllers.SessionsController{
-			Identity:                 deps.SessionProofs,
 			Svc:                      deps.Sessions,
 			Projects:                 deps.Projects,
 			Activity:                 deps.Activity,
@@ -233,35 +193,31 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 			AgentBrowser:             agentBrowserURL(cfg.AgentBrowserURL),
 			AgentBrowserToken:        cfg.AgentBrowserToken,
 		},
-		automations:     &controllers.AutomationsController{Svc: deps.Automations},
-		desktop:         &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
-		usage:           &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
-		prs:             &controllers.PRsController{Svc: deps.PRs, Store: deps.PRMergeStore, Requests: deps.HumanRequests, Reproof: deps.SessionReproof},
-		reviews:         &controllers.ReviewsController{Svc: deps.Reviews, Runs: deps.ReviewRuns},
-		notifications:   &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
-		stories:         &controllers.StoriesController{Svc: deps.Stories},
-		humanRequests:   &controllers.HumanRequestsController{Svc: deps.HumanRequests},
-		terminalTickets: &controllers.TerminalTicketsController{Tickets: ticketIssuer(deps.TerminalTickets)},
-		reports:         &controllers.ReportsController{Svc: deps.Reports},
-		push:            &controllers.PushController{Registry: deps.Push},
-		imports:         &controllers.ImportController{Svc: deps.Import},
-		fs:              &controllers.FSController{Svc: deps.Directories},
-		shellTerms:      &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
-		cues:            &controllers.CuesController{Svc: deps.Cues},
-		conversations:   &controllers.ConversationsController{Svc: deps.Conversations, Renders: attachmentstore.New(cfg.DataDir)},
-		settings:        &controllers.SettingsController{Svc: deps.Settings, Coordination: deps.Coordination},
-		dev:             &controllers.DevController{Import: deps.DevImport},
-		browser:         &controllers.BrowserController{Svc: deps.Browser},
-		system:          &controllers.SystemController{Checks: deps.SystemChecks},
-		identity:        &controllers.IdentityController{HostID: deps.HostID},
-		endpoints:       &controllers.EndpointsController{Source: deps.Endpoints},
-		identityObs:     &controllers.IdentityObservationsController{Source: deps.IdentityObservations, Mode: deps.IdentityMode},
-		telemetryID:     &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
-		systemInstall:   &controllers.SystemInstallController{Installer: deps.Installer},
-		agentAuth:       &controllers.AgentAuthController{Svc: deps.AgentAuth},
-		linkPreview:     &controllers.LinkPreviewController{Svc: deps.LinkPreview},
-		github:          &controllers.GitHubController{Svc: deps.GitHub},
-		events:          &EventsController{Source: deps.CDC, Live: deps.Events},
+		automations:   &controllers.AutomationsController{Svc: deps.Automations},
+		desktop:       &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
+		usage:         &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory)},
+		prs:           &controllers.PRsController{Svc: deps.PRs},
+		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
+		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
+		reports:       &controllers.ReportsController{Svc: deps.Reports},
+		push:          &controllers.PushController{Registry: deps.Push},
+		imports:       &controllers.ImportController{Svc: deps.Import},
+		fs:            &controllers.FSController{Svc: deps.Directories},
+		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
+		cues:          &controllers.CuesController{Svc: deps.Cues},
+		conversations: &controllers.ConversationsController{Svc: deps.Conversations, Renders: attachmentstore.New(cfg.DataDir)},
+		settings:      &controllers.SettingsController{Svc: deps.Settings, Coordination: deps.Coordination},
+		dev:           &controllers.DevController{Import: deps.DevImport},
+		browser:       &controllers.BrowserController{Svc: deps.Browser},
+		system:        &controllers.SystemController{Checks: deps.SystemChecks},
+		identity:      &controllers.IdentityController{HostID: deps.HostID},
+		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
+		telemetryID:   &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},
+		systemInstall: &controllers.SystemInstallController{Installer: deps.Installer},
+		agentAuth:     &controllers.AgentAuthController{Svc: deps.AgentAuth},
+		linkPreview:   &controllers.LinkPreviewController{Svc: deps.LinkPreview},
+		github:        &controllers.GitHubController{Svc: deps.GitHub},
+		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
 
@@ -358,9 +314,6 @@ func (a *API) Register(root chi.Router) {
 			a.reviews.Register(r)
 			a.notifications.Register(r)
 			a.reports.Register(r)
-			a.stories.Register(r)
-			a.humanRequests.Register(r)
-			a.terminalTickets.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.fs.Register(r)
@@ -373,7 +326,6 @@ func (a *API) Register(root chi.Router) {
 			a.system.Register(r)
 			a.identity.Register(r)
 			a.endpoints.Register(r)
-			a.identityObs.Register(r)
 			a.telemetryID.Register(r)
 			a.systemInstall.Register(r)
 			a.agentAuth.Register(r)
@@ -460,12 +412,4 @@ func agentBrowserURL(raw string) *url.URL {
 		return nil
 	}
 	return u
-}
-
-// ticketIssuer avoids a typed-nil interface: a nil store means "no tickets" to the controller.
-func ticketIssuer(store *terminalticket.Store) controllers.TerminalTicketIssuer {
-	if store == nil {
-		return nil
-	}
-	return store
 }

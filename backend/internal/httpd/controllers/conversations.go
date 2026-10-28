@@ -123,8 +123,6 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/side-chats/launch/retire", c.retireSideLaunch)
 	r.Post("/sessions/{sessionId}/chat-view", c.setChatView)
 	r.Get("/sessions/{sessionId}/conversation", c.snapshot)
-	r.Post("/sessions/{sessionId}/conversation/human-decisions", c.humanDecision)
-	r.Post("/sessions/{sessionId}/conversation/human-decisions/resolve", c.resolveHumanDecision)
 	r.Post("/sessions/{sessionId}/conversation/messages", c.send)
 	r.Post("/sessions/{sessionId}/conversation/prompt-suggestion", c.promptSuggestion)
 	r.Post("/sessions/{sessionId}/conversation/approvals/{requestId}/resolve", c.resolve)
@@ -907,24 +905,8 @@ func (c *ConversationsController) snapshot(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	// audience=all opens the internal-activity view: the same conversation with
-	// the overall coordinator's human audience filter off. The default view is
-	// unchanged and nothing is removed from storage.
-	internal := false
-	switch audience := r.URL.Query().Get("audience"); audience {
-	case "":
-	case "all":
-		internal = true
-	default:
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CONVERSATION_AUDIENCE_INVALID", "audience must be omitted or all", nil)
-		return
-	}
 	var snapshot chatsvc.Snapshot
-	if full, ok := c.Svc.(interface {
-		InternalSnapshotPage(ctx context.Context, session domain.SessionID, beforeSequence, limit int64) (chatsvc.Snapshot, error)
-	}); ok && internal {
-		snapshot, err = full.InternalSnapshotPage(r.Context(), session, before, limit)
-	} else if paged, ok := c.Svc.(pagedConversationService); ok {
+	if paged, ok := c.Svc.(pagedConversationService); ok {
 		snapshot, err = paged.SnapshotPage(r.Context(), session, before, limit)
 	} else {
 		snapshot, err = c.Svc.Snapshot(r.Context(), session)
@@ -932,25 +914,6 @@ func (c *ConversationsController) snapshot(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeConversationError(w, r, err)
 		return
-	}
-	if gate, ok := c.Svc.(interface {
-		HumanSnapshot(context.Context, chatsvc.Snapshot) (chatsvc.Snapshot, error)
-	}); ok && !internal {
-		snapshot, err = gate.HumanSnapshot(r.Context(), snapshot)
-		if err != nil {
-			writeConversationError(w, r, err)
-			return
-		}
-	} else if marker, ok := c.Svc.(interface {
-		TagSnapshotAudience(context.Context, chatsvc.Snapshot) (chatsvc.Snapshot, error)
-	}); ok && internal {
-		// Every item says whether the default view would show it, so the client
-		// can mark internal activity without guessing.
-		snapshot, err = marker.TagSnapshotAudience(r.Context(), snapshot)
-		if err != nil {
-			writeConversationError(w, r, err)
-			return
-		}
 	}
 	response := conversationSnapshotResponse(snapshot)
 	// Excerpt verification is owned by AO, independently of provider capabilities.
@@ -984,17 +947,9 @@ func (c *ConversationsController) send(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", invalid.code, invalid.message, nil)
 		return
 	}
-	session := domain.SessionID(chi.URLParam(r, "sessionId"))
-	askID, proceed := c.askReplyTarget(w, r, session, req.ReplyToAskID)
-	if !proceed {
-		return
-	}
-	turn, err := c.Svc.Send(r.Context(), session, message)
+	turn, err := c.Svc.Send(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), message)
 	if err != nil {
 		writeConversationError(w, r, err)
-		return
-	}
-	if !c.finishAskReply(w, r, askID) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, sendConversationMessageResponse(turn))
@@ -1396,7 +1351,6 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, turn := range s.Turns {
 		out.Turns = append(out.Turns, ConversationTurnResponse{
-			Audience:        turn.Audience,
 			ID:              turn.ID,
 			State:           string(turn.State),
 			ProviderTurnID:  turn.ProviderTurnID,
@@ -1416,7 +1370,6 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, msg := range s.Messages {
 		message := ConversationMessageResponse{
-			Audience: msg.Audience, Purpose: msg.Purpose,
 			Kind:              "message",
 			ID:                msg.ID,
 			TurnID:            msg.TurnID,
@@ -1446,7 +1399,6 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, activity := range s.Activities {
 		out.Activities = append(out.Activities, ConversationActivityResponse{
-			Audience:       activity.Audience,
 			Kind:           "activity",
 			ID:             activity.ID,
 			TurnID:         activity.TurnID,
@@ -1817,24 +1769,4 @@ func (c *ConversationsController) createSideChat(w http.ResponseWriter, r *http.
 		return
 	}
 	envelope.WriteJSON(w, http.StatusCreated, CreateConversationSideChatResponse{Side: side})
-}
-
-func (c *ConversationsController) humanDecision(w http.ResponseWriter, r *http.Request) {
-	service, ok := c.Svc.(interface {
-		RecordHumanDecision(context.Context, domain.SessionID, chatsvc.HumanDecision) (string, error)
-	})
-	if !ok {
-		apispec.NotImplemented(w, r, r.Method, r.URL.Path)
-		return
-	}
-	var req HumanDecisionRequest
-	if !decodeConversationBody(w, r, &req) {
-		return
-	}
-	id, err := service.RecordHumanDecision(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), chatsvc.HumanDecision(req))
-	if err != nil {
-		envelope.WriteError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, HumanDecisionResponse{ID: id})
 }

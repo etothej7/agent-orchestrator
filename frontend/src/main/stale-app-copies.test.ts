@@ -360,7 +360,6 @@ describe("retireStaleMacAppCopies", () => {
 		{ isPackaged: false },
 		{ runningPath: DOWNLOADS_COPY },
 		{ runningVersion: "development" },
-		{ runningVersion: "0.14.5-ed.4" },
 	])("does not inspect files outside the maintained packaged macOS app: %o", async (override) => {
 		const options = runtime(override);
 		await retireStaleMacAppCopies(options);

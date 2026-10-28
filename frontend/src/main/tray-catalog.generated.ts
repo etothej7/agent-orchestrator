@@ -10,14 +10,7 @@ export const TRAY_MESSAGE_KEYS = [
 	"tray.show",
 	"tray.quit",
 	"zone.merge",
-	"zone.action",
-	"menu.quit",
-	"quit.keepRunning",
-	"quit.quitAnyway",
-	"quit.sleep.title",
-	"quit.sleep.body",
-	"quit.agents.title",
-	"quit.agents.body"
+	"zone.action"
 ] as const;
 
 export type TrayMessageKey = (typeof TRAY_MESSAGE_KEYS)[number];
@@ -32,14 +25,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Show Agent Orchestrator",
 		"tray.quit": "Quit AO Completely",
 		"zone.merge": "Ready to merge",
-		"zone.action": "Needs you",
-		"menu.quit": "Quit {{appName}}",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "Needs you"
 	},
 	"zh-CN": {
 		"tray.untitledSession": "未命名会话",
@@ -50,14 +36,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "显示 Agent Orchestrator",
 		"tray.quit": "完全退出 AO",
 		"zone.merge": "可合并",
-		"zone.action": "需要你处理",
-		"menu.quit": "退出{{appName}}",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "需要你处理"
 	},
 	"ja": {
 		"tray.untitledSession": "無題のセッション",
@@ -68,14 +47,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Agent Orchestrator を表示",
 		"tray.quit": "AO を完全に終了",
 		"zone.merge": "マージ準備完了",
-		"zone.action": "対応が必要",
-		"menu.quit": "{{appName}}を終了",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "対応が必要"
 	},
 	"ko": {
 		"tray.untitledSession": "제목 없는 세션",
@@ -86,14 +58,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Agent Orchestrator 표시",
 		"tray.quit": "AO 완전히 종료",
 		"zone.merge": "병합 준비 완료",
-		"zone.action": "조치 필요",
-		"menu.quit": "{{appName}} 종료",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "조치 필요"
 	},
 	"es": {
 		"tray.untitledSession": "Sesión sin título",
@@ -104,14 +69,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Mostrar Agent Orchestrator",
 		"tray.quit": "Salir completamente de AO",
 		"zone.merge": "Listo para fusionar",
-		"zone.action": "Te necesita",
-		"menu.quit": "Salir de {{appName}}",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "Te necesita"
 	},
 	"fr": {
 		"tray.untitledSession": "Session sans titre",
@@ -122,14 +80,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Afficher Agent Orchestrator",
 		"tray.quit": "Quitter complètement AO",
 		"zone.merge": "Prêt à fusionner",
-		"zone.action": "Action requise",
-		"menu.quit": "Quitter {{appName}}",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "Action requise"
 	},
 	"de": {
 		"tray.untitledSession": "Unbenannte Sitzung",
@@ -140,14 +91,7 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Agent Orchestrator anzeigen",
 		"tray.quit": "AO vollständig beenden",
 		"zone.merge": "Bereit zum Mergen",
-		"zone.action": "Ihre Aktion nötig",
-		"menu.quit": "{{appName}} beenden",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "Ihre Aktion nötig"
 	},
 	"pt-BR": {
 		"tray.untitledSession": "Sessão sem título",
@@ -158,13 +102,6 @@ export const trayCatalogs: Record<AppLocale, Record<TrayMessageKey, string>> = {
 		"tray.show": "Mostrar Agent Orchestrator",
 		"tray.quit": "Sair completamente do AO",
 		"zone.merge": "Pronto para merge",
-		"zone.action": "Precisa de você",
-		"menu.quit": "Encerrar {{appName}}",
-		"quit.keepRunning": "Keep Running",
-		"quit.quitAnyway": "Quit Anyway",
-		"quit.sleep.title": "Quitting will pause your agents",
-		"quit.sleep.body": "Agent Orchestrator is keeping your Mac awake with the lid closed. If you quit, your agents' work will pause until you reopen Agent Orchestrator. Your Mac will stay awake until you reopen it, open the lid, or 12 hours pass. We recommend keeping Agent Orchestrator running so your agents keep working.",
-		"quit.agents.title": "Your agents will pause",
-		"quit.agents.body": "Your agents are still working. If you quit, they will pause until you reopen Agent Orchestrator. We recommend keeping Agent Orchestrator running so your agents keep working."
+		"zone.action": "Precisa de você"
 	}
 };

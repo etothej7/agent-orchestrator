@@ -8,7 +8,7 @@ import type { AgentId } from "../../../lib/agent-options";
 import { apiErrorCode, getApiBaseUrl } from "../../../lib/api-client";
 import { baseUrlForHost } from "../../../lib/host-clients";
 import { useShellMaybe } from "../../../lib/shell-context";
-import { createDaemonTerminalMux } from "../../../lib/terminal-mux";
+import { createTerminalMux, muxUrlFromApiBase } from "../../../lib/terminal-mux";
 import { useResolvedTheme } from "../../../stores/ui-store";
 import { TerminalPane } from "../../TerminalPane";
 import { Button } from "../../ui/button";
@@ -47,7 +47,7 @@ export function HarnessAuthTerminalPanel({ workflow, hostId, onClose, onRetry, o
 	const createMux = useCallback(() => {
 		const base = hostId ? baseUrlForHost(hostId) : getApiBaseUrl();
 		if (hostId && !base) throw new Error("Remote host disconnected");
-		return createDaemonTerminalMux(base ?? "");
+		return createTerminalMux(muxUrlFromApiBase(base ?? ""));
 	}, [hostId]);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const inputRequestIdRef = useRef(0);

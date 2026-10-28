@@ -13,7 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
-	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -1081,56 +1080,6 @@ func TestRecoverImageSteerWithoutControllerNeverRedispatches(t *testing.T) {
 			}
 			if len(provider.steers()) != 1 {
 				t.Fatal("recovery redispatched guidance")
-			}
-		})
-	}
-}
-
-type uncertainFirstStoryMessenger struct {
-	svc  *chatsvc.Service
-	wrap bool
-}
-
-func (m *uncertainFirstStoryMessenger) SteerOrSend(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage, recoverOnly bool) (chatsvc.SteerOrSendResult, error) {
-	result, err := m.svc.SteerOrSend(ctx, id, msg, recoverOnly)
-	if m.wrap && errors.Is(err, chatsvc.ErrProviderRefused) {
-		m.wrap = false
-		return result, fmt.Errorf("%w: %w", chatsvc.ErrSteerDeliveryUncertain, err)
-	}
-	return result, err
-}
-
-func TestStoryDurableProviderRefusalReplaysWithoutRedispatch(t *testing.T) {
-	for _, wrapped := range []bool{false, true} {
-		t.Run(fmt.Sprintf("uncertain_wrapper_%t", wrapped), func(t *testing.T) {
-			ctx := context.Background()
-			h, provider := steerHarness(t)
-			provider.failWith(refusedError{msg: "definitive provider refusal"})
-			if err := h.st.CreateEpic(ctx, domain.Epic{ID: "e", Title: "TEST"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.st.CreateStory(ctx, domain.Story{ID: "s", EpicID: "e", Title: "TEST", Status: "backlog", Revision: 1, Assignments: []domain.StoryAssignment{{SessionID: testSession, Role: "manager"}}}); err != nil {
-				t.Fatal(err)
-			}
-			svc := &storysvc.Service{Store: h.st, Messenger: &uncertainFirstStoryMessenger{svc: h.svc, wrap: wrapped}}
-			cmd := storysvc.Command{ID: "refusal", StoryID: "s", Revision: 1, Kind: "message", RecipientSessionID: testSession, Text: "Public guidance"}
-			event, err := svc.Apply(ctx, cmd)
-			want := "failed"
-			if wrapped {
-				want = "uncertain"
-			}
-			if err == nil || event.Result != want {
-				t.Fatalf("first result=%+v %v", event, err)
-			}
-			if _, err := h.svc.RecoverSteer(ctx, testSession, "story-refusal"); !errors.Is(err, chatsvc.ErrProviderRefused) {
-				t.Fatalf("missing durable rejected receipt: %v", err)
-			}
-			event, err = svc.Apply(ctx, cmd)
-			if event.Result != "failed" {
-				t.Fatalf("same-key replay did not project definitive rejection: %+v %v", event, err)
-			}
-			if calls := provider.steers(); len(calls) != 1 {
-				t.Fatalf("provider redispatched rejected receipt %d times", len(calls))
 			}
 		})
 	}

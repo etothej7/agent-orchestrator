@@ -25,7 +25,6 @@ var ErrReportDeliveryModeUnsupported = errors.New("report delivery requires a se
 
 // DeliveryStore is the durable report scheduling and routing boundary.
 type DeliveryStore interface {
-	SetReportBatchRecipient(context.Context, domain.ProjectID, string, domain.SessionID) error
 	ListSessions(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListPendingReportSchedule(context.Context, int64) ([]domain.ReportRecord, error)
@@ -178,16 +177,6 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	if err != nil || len(batch.Reports) == 0 {
 		return err
 	}
-	if kept := c.dropSettledStoryReports(ctx, batch.Reports); len(kept) != len(batch.Reports) {
-		if len(kept) == 0 {
-			_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
-			return err
-		}
-		batch.Reports = kept
-	}
-	if err := c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target.ID); err != nil {
-		return c.release(ctx, batch, err)
-	}
 	if batch.hasState(domain.ReportStuck) {
 		interrupted := false
 		var nextInterrupt time.Time
@@ -215,38 +204,6 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	}
 	_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
 	return err
-}
-
-// dropSettledStoryReports omits worker completion and progress notes for an
-// autonomous story that is already done: the manager recorded that result in
-// the story, so waking it again only adds a redundant turn. Questions, stuck
-// reports, other stories and manager summaries are always delivered, and any
-// lookup failure delivers the report.
-func (c *Coordinator) dropSettledStoryReports(ctx context.Context, reports []domain.ReportRecord) []domain.ReportRecord {
-	stories, ok := c.store.(interface {
-		GetStory(context.Context, string) (domain.Story, error)
-	})
-	if !ok {
-		return reports
-	}
-	done := map[string]bool{}
-	kept := make([]domain.ReportRecord, 0, len(reports))
-	for _, report := range reports {
-		if report.StoryID == "" || report.RecipientProjectID != "" || (report.State != domain.ReportDone && report.State != domain.ReportCheckpoint) {
-			kept = append(kept, report)
-			continue
-		}
-		settled, seen := done[report.StoryID]
-		if !seen {
-			story, err := stories.GetStory(ctx, report.StoryID)
-			settled = err == nil && story.Autonomous && story.Status == "done"
-			done[report.StoryID] = settled
-		}
-		if !settled {
-			kept = append(kept, report)
-		}
-	}
-	return kept
 }
 
 func (c *Coordinator) activeOrchestrator(ctx context.Context, projectID domain.ProjectID) (domain.SessionRecord, bool, error) {
@@ -303,22 +260,7 @@ func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.Sessio
 	if rec.Kind != domain.KindOrchestrator || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
 		return PreparedBatch{}, nil
 	}
-	batch, err := c.claim(ctx, rec.ProjectID)
-	if err == nil && len(batch.Reports) > 0 {
-		if kept := c.dropSettledStoryReports(ctx, batch.Reports); len(kept) != len(batch.Reports) {
-			if len(kept) == 0 {
-				// Nothing left worth adding to the message: settle the claim.
-				_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
-				return PreparedBatch{}, err
-			}
-			batch.Reports = kept
-		}
-		err = c.store.SetReportBatchRecipient(ctx, batch.ProjectID, batch.Token, target)
-		if err != nil {
-			return PreparedBatch{}, c.release(ctx, batch, err)
-		}
-	}
-	return batch, err
+	return c.claim(ctx, rec.ProjectID)
 }
 
 // AcceptPiggyback acknowledges reports after the combined user turn is accepted.
@@ -387,9 +329,6 @@ func (b PreparedBatch) Render() string {
 		fmt.Fprintf(&out, "\n\n[%s] %s", state, reportSessionLink(report))
 		if report.RepeatCount > 1 {
 			fmt.Fprintf(&out, " (repeated %d times)", report.RepeatCount)
-		}
-		if report.StoryID != "" {
-			fmt.Fprintf(&out, " [story %s]", report.StoryID)
 		}
 		text := report.Note
 		if text == "" {
@@ -462,7 +401,6 @@ func coalesceReports(in []domain.ReportRecord) []domain.ReportRecord {
 func reportKey(report domain.ReportRecord) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%s", report.SessionID, report.State, report.Note, report.Message)
-	fmt.Fprintf(&b, "\x00%s", report.StoryID)
 	for _, output := range report.Outputs {
 		fmt.Fprintf(&b, "\x00%s\x00%s\x00%s", output.Kind, output.Reference, output.Label)
 	}

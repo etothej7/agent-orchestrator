@@ -524,43 +524,6 @@ UPDATE conversations
 SET active_branch_id = ?, updated_at = ?
 WHERE id = ?;
 
--- Intake a session queued before its fresh provider existed belongs to that
--- provider's scope, so native replay can correlate it after a restart. Rows
--- move with their turn; dispatched or rolled-back turns stay where they are.
--- name: MoveUndispatchedTurnMessagesToBranch :exec
-UPDATE conversation_messages
-SET branch_id = sqlc.arg(branch_id)
-WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
-  AND conversation_messages.branch_id = sqlc.arg(parent_branch_id)
-  AND conversation_messages.turn_id IN (
-      SELECT intake.id FROM conversation_turns AS intake
-      WHERE intake.conversation_id = sqlc.arg(conversation_id)
-        AND intake.branch_id = sqlc.arg(parent_branch_id)
-        AND intake.handled_by_session_id = sqlc.arg(session_id)
-        AND intake.state = 'queued' AND intake.provider_turn_id = '' AND intake.rolled_back_at IS NULL
-  );
-
--- name: MoveUndispatchedTurnActivitiesToBranch :exec
-UPDATE conversation_activities
-SET branch_id = sqlc.arg(branch_id)
-WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
-  AND conversation_activities.branch_id = sqlc.arg(parent_branch_id)
-  AND conversation_activities.turn_id IN (
-      SELECT intake.id FROM conversation_turns AS intake
-      WHERE intake.conversation_id = sqlc.arg(conversation_id)
-        AND intake.branch_id = sqlc.arg(parent_branch_id)
-        AND intake.handled_by_session_id = sqlc.arg(session_id)
-        AND intake.state = 'queued' AND intake.provider_turn_id = '' AND intake.rolled_back_at IS NULL
-  );
-
--- name: MoveUndispatchedTurnsToBranch :exec
-UPDATE conversation_turns
-SET branch_id = sqlc.arg(branch_id)
-WHERE conversation_id = sqlc.arg(conversation_id)
-  AND branch_id = sqlc.arg(parent_branch_id)
-  AND handled_by_session_id = sqlc.arg(session_id)
-  AND state = 'queued' AND provider_turn_id = '' AND rolled_back_at IS NULL;
-
 -- The next turn's provider choices. Written only when the user picks something,
 -- so NULL keeps meaning "use whatever the conversation was started with".
 -- NOTE: keep these comments ASCII. sqlc locates its star-expansion edits by byte
@@ -871,14 +834,6 @@ WHERE conversation_id = ? AND provider_turn_id = ?;
 -- name: SelectConversationTurnByID :one
 SELECT * FROM conversation_turns WHERE id = ? LIMIT 1;
 
--- A session's chat activity only turns active once its provider starts the
--- turn, so queued or running turns are the earlier durable busy signal.
--- name: SessionHasOpenConversationTurn :one
-SELECT EXISTS (
-    SELECT 1 FROM conversation_turns
-    WHERE handled_by_session_id = ? AND state IN ('queued', 'running')
-);
-
 -- Turns are read in full, rolled-back ones included. They carry rolled_back_at, so
 -- a client can report how much an undo discarded instead of watching the timeline
 -- silently shrink.
@@ -971,26 +926,10 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     FROM active_path AS path
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
-),
-human_turns AS (
-    -- First human anchor per turn: a human_request message or Ed's own steer.
-    SELECT turn_id, MIN(seq) AS first_seq FROM (
-        SELECT u.turn_id AS turn_id, u.sequence AS seq FROM coordinator_human_messages hu
-        JOIN conversation_messages u ON u.id = hu.message_id
-        WHERE hu.purpose = 'human_request' AND u.role = 'user' AND u.turn_id IS NOT NULL
-          AND u.conversation_id = sqlc.arg(conversation_id)
-        UNION ALL
-        SELECT s.turn_id, s.sequence FROM conversation_activities s
-        WHERE s.conversation_id = sqlc.arg(conversation_id) AND s.turn_id IS NOT NULL AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
-    ) GROUP BY turn_id
 )
 SELECT conversation_turns.* FROM conversation_turns
 JOIN active_path AS path ON path.branch_id = conversation_turns.branch_id
 WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
-  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0
-       OR EXISTS (SELECT 1 FROM conversation_messages m JOIN coordinator_human_messages h ON h.message_id=m.id WHERE m.conversation_id=conversation_turns.conversation_id AND m.turn_id=conversation_turns.id)
-       OR EXISTS (SELECT 1 FROM human_turns ht WHERE ht.turn_id=conversation_turns.id)
-       OR EXISTS (SELECT 1 FROM conversation_activities a WHERE a.turn_id=conversation_turns.id AND a.kind IN ('approval','user_input') AND a.status='pending'))
   AND conversation_turns.promoted_to_turn_id IS NULL
   AND (path.max_sequence IS NULL OR EXISTS (
       SELECT 1 FROM conversation_messages AS lineage_message
@@ -1361,26 +1300,10 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     FROM active_path AS path
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NOT NULL
-),
-human_turns AS (
-    -- First human anchor per turn: a human_request message or Ed's own steer.
-    SELECT turn_id, MIN(seq) AS first_seq FROM (
-        SELECT u.turn_id AS turn_id, u.sequence AS seq FROM coordinator_human_messages hu
-        JOIN conversation_messages u ON u.id = hu.message_id
-        WHERE hu.purpose = 'human_request' AND u.role = 'user' AND u.turn_id IS NOT NULL
-          AND u.conversation_id = sqlc.arg(conversation_id)
-        UNION ALL
-        SELECT s.turn_id, s.sequence FROM conversation_activities s
-        WHERE s.conversation_id = sqlc.arg(conversation_id) AND s.turn_id IS NOT NULL AND s.kind='system' AND json_valid(s.detail_json) AND json_extract(s.detail_json,'$.event')='steer' AND json_extract(s.detail_json,'$.origin')='human' AND COALESCE(json_extract(s.detail_json,'$.senderSessionId'),'')=''
-    ) GROUP BY turn_id
 )
 SELECT conversation_messages.* FROM conversation_messages
 JOIN active_path AS path ON path.branch_id = conversation_messages.branch_id
 WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
-  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0
-       OR EXISTS (SELECT 1 FROM coordinator_human_messages h WHERE h.message_id=conversation_messages.id)
-       OR (conversation_messages.role='assistant' AND EXISTS (
-           SELECT 1 FROM human_turns ht WHERE ht.turn_id=conversation_messages.turn_id AND ht.first_seq < conversation_messages.sequence)))
   AND conversation_messages.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_messages.sequence <= path.max_sequence)
   AND (conversation_messages.turn_id IS NULL OR conversation_messages.turn_id NOT IN (
@@ -1624,8 +1547,6 @@ WITH RECURSIVE active_path(branch_id, max_sequence) AS (
 SELECT conversation_activities.* FROM conversation_activities
 JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
 WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
-  AND (CAST(sqlc.arg(human_only) AS INTEGER)=0 OR (conversation_activities.kind IN ('approval','user_input') AND conversation_activities.status='pending')
-       OR (conversation_activities.kind='system' AND json_valid(conversation_activities.detail_json) AND json_extract(conversation_activities.detail_json,'$.event')='steer' AND json_extract(conversation_activities.detail_json,'$.origin')='human' AND COALESCE(json_extract(conversation_activities.detail_json,'$.senderSessionId'),'')=''))
   AND conversation_activities.sequence < sqlc.arg(before_sequence)
   AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
   AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (

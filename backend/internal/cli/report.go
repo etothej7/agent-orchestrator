@@ -13,7 +13,6 @@ import (
 )
 
 type reportOptions struct {
-	story, clientReportID               string
 	note                                string
 	noteSet                             bool
 	artifacts, prsCreated, prsReviewed  []string
@@ -26,13 +25,11 @@ type reportAPIOutput struct {
 }
 
 type reportAPIRequest struct {
-	StoryID        string            `json:"storyId,omitempty"`
-	ClientReportID string            `json:"clientReportId,omitempty"`
-	SessionID      string            `json:"sessionId"`
-	State          string            `json:"state,omitempty"`
-	Note           string            `json:"note,omitempty"`
-	Message        string            `json:"message,omitempty"`
-	Outputs        []reportAPIOutput `json:"outputs,omitempty"`
+	SessionID string            `json:"sessionId"`
+	State     string            `json:"state,omitempty"`
+	Note      string            `json:"note,omitempty"`
+	Message   string            `json:"message,omitempty"`
+	Outputs   []reportAPIOutput `json:"outputs,omitempty"`
 }
 
 type reportAPIResponse struct {
@@ -46,8 +43,6 @@ func newReportCommand(ctx *commandContext) *cobra.Command {
 		return ctx.report(cmd.Context(), args, o)
 	}}
 	f := cmd.Flags()
-	f.StringVar(&o.story, "story", "", "Explicit story id (never inferred from session)")
-	f.StringVar(&o.clientReportID, "client-report-id", "", "Stable retry key for a story report")
 	f.StringVar(&o.note, "note", "", "Structured state note")
 	f.StringArrayVar(&o.artifacts, "artifact", nil, "Attach an opaque artifact reference (repeatable)")
 	f.StringArrayVar(&o.prsCreated, "pr-created", nil, "Attach a created GitHub PR or GitLab MR (repeatable)")
@@ -60,9 +55,6 @@ func newReportCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) report(ctx context.Context, args []string, o reportOptions) error {
-	if (o.story == "") != (o.clientReportID == "") {
-		return usageError{errors.New("--story and --client-report-id are required together")}
-	}
 	states := []struct {
 		on    bool
 		state domain.ReportState
@@ -129,7 +121,7 @@ func (c *commandContext) report(ctx context.Context, args []string, o reportOpti
 		apiOutputs[i] = reportAPIOutput{Kind: string(output.Kind), Reference: output.Reference}
 	}
 	var response reportAPIResponse
-	return c.postJSON(ctx, "reports", reportAPIRequest{StoryID: o.story, ClientReportID: o.clientReportID, SessionID: sessionID, State: string(selected), Note: o.note, Message: message, Outputs: apiOutputs}, &response)
+	return c.postJSON(ctx, "reports", reportAPIRequest{SessionID: sessionID, State: string(selected), Note: o.note, Message: message, Outputs: apiOutputs}, &response)
 }
 
 func legacyReportStatus(value string) bool {

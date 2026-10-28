@@ -360,8 +360,7 @@ func (c *Controller) rejectSteerBeforeDispatch(
 // exactly that window, the second after someone realizes they sent the wrong thing,
 // so the same helper Interrupt uses to ride out that gap is used here.
 //
-// AO durably reserves a receipt before provider I/O, using the caller retry
-// handle when supplied or an internal ID for legacy keyless calls. A
+// AO durably reserves a caller-supplied client handle before provider I/O. A
 // definitive refusal settles that handle as rejected, success records the visible
 // activity and accepted result atomically, and any gap between those facts remains
 // uncertain forever. That fail-closed state is what makes a retry unable to deliver
@@ -374,19 +373,13 @@ func (c *Controller) Steer(ctx context.Context, msg ports.ChatUserMessage) (Stee
 
 func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage) (SteerResult, error) {
 
-	// Legacy callers need the same durable pre-dispatch ambiguity fence even
-	// without a retry handle. Do not alter their provider message/client key.
-	deliveryID := msg.ClientMessageID
-	if deliveryID == "" {
-		deliveryID = "unkeyed-steer-" + c.newID()
-	}
 	requestJSON, err := encodeSteerDeliveryRequest(msg)
 	if err != nil {
 		return SteerResult{}, err
 	}
 	if msg.ClientMessageID != "" {
 		delivery, found, loadErr := c.store.SteerDelivery(
-			ctx, c.conversation.ID, deliveryID)
+			ctx, c.conversation.ID, msg.ClientMessageID)
 		if loadErr != nil {
 			return SteerResult{}, fmt.Errorf("%w: load prior result: %w",
 				ErrSteerDeliveryUncertain, loadErr)
@@ -396,7 +389,7 @@ func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage)
 		}
 	}
 	if c.handoffActive() {
-		return c.rejectSteerBeforeDispatch(ctx, deliveryID, requestJSON,
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
 			durableSteerRefusal{
 				kind:           domain.ConversationSteerRejectedInterfaceTransition,
 				cause:          ErrControllerHandoff,
@@ -406,7 +399,7 @@ func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage)
 	}
 	steerer, ok := c.steerer()
 	if !ok {
-		return c.rejectSteerBeforeDispatch(ctx, deliveryID, requestJSON,
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
 			durableSteerRefusal{
 				kind:           domain.ConversationSteerRejectedUnsupported,
 				cause:          ErrSteerUnsupported,
@@ -420,7 +413,7 @@ func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage)
 		// Nothing is in flight. Reusing the interrupt sentinel keeps one code for
 		// "there is no turn" across every command that needs one; the endpoint says
 		// what to do about it.
-		return c.rejectSteerBeforeDispatch(ctx, deliveryID, requestJSON,
+		return c.rejectSteerBeforeDispatch(ctx, msg.ClientMessageID, requestJSON,
 			durableSteerRefusal{
 				kind:           domain.ConversationSteerRejectedNoActiveTurn,
 				cause:          ErrNoActiveTurn,
@@ -428,35 +421,52 @@ func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage)
 				persistContext: "persist no-active-turn refusal",
 			})
 	}
-	delivery, created, reserveErr := c.store.ReserveSteerDelivery(
-		ctx, c.conversation.ID, deliveryID, requestJSON, c.now())
-	if reserveErr != nil {
-		return SteerResult{}, fmt.Errorf("%w: reserve delivery: %w",
-			ErrSteerDeliveryUncertain, reserveErr)
-	}
-	if !created {
-		return replaySteerDelivery(delivery, requestJSON)
+	if msg.ClientMessageID != "" {
+		delivery, created, reserveErr := c.store.ReserveSteerDelivery(
+			ctx, c.conversation.ID, msg.ClientMessageID, requestJSON, c.now())
+		if reserveErr != nil {
+			return SteerResult{}, fmt.Errorf("%w: reserve delivery: %w",
+				ErrSteerDeliveryUncertain, reserveErr)
+		}
+		if !created {
+			return replaySteerDelivery(delivery, requestJSON)
+		}
 	}
 
 	ref, err := steerer.Steer(ctx, turn, msg)
 	if err != nil {
 		kind, definitive, refused := classifySteerRejection(err)
 		if definitive {
-			if rejectErr := c.store.RejectSteerDelivery(
-				context.WithoutCancel(ctx), c.conversation.ID, deliveryID,
-				kind, refused.Error(), c.now()); rejectErr != nil {
-				return SteerResult{}, fmt.Errorf("%w: persist provider refusal: %w",
-					ErrSteerDeliveryUncertain, rejectErr)
+			if msg.ClientMessageID != "" {
+				if rejectErr := c.store.RejectSteerDelivery(
+					context.WithoutCancel(ctx), c.conversation.ID, msg.ClientMessageID,
+					kind, refused.Error(), c.now()); rejectErr != nil {
+					return SteerResult{}, fmt.Errorf("%w: persist provider refusal: %w",
+						ErrSteerDeliveryUncertain, rejectErr)
+				}
 			}
 			return SteerResult{}, refused
 		}
 		wrapped := classify(fmt.Errorf("steer turn %s: %w", turn, err))
-		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, wrapped)
+		if msg.ClientMessageID != "" {
+			return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, wrapped)
+		}
+		return SteerResult{}, wrapped
 	}
 
 	landed := ref.ProviderTurnID
 	if landed == "" {
 		landed = turn
+	}
+	if msg.ClientMessageID == "" {
+		activityID, recordErr := c.recordSteer(ctx, landed, msg)
+		if recordErr != nil {
+			// The guidance IS with the agent; only AO's record of it failed. Reporting the
+			// error rather than swallowing it, because a steer the timeline never mentions
+			// is a conversation whose next answer has no visible cause.
+			return SteerResult{ProviderTurnID: landed}, recordErr
+		}
+		return SteerResult{ProviderTurnID: landed, ActivityID: activityID}, nil
 	}
 	activityID := c.newID()
 	activity, err := makeSteerActivity(activityID, msg, "")
@@ -464,7 +474,7 @@ func (c *Controller) steerLocked(ctx context.Context, msg ports.ChatUserMessage)
 		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, err)
 	}
 	if err := c.store.CompleteSteerDelivery(
-		context.WithoutCancel(ctx), c.conversation.ID, deliveryID,
+		context.WithoutCancel(ctx), c.conversation.ID, msg.ClientMessageID,
 		landed, activity, c.now()); err != nil {
 		return SteerResult{}, fmt.Errorf("%w: %w", ErrSteerDeliveryUncertain, err)
 	}
@@ -645,7 +655,7 @@ func classifySteerRejection(
 	return "", false, classified
 }
 
-// makeSteerActivity describes guidance for the turn that took it.
+// recordSteer writes the guidance onto the turn that took it.
 //
 // It lands as an activity, not as a message, and the reason is structural rather
 // than semantic: a steer joins a turn that is already running, and AO's only durable
@@ -661,6 +671,23 @@ func classifySteerRejection(
 // `userMessage` item on the turn, but the driver drops those: AO records what the
 // user said when it accepts the request, and re-emitting the echo would show it
 // twice.
+func (c *Controller) recordSteer(
+	ctx context.Context,
+	providerTurnID string,
+	msg ports.ChatUserMessage,
+) (string, error) {
+	id := c.newID()
+	activity, err := makeSteerActivity(id, msg, "")
+	if err != nil {
+		return "", err
+	}
+	if err := c.store.UpsertActivity(ctx, c.conversation.ID, providerTurnID,
+		activity, c.now()); err != nil {
+		return "", fmt.Errorf("record steer on turn %s: %w", providerTurnID, err)
+	}
+	return id, nil
+}
+
 func makeSteerActivity(
 	id string,
 	msg ports.ChatUserMessage,

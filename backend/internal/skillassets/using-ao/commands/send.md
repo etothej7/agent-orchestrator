@@ -61,12 +61,3 @@ ao send --session mer-3 --message "The issue is in session_manager.go line 142, 
 # Steer the active Chat turn, or start a normal turn if it is idle
 ao send --session mer-3 --steer --message "Use the daemon DTO as the source of truth."
 ```
-
-## Story exchanges
-
-Use `ao send --story <id> --session <recipient> --client-message-id <stable-key>
---message <text>` for an explicit story exchange. Sender and recipient must be
-assigned to the story (the configured overall coordinator may direct it).
-Story sends reuse Chat steer-or-send. Reuse the exact key and payload to retry;
-do not infer context from the target session. Acceptance is recorded separately
-from the agent's result.

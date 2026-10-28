@@ -10,9 +10,7 @@ export type BrowserImportCookieSupportReason =
 	| "firefox-plaintext"
 	| "safari-plaintext"
 	| "chromium-encryption-partial"
-	| "chromium-encryption-unsupported"
-	// This build keeps browser logins in files, not the Mac keychain: cookies are not imported (history still is).
-	| "cookies-stored-without-keychain";
+	| "chromium-encryption-unsupported";
 
 export type BrowserImportSourceProfile = {
 	id: string;
@@ -63,8 +61,7 @@ export type BrowserImportWarningCode =
 	| "expired-cookies-skipped"
 	| "invalid-cookies-skipped"
 	| "cookie-attributes-defaulted"
-	| "cookie-write-failed"
-	| "cookies-refused";
+	| "cookie-write-failed";
 
 export type BrowserImportWarning = {
 	code: BrowserImportWarningCode;

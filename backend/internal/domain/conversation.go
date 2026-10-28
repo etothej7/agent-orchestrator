@@ -530,8 +530,6 @@ type ConversationSettings struct {
 // ConversationTurn is one user or automation request plus the agent work it
 // caused.
 type ConversationTurn struct {
-	// Audience is set only in the overall coordinator's internal-activity view.
-	Audience       string `json:"audience,omitempty"`
 	ID             string `json:"id"`
 	ConversationID string `json:"conversationId"`
 	// BranchID is durable provider-lineage metadata used to keep opaque turn ids
@@ -648,8 +646,6 @@ type RetryPrompt struct {
 
 // ConversationMessage is one readable block of text.
 type ConversationMessage struct {
-	Audience string `json:"audience,omitempty"`
-	Purpose  string `json:"purpose,omitempty"`
 	// InteractionAt is an internal write fact, independent of history CreatedAt.
 	InteractionAt  time.Time `json:"-"`
 	ID             string    `json:"id"`
@@ -691,8 +687,6 @@ type ConversationMessage struct {
 // ConversationActivity is one non-message timeline entry: a command, a diff, a
 // plan, an approval request, a usage report, an error.
 type ConversationActivity struct {
-	// Audience is set only in the overall coordinator's internal-activity view.
-	Audience       string         `json:"audience,omitempty"`
 	ID             string         `json:"id"`
 	ConversationID string         `json:"conversationId"`
 	TurnID         string         `json:"turnId,omitempty"`

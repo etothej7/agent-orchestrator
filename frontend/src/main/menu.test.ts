@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { APP_LOCALES, type AppLocale } from "../shared/ui-locale";
 import {
 	buildLinuxAppMenuTemplate,
 	buildMacAppMenuTemplate,
@@ -117,43 +116,4 @@ describe("buildMacAppMenuTemplate", () => {
 		);
 	});
 
-});
-
-describe("the macOS app menu's Quit", () => {
-	const items = (template: ReturnType<typeof buildMacAppMenuTemplate>) =>
-		(template[0]?.submenu as Array<{ role?: string; label?: string; accelerator?: string; click?: () => void }>) ?? [];
-
-	it("is our own item (not role quit) so a user quit can be told from an AppleEvent quit", () => {
-		const onQuit = vi.fn();
-		const quit = items(buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit })).find((item) => item.label?.startsWith("Quit"));
-		expect(quit?.label).toBe("Quit Agent Orchestrator");
-		expect(quit?.accelerator).toBe("Command+Q");
-		expect(quit?.role).toBeUndefined();
-		quit?.click?.();
-		expect(onQuit).toHaveBeenCalledTimes(1);
-	});
-
-	it("labels the item in each UI locale, with the app name in the locale's own word order", () => {
-		const labelFor = (locale: AppLocale) =>
-			items(buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit: vi.fn(), locale })).find((item) => item.accelerator === "Command+Q")?.label;
-		expect(labelFor("en")).toBe("Quit Agent Orchestrator");
-		expect(labelFor("de")).toBe("Agent Orchestrator beenden");
-		expect(labelFor("es")).toBe("Salir de Agent Orchestrator");
-		expect(labelFor("fr")).toBe("Quitter Agent Orchestrator");
-		expect(labelFor("ja")).toBe("Agent Orchestratorを終了");
-		expect(labelFor("ko")).toBe("Agent Orchestrator 종료");
-		expect(labelFor("pt-BR")).toBe("Encerrar Agent Orchestrator");
-		expect(labelFor("zh-CN")).toBe("退出Agent Orchestrator");
-		for (const locale of APP_LOCALES) expect(labelFor(locale)).toContain("Agent Orchestrator");
-	});
-
-	it("has no role: quit anywhere, and keeps the standard app-menu items", () => {
-		const template = buildMacAppMenuTemplate(vi.fn(), { appName: "Agent Orchestrator", onQuit: vi.fn() });
-		expect(JSON.stringify(template)).not.toContain('"role":"quit"');
-		expect(items(template).map((item) => item.role).filter(Boolean)).toEqual(["about", "services", "hide", "hideOthers", "unhide"]);
-	});
-
-	it("falls back to Electron's standard app menu when no quit handler is given", () => {
-		expect(buildMacAppMenuTemplate(vi.fn())[0]).toEqual({ role: "appMenu" });
-	});
 });

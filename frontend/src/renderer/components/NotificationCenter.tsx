@@ -35,8 +35,7 @@ import { LOCAL_HOST, parseRefKey, refKey, sessionUiKey, type HostId } from "../l
 import {
 	createNotificationsTransport,
 	getCachedNotifications,
-	getBellUnreadCount,
-	isBellNotification,
+	getCachedUnreadCount,
 	isNotificationsCacheFromClear,
 	keepLatestNotificationsPage,
 	type NotificationDTO,
@@ -52,8 +51,6 @@ import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { HumanRequestCards } from "./HumanRequestCards";
-import { useHumanRequestsQuery } from "../hooks/useHumanRequests";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useCloudNotifications } from "../hooks/useCloudNotifications";
 import { clearRemoteNotification, clearRemoteNotifications, connectRemoteNotificationStreams, fetchRemoteNotificationsPage, markRemoteNotificationsRead, remoteNotificationsQueryKey, useRemoteNotificationHosts } from "../hooks/useRemoteNotifications";
@@ -187,9 +184,9 @@ function NotificationWorkspaceState({
 export function NotificationRuntime() {
 	const queryClient = useQueryClient();
 	const { openPrimary } = useNotificationTargetNavigation();
-	// Keeps the unread cache the live stream merges into warm for the bell.
-	useNotificationsQuery("unread");
+	const unreadQuery = useNotificationsQuery("unread");
 	const remoteUnread = useRemoteNotificationHosts("unread");
+	const unreadCount = getCachedUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount;
 	const params = useParams({ strict: false }) as { hostId?: string; sessionId?: string };
 	const routeRef = useRef(params);
 	routeRef.current = params;
@@ -213,8 +210,12 @@ export function NotificationRuntime() {
 	);
 	useEffect(() => connectRemoteNotificationStreams(queryClient), [queryClient]);
 
-	// The launcher/Dock badge is owned by the desktop's main process (main/coordinator-badge.ts):
-	// with the window closed there is no renderer to keep it right.
+	// Keep the OS launcher badge in sync here rather than in NotificationCenter:
+	// NotificationRuntime is always mounted in the shell, whereas the notification
+	// bell is absent from the Linux topbar and only mounts on the sessions board.
+	useEffect(() => {
+		void aoBridge.notifications.setBadge(unreadCount);
+	}, [unreadCount]);
 
 	useEffect(() => {
 		for (const host of remoteUnread.hosts) {
@@ -226,7 +227,7 @@ export function NotificationRuntime() {
 				continue; // Reconnecting to a host must not replay its existing inbox.
 			}
 			for (const notification of host.data.notifications) {
-				if (previousIds.has(notification.id) || notification.type === "coordinator_message") continue;
+				if (previousIds.has(notification.id)) continue;
 				const id = `${REMOTE_NOTIFICATION_PREFIX}${notificationKey(host.hostId, notification.id)}`;
 				shownRemoteNotifications.current.set(id, notification);
 				if (shownRemoteNotifications.current.size > 256) {
@@ -241,7 +242,6 @@ export function NotificationRuntime() {
 					title: `${host.label}: ${notification.title}`,
 					body: notification.body || undefined,
 					type: notification.type,
-					purpose: notification.purpose,
 					watched,
 				});
 			}
@@ -309,13 +309,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const clearAll = useClearAllNotificationsMutation();
 	const clearOne = useClearNotificationMutation();
 	const restoreSession = useRestoreSession();
-	const notifications = useMemo(() => getCachedNotifications(allQuery.data).filter(isBellNotification), [allQuery.data]);
+	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
 	const remoteItems = useMemo(() => remoteAll.hosts.map((host) => {
 		const seen = new Set<string>();
 		const unread = remoteUnread.hosts.find((item) => item.hostId === host.hostId)?.data;
 		const items = [unread, host.data, ...(remoteOlderPages[host.hostId] ?? [])].filter((page): page is NotificationsPage => Boolean(page)).flatMap((page) =>
 			page.notifications.filter((notification) => {
-				if (seen.has(notification.id) || !isBellNotification(notification)) return false;
+				if (seen.has(notification.id)) return false;
 				seen.add(notification.id);
 				return true;
 			}),
@@ -352,9 +352,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 			hostId: host.hostId, label: host.label, notification,
 		}))),
 	].sort((a, b) => b.notification.createdAt.localeCompare(a.notification.createdAt)), [notifications, remoteItems]);
-	// Requests waiting for the person's approval are the most actionable thing the bell can hold, so they count.
-	const humanRequests = useHumanRequestsQuery().data ?? [];
-	const unreadCount = getBellUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0) + humanRequests.length;
+	const unreadCount = getCachedUnreadCount(unreadQuery.data) + remoteUnread.totalUnreadCount + (cloudAll.data?.unreadCount ?? 0);
 	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const navigateToSession = useNavigateToSession();
@@ -373,9 +371,7 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const visibleUnreadIds = useMemo(() => {
 		const ids = new Set<string>();
 		for (const item of getCachedNotifications(unreadQuery.data)) {
-			// Dropped routine types are still acknowledged on open so the server count does not drift;
-			// coordinator messages are not: only seeing them in the chat clears them.
-			if (item.status === "unread" && item.type !== "coordinator_message") ids.add(item.id);
+			if (item.status === "unread") ids.add(item.id);
 		}
 		for (const item of notifications) {
 			if (item.status === "unread") ids.add(item.id);
@@ -709,7 +705,6 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 						{t("notify.clearAll")}
 					</button>
 				</div>
-				<HumanRequestCards requests={humanRequests} />
 				<NotificationWorkspaceState>
 					{({ retryWorkspace, loadedRemoteSessionIds, sessionMeta, sessionsReady, terminatedIds, workspaceError }) => (
 						<>

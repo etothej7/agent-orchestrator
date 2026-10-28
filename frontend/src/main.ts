@@ -1,5 +1,3 @@
-import { isPersonalBuild } from "./main/personal-build";
-import { shouldUseMockKeychain } from "./main/keychain-policy";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
@@ -54,7 +52,7 @@ import { createEditorHandoff } from "./main/editor-handoff";
 import { discoverMacTerminalApps } from "./main/mac-terminal-apps";
 import { registerCliLinkIpc } from "./main/cli-link-ipc";
 import { launchCommand } from "./main/launch-command";
-import { blocksRenderFrameNavigation } from "./main/render-frame-guard";
+import { blocksRenderFrameNavigation, cloudArtifactPrefix } from "./main/render-frame-guard";
 import { agentPageRequestAllowed } from "./main/render-frame-network";
 import { isAgentPageUrl } from "./shared/agent-page-url";
 import {
@@ -78,7 +76,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { type DaemonLaunchSpec, bundledDaemonIdentityError, resolveDaemonLaunch } from "./shared/daemon-launch";
-import { createListenPortScanner, defaultRunFilePath, parseRunFile, runFileIsFromThisSpawn } from "./shared/daemon-discovery";
+import { createListenPortScanner, defaultRunFilePath, parseRunFile } from "./shared/daemon-discovery";
 import type { DaemonStatus } from "./shared/daemon-status";
 import { canonicalPathInside, sameCanonicalPath } from "./shared/path-identity";
 import {
@@ -95,17 +93,9 @@ import {
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
-import { createKeyPossessionCheck } from "./main/human-capability-probe";
-import { daemonStdinHandoff, installHumanCapabilityHeaders, newHumanCapabilityKey, originOf, ownDaemonOrigin, UI_CAPABILITY_STDIN_ENV } from "./main/human-capability";
-import { forbiddenDebugSwitch } from "./main/packaged-hardening";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
-import { createDesktopQuitController, shouldQuitWhenAllWindowsClosed } from "./main/desktop-quit";
+import { createDesktopQuitController } from "./main/desktop-quit";
 import { createQuitHoldOver } from "./main/quit-holdover";
-import { createUpdateQuitWatcher } from "./main/update-quit-request";
-import { createRelaunchNet } from "./main/update-relaunch-net";
-import { aoWindowFocused } from "./main/app-focus";
-import { createCoordinatorBadge } from "./main/coordinator-badge";
-import { confirmFullQuit } from "./main/quit-confirmation";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -137,7 +127,7 @@ import {
 	resolveWindowsShellProbe,
 	type ShellRunner,
 } from "./shared/shell-env";
-import { DEFAULT_LOCALE, DEFAULT_TERMINAL_SHELL, type AppLocale, type TerminalShellPreference } from "./shared/ui-locale";
+import { DEFAULT_TERMINAL_SHELL, type TerminalShellPreference } from "./shared/ui-locale";
 import { bundledTmuxBinaryPath, stableBundledTmuxBinaryPath } from "./shared/bundled-tmux";
 import {
 	handleCloudDeepLink,
@@ -170,9 +160,9 @@ import { createBrowserCloseDiagnostics } from "./main/browser-close-diagnostics"
 import { createBrowserProfileStore } from "./main/browser-profile-store";
 import { BrowserHistoryStore } from "./main/browser-history-store";
 import { createAwakeDownloadBridge } from "./main/awake-download-bridge";
-import { createDaemonSignedFetch } from "./main/daemon-signed-fetch";
 import { createBrowserDownloadManager } from "./main/browser-download-manager";
 import { registerChatImageIpc } from "./main/chat-image-ipc";
+import { registerCloudArtifactIpc } from "./main/cloud-artifact-ipc";
 import { BrowserProfileImportService } from "./main/browser-profile-import";
 import {
 	registerBrowserProfileIpc,
@@ -204,7 +194,13 @@ import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readProcessStartMs } from "./main/process-start";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
-import { planNotificationSignals, shouldReplaceBounce, toastSilent } from "./main/notification-signals";
+import {
+	dockBounceType,
+	shouldReplaceBounce,
+	shouldSignalAttention,
+	shouldToast,
+	toastSilent,
+} from "./main/notification-signals";
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
@@ -241,10 +237,8 @@ const APP_DISPLAY_NAME = "Orchestrator.inc";
 app.setName(app.isPackaged ? APP_DISPLAY_NAME : `${APP_DISPLAY_NAME} (dev)`);
 
 // An unsigned dev Electron is a new app to macOS whenever its binary changes, so Chromium's
-// keychain-held cookie key prompted on start. Dev runs and personal (ad-hoc signed) builds use the stand-in key,
-// so no build ever reads, writes or asks about the keychain; stock packaged builds keep it. See
-// main/keychain-policy.ts and frontend/docs/personal-build-keychain.md. Must run before app ready.
-if (shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform })) {
+// keychain-held cookie key prompted on start. Dev runs use the stand-in key; packaged keep the keychain.
+if (!app.isPackaged && process.platform === "darwin") {
 	app.commandLine.appendSwitch("use-mock-keychain");
 }
 
@@ -302,7 +296,7 @@ const ANALYTICS_OPT_OUT_CHANGED_CHANNEL = "telemetry:analyticsOptOutChanged";
 const telemetryIdentity = new TelemetryIdentityController(
 	desktopDataDir,
 	() => (daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null),
-	(url, init) => daemonSignedFetch(String(url), init),
+	(url, init) => globalThis.fetch(url, init),
 	(optedOut) => {
 		for (const shellContents of trustedShellWebContents.values()) if (!shellContents.isDestroyed()) shellContents.send(ANALYTICS_OPT_OUT_CHANGED_CHANNEL, optedOut);
 	},
@@ -367,15 +361,13 @@ let daemonStartEpoch = 0;
 let daemonStatus: DaemonStatus = { state: "stopped" };
 const awakeDownloads = createAwakeDownloadBridge({
  baseURL: () => daemonStatus.state === "ready" && daemonStatus.port ? `http://127.0.0.1:${daemonStatus.port}` : null,
- request: (url, init) => daemonSignedFetch(url, init),
+ request: (url, init) => globalThis.fetch(url, init),
 });
 app.once("will-quit", () => awakeDownloads.dispose());
 
 let daemonAttachmentGeneration = 0;
 let daemonOutput = "";
 let browserViewHost: BrowserViewHost | null = null;
-/** The UI locale, for the native menu and dialogs that main owns. Kept current by uiSettings:set. */
-let uiLocale: AppLocale = DEFAULT_LOCALE;
 let browserProfileIpc: BrowserProfileIpc | null = null;
 let browserProfileImporter: BrowserProfileImportService | null = null;
 let windowComposition: WindowComposition | null = null;
@@ -406,28 +398,25 @@ const quitHoldOver = createQuitHoldOver({
 	log: (message, error) => console.warn(`AO: ${message}`, error),
 });
 const desktopQuit = createDesktopQuitController({
-	draftRiskCount: () => chatDraftRisks.length,
-	confirmDraftLeave: () => confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog),
+	platform: process.platform,
+	hasTray: () => trayController !== null && !browserQuitRequested,
+	isUpdateRestartRequested,
+	hasWindow: () => mainWindow !== null || createWindowPromise !== null,
+	closeWindow: () => {
+		if (mainWindow) mainWindow.close();
+		else if (createWindowPromise) {
+			void createWindowPromise
+				.catch((error) => console.error("failed to close pending main window:", error))
+				.then(() => {
+					// No window came of it: nothing will emit "closed", so settle now.
+					if (mainWindow) mainWindow.close();
+					else desktopQuit.windowClosed();
+				});
+		}
+	},
+	hideDock: () => app.dock?.hide(),
 	quit: () => app.quit(),
-	relaunch: () => app.relaunch(),
-	isUpdateRestart: isUpdateRestartRequested,
-	confirmFullQuit: () =>
-		confirmFullQuit({
-			fetchDaemon: async (path, timeoutMs) => {
-				if (daemonStatus.state !== "ready" || !daemonStatus.port) return undefined;
-				const response = await fetch(`http://127.0.0.1:${daemonStatus.port}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
-				return response.ok ? ((await response.json()) as unknown) : undefined;
-			},
-			locale: () => uiLocale,
-			showDialog: async (content) => {
-				const options = { type: "warning" as const, message: content.title, detail: content.body, buttons: content.buttons, defaultId: content.defaultId, cancelId: content.cancelId, noLink: true };
-				const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
-				return response;
-			},
-		}),
 });
-// A requested update relaunch is armed here, once the quit can no longer be stopped.
-app.on("will-quit", () => desktopQuit.handleWillQuit());
 let browserRuntimeLink: BrowserRuntimeLinkHandle | null = null;
 let browserRuntimeLinkIdentity: BrowserRuntimeIdentity | null = null;
 let browserStreamLink: BrowserStreamLinkHandle | null = null;
@@ -439,6 +428,7 @@ let terminalFocused = false;
 let terminalFontSizeFocused = false;
 let chatDraftRisks: ChatDraftBoundaryKind[] = [];
 let chatDraftDialog: ChatDraftDialogCopy | undefined;
+let chatDraftQuitConfirmed = false;
 let chatDraftWindowCloseConfirmed = false;
 // Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
 let supervisorLink: SupervisorLinkHandle | null = null;
@@ -563,17 +553,6 @@ protocol.registerSchemesAsPrivileged([
 // Register ao-app:// as the deep-link protocol for WorkOS auth callbacks.
 // Must run before app.whenReady().
 registerCloudProtocol();
-// A packaged build never runs with remote debugging or the Node inspector: either would let a
-// same-user process drive the shell page, and with it the human capability main signs for it.
-// Checked before any window exists, so there is nothing to attach to.
-if (app.isPackaged) {
-	const debugSwitch = forbiddenDebugSwitch(process.argv);
-	if (debugSwitch) {
-		console.error(`AO: refusing to start with ${debugSwitch.split("=", 1)[0]}; debugging switches are not allowed in a packaged build`);
-		app.exit(1);
-		process.exit(1);
-	}
-}
 if (!app.requestSingleInstanceLock()) {
 	app.exit(0);
 }
@@ -720,14 +699,14 @@ function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state === "ready" && nextStatus.port && daemonIdentity && sideClaimedDaemonPID !== daemonIdentity) {
 		sideClaimedDaemonPID = daemonIdentity;
 		const sideBase = `http://127.0.0.1:${nextStatus.port}/api/v1/side-chats/launch`;
-		void daemonSignedFetch(`${sideBase}/claim`, {
+		void fetch(`${sideBase}/claim`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ appRunId }),
 		}).then(async (response) => {
 			if (!response.ok) throw new Error(`side launch claim failed: ${response.status}`);
 			if (sideLaunchState?.appRunId === appRunId && (sideLaunchState.sides.length > 0 || Object.keys(sideLaunchState.numbers ?? {}).length > 0)) {
-				const restored = await daemonSignedFetch(`${sideBase}/state`, {
+				const restored = await fetch(`${sideBase}/state`, {
 					method: "POST", headers: { "content-type": "application/json" },
 					body: JSON.stringify(sideLaunchState),
 				});
@@ -833,25 +812,6 @@ async function disposeAllBrowserViewHosts(): Promise<void> {
 	}
 }
 
-/** The app menu in the current UI locale; reinstalled when the locale changes. */
-function installMacAppMenu(): void {
-	Menu.setApplicationMenu(
-		Menu.buildFromTemplate(
-			buildMacAppMenuTemplate(() => {
-				const fallback = () => getShellWebContents()?.toggleDevTools();
-				const host = browserViewHost;
-				if (!host) {
-					fallback();
-					return;
-				}
-				void host.toggleDevToolsForLastFocused().then((state) => {
-					if (!state) fallback();
-				}).catch(fallback);
-			}, { appName: app.name, onQuit: () => desktopQuit.requestUserQuit(), locale: uiLocale }),
-		),
-	);
-}
-
 async function createWindowInternal(): Promise<void> {
 	await disposeAllBrowserViewHosts();
 	const agentBrowserRuntime = new AgentBrowserRuntime({
@@ -874,8 +834,6 @@ async function createWindowInternal(): Promise<void> {
 		profileStore: browserProfileStore,
 		historyStore: browserHistoryStore,
 		fromPartition: (partition) => session.fromPartition(partition),
-		// Cookies saved in persistent or imported profiles would be protected by file permissions only under the stand-in key.
-		cookieImportRefused: shouldUseMockKeychain({ isPackaged: app.isPackaged, version: app.getVersion(), platform: process.platform }),
 	});
 	await profileImporter.initialize();
 	const windowOptions: Electron.BaseWindowConstructorOptions = {
@@ -945,7 +903,21 @@ async function createWindowInternal(): Promise<void> {
 		Menu.setApplicationMenu(buildWindowsAppMenu());
 		mainWindow.setMenuBarVisibility(false);
 	} else if (process.platform === "darwin") {
-		installMacAppMenu();
+		Menu.setApplicationMenu(
+			Menu.buildFromTemplate(
+				buildMacAppMenuTemplate(() => {
+					const fallback = () => getShellWebContents()?.toggleDevTools();
+					const host = browserViewHost;
+					if (!host) {
+						fallback();
+						return;
+					}
+					void host.toggleDevToolsForLastFocused().then((state) => {
+						if (!state) fallback();
+					}).catch(fallback);
+				}),
+			),
+		);
 	} else if (process.platform === "linux") {
 		Menu.setApplicationMenu(buildLinuxAppMenu());
 		mainWindow.setMenuBarVisibility(false);
@@ -976,14 +948,16 @@ async function createWindowInternal(): Promise<void> {
 		if (blocksRenderFrameNavigation(event.frame.url, event.url)) event.preventDefault();
 	});
 
-	// State-changing requests the shell page sends the daemon carry a per-request human capability,
-	// signed here so the key never reaches the renderer (see main/human-capability.ts).
-	installHumanCapabilityHeaders({
-		session: shellWebContents.session,
-		key: uiCapabilityKey,
-		shellWebContents: getShellWebContents,
-		daemonOrigin: verifiedDaemonOrigin,
-		shellPageOrigin: () => originOf(rendererUrl()) ?? "",
+	// A cloud artifact frame's page can open another file of its session; the
+	// renderer follows it (the file's name, a refused link) by its URL.
+	shellWebContents.on("did-frame-navigate", (_event, url, httpResponseCode, _statusText, isMainFrame) => {
+		if (isMainFrame) return;
+		try {
+			if (cloudArtifactPrefix(new URL(url)) === undefined) return;
+		} catch {
+			return;
+		}
+		shellWebContents.send("cloudArtifact:frameNavigated", { url, status: httpResponseCode });
 	});
 
 	// Agent pages framed in the chat (renders, HTML artifacts) stay off this
@@ -1024,9 +998,7 @@ async function createWindowInternal(): Promise<void> {
 	shellWebContents.on("will-prevent-unload", (event) => {
 		if (
 			chatDraftRisks.length > 0 &&
-			// An unattended update quit never asks: doing nothing below honors the renderer's request to stay.
-			!desktopQuit.isUpdateQuitInFlight() &&
-			(desktopQuit.draftLeaveConfirmed() ||
+			(chatDraftQuitConfirmed ||
 				chatDraftWindowCloseConfirmed ||
 				confirmUnsafeChatDraftLeave(chatDraftRisks, (options) => dialog.showMessageBoxSync(options), chatDraftDialog))
 		) {
@@ -1035,22 +1007,20 @@ async function createWindowInternal(): Promise<void> {
 			event.preventDefault();
 			return;
 		}
-		// Doing nothing honors the renderer's request to stay.
+		// Doing nothing honors the renderer's request to stay, so a quit's close
+		// did not happen and AO keeps its Dock icon.
+		desktopQuit.windowCloseCanceled();
 	});
 
 	mainWindow.on("close", (event) => {
-		if (desktopQuit.isUpdateQuitInFlight() && chatDraftRisks.length > 0) {
-			// A draft appeared after an unattended update quit began: hold the window, silently.
-			event.preventDefault();
-			return;
-		}
 		const preventClose = shouldPreventUnsafeChatDraftClose(
 			chatDraftRisks,
-			desktopQuit.draftLeaveConfirmed() || chatDraftWindowCloseConfirmed,
+			chatDraftQuitConfirmed || chatDraftWindowCloseConfirmed,
 			(options) => dialog.showMessageBoxSync(options),
 			chatDraftDialog,
 		);
 		if (preventClose) {
+			desktopQuit.windowCloseCanceled();
 			event.preventDefault();
 			return;
 		}
@@ -1204,7 +1174,7 @@ async function createWindowInternal(): Promise<void> {
 	mainWindow.on("closed", () => {
 		chatDraftRisks = [];
 		chatDraftDialog = undefined;
-		desktopQuit.resetDraftConfirmation();
+		chatDraftQuitConfirmed = false;
 		chatDraftWindowCloseConfirmed = false;
 		disposeBrowserRuntimeLink();
 		keybindingRecordingActive = false;
@@ -1222,11 +1192,14 @@ async function createWindowInternal(): Promise<void> {
 		// the next bounce skip attaching one to the replacement window.
 		cancelDockBounce();
 		trayLifecycle.clearPendingTarget();
+		desktopQuit.windowClosed();
 	});
 }
 
 function createWindow(): Promise<void> {
 	if (createWindowPromise) return createWindowPromise;
+	// A background quit hid the Dock icon; bring it back with the window.
+	void app.dock?.show();
 	const pending = createWindowInternal();
 	createWindowPromise = pending;
 	void pending.then(
@@ -1500,24 +1473,6 @@ if (process.platform !== "win32") {
 // AO_APP_RUN_ID in the environment wins, which lets a test or a wrapper pin it.
 const appRunId = process.env.AO_APP_RUN_ID ?? `apprun-${randomUUID()}`;
 const browserRuntimeToken = randomBytes(32).toString("base64url");
-// The human-capability key: minted per app run, handed to the daemon this app spawns over the same
-// private stdin pipe as the token above (second line), held in memory only. Never an env var, file,
-// argv, log or renderer value; main signs each state-changing request the shell sends the daemon.
-const uiCapabilityKey = newHumanCapabilityKey();
-// The pid of the daemon this run spawned (set when it reports its port). Main signs only for that daemon: one it
-// attached to never received the key.
-let spawnedDaemonPid: number | undefined;
-const daemonKeyCheck = createKeyPossessionCheck({ key: uiCapabilityKey });
-// Only a daemon that this run spawned AND that proved it holds this run's key is ever signed for: the shell
-// window's writes (installHumanCapabilityHeaders) and main's own (daemonSignedFetch) use this same answer.
-const verifiedDaemonOrigin = (): string | undefined => {
-	const origin = ownDaemonOrigin(daemonStatus, spawnedDaemonPid);
-	if (!origin) return undefined;
-	daemonKeyCheck.ensure(origin, daemonStatus.pid);
-	return daemonKeyCheck.isVerified(origin, daemonStatus.pid) ? origin : undefined;
-};
-/** Every write main makes to the daemon goes through this, so it carries the person's capability (see daemon-signed-fetch.ts). */
-const daemonSignedFetch = createDaemonSignedFetch({ key: uiCapabilityKey, daemonOrigin: verifiedDaemonOrigin });
 let stagedBundledTmuxBinary: string | null = null;
 
 async function ensureBundledTmuxStaged(): Promise<void> {
@@ -1571,8 +1526,6 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 		// same-UID worker could inspect the parent process.
 		AO_BROWSER_RUNTIME_TOKEN: "",
 		AO_BROWSER_RUNTIME_TOKEN_STDIN: "1",
-		// Marker only: line two of the same pipe carries the human-capability key.
-		[UI_CAPABILITY_STDIN_ENV]: "1",
 		// Under AppImage, APPIMAGE is the stable outer .AppImage file path (the
 		// FUSE mount in executablePath is random per launch). The daemon echoes
 		// it as appImagePath in /healthz|/readyz so the identity check can
@@ -1873,8 +1826,7 @@ async function inspectExistingDaemon(
 
 async function gracefullyReplaceDaemonForBrowser(status: DaemonStatus): Promise<void> {
 	if (!status.port) throw new Error("the running daemon did not report a port");
-	// A daemon this app only found running is not its own: nothing is signed for it and nothing waits for it.
-	const response = await daemonSignedFetch(`http://127.0.0.1:${status.port}/shutdown`, { method: "POST" }, 0);
+	const response = await fetch(`http://127.0.0.1:${status.port}/shutdown`, { method: "POST" });
 	if (!response.ok) throw new Error(`daemon shutdown returned HTTP ${response.status}`);
 
 	const deadline = Date.now() + 8_000;
@@ -2305,7 +2257,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// worker processes when it spawns them.
 	if (child.stdin) {
 		child.stdin.on("error", () => undefined);
-		child.stdin.end(daemonStdinHandoff(browserRuntimeToken, uiCapabilityKey));
+		child.stdin.end(`${browserRuntimeToken}\n`);
 	} else {
 		console.warn("AO: browser runtime token handoff pipe was unavailable");
 	}
@@ -2332,11 +2284,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		if (portConfirmed || daemonProcess !== child || daemonStoppingProcess === child) return;
 		portConfirmed = true;
 		stopDiscovery();
-		spawnedDaemonPid = child.pid;
 		setDaemonStatus({ state: "ready", port, pid: child.pid });
-		// Ask the daemon on this port to prove it holds the key (for this port and the pid we spawned) now, so the
-		// first state-changing request is not the one that waits for the answer.
-		daemonKeyCheck.ensure(`http://127.0.0.1:${port}`, child.pid);
 
 		// Establish the OS-native liveness link on the spawn path (we own this
 		// daemon). Holding the connection keeps the daemon alive; when Electron
@@ -2389,7 +2337,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 					const info = parseRunFile(contents);
 					// Ignore a stale handshake left by a previous daemon: only trust a
 					// file written at/after this spawn.
-					if (info && runFileIsFromThisSpawn(info, { pid: child.pid, appRunId, spawnedAtMs, skewMs: RUN_FILE_FRESHNESS_SKEW_MS })) {
+					if (info && info.startedAtMs >= spawnedAtMs - RUN_FILE_FRESHNESS_SKEW_MS) {
 						reportBoundPort(info.port);
 					}
 				})
@@ -2711,7 +2659,7 @@ ipcMain.on(SET_CHAT_DRAFT_RISK_CHANNEL, (event, risks: unknown, dialogCopy: unkn
 	) return;
 	chatDraftRisks = [...parsed];
 	chatDraftDialog = parsedCopy;
-	desktopQuit.resetDraftConfirmation();
+	chatDraftQuitConfirmed = false;
 	chatDraftWindowCloseConfirmed = false;
 });
 
@@ -2998,6 +2946,7 @@ registerChatImageIpc({
 	dialog,
 	downloadsDirectory: () => app.getPath("downloads"),
 });
+registerCloudArtifactIpc({ ipcMain });
 
 // A file dropped onto the terminal is delivered as raw bytes (its original path
 // is unavailable to the sandboxed renderer on macOS — see webUtils.getPathForFile
@@ -3050,10 +2999,6 @@ ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 		const runFile = runFilePath();
 	const result = !runFile ? coerceUiSettings(settings) : await writeUiSettings(path.dirname(runFile), settings);
 	trayController?.setLocale(result.locale);
-	if (result.locale !== uiLocale) {
-		uiLocale = result.locale;
-		if (process.platform === "darwin" && mainWindow) installMacAppMenu();
-	}
 	soundNotificationsEnabled = result.soundNotificationsEnabled;
 	terminalShellPreference = result.terminalShell;
 	shellEnvPromise = null;
@@ -3095,7 +3040,8 @@ ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAnd
 // in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
 // already off on the failed path, so quitting can't apply a half-prepared build.
 ipcMain.handle("updates:relaunch", () => {
-	desktopQuit.relaunchAndQuit();
+	app.relaunch();
+	desktopQuit.quitCompletely();
 });
 
 // Whether THIS boot is a post-update relaunch, so the startup loader can show
@@ -3126,31 +3072,32 @@ function cancelDockBounce(): void {
 
 ipcMain.handle(
 	"notifications:show",
-	(_event, notification: { id: string; title: string; body?: string; type?: string; purpose?: string; watched?: boolean }) => {
+	(_event, notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) => {
 		if (!notification.id || !mainWindow) return;
 		// "Already looking" = the window has focus, or the renderer reports the
 		// prompt itself is on screen (`watched`). Visual signals are skipped then.
-		// Which signals exist at all is the policy's call (shared/notification-signal-policy.ts):
-		// by default none, so this handler only ever returns early.
 		const looking = mainWindow.isFocused() || notification.watched === true;
-		const plan = planNotificationSignals({
-			type: notification.type,
-			purpose: notification.purpose,
-			title: notification.title,
-			platform: process.platform,
-			looking,
-			soundNotificationsEnabled,
-			toastSupported: ElectronNotification.isSupported(),
-		});
-		if (plan.sound) playNotificationSound();
-		if (plan.banner) {
+		// On Linux the sound ignores that guess: Wayland gives apps no reliable
+		// visibility, so a window parked on another workspace still reports
+		// focused/visible and would otherwise stay silent. macOS and Windows
+		// report focus accurately and keep the quieter behaviour.
+		const playsSound =
+			shouldSignalAttention(notification.type) &&
+			soundNotificationsEnabled &&
+			(process.platform === "linux" || !looking);
+		if (playsSound) playNotificationSound();
+		if (looking) return;
+		// OS toast: a native banner the user can click to jump straight back to the
+		// session. Fires for every backend notification type (see shouldToast), so a
+		// new type in notification.go never silently loses its toast.
+		if (shouldToast(notification, ElectronNotification.isSupported())) {
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
 				// Mute the OS chime when our sound replaces it or the user turned
 				// sound notifications off. Honoured on macOS/Windows only; Linux
 				// notification daemons ignore it (see toastSilent).
-				silent: toastSilent(process.platform, soundNotificationsEnabled, plan.sound),
+				silent: toastSilent(process.platform, soundNotificationsEnabled, playsSound),
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -3167,20 +3114,28 @@ ipcMain.handle(
 			toast.show();
 		}
 
-		if (plan.dockBounce && app.dock) {
-			// A pending critical bounce is never replaced by a quieter one.
+		// Dock (macOS) / taskbar (Windows/Linux) attention signal. On macOS every
+		// notification bounces the dock — urgency is carried by the bounce type,
+		// so a merged PR bounces once while a blocked agent keeps bouncing. On
+		// Windows/Linux only the actionable types flash (see
+		// shouldSignalAttention), preserving the pre-existing behavior there.
+		if (process.platform === "darwin" && app.dock) {
+			// A pending critical bounce (agent blocked on the user) is never
+			// replaced: a later informational notification must not downgrade it
+			// to a one-shot bounce.
 			if (shouldReplaceBounce(pendingBounce)) {
 				// A focus listener from an earlier un-cancelled bounce still works for
 				// the new id, so only attach one at a time.
 				const hadPendingBounce = pendingBounce !== null;
 				cancelDockBounce();
-				const id = app.dock.bounce(plan.dockBounce);
+				const bounceType = dockBounceType(notification.type);
+				const id = app.dock.bounce(bounceType);
 				if (typeof id === "number" && id >= 0) {
-					pendingBounce = { id, critical: plan.dockBounce === "critical" };
+					pendingBounce = { id, critical: bounceType === "critical" };
 					if (!hadPendingBounce) mainWindow.once("focus", cancelDockBounce);
 				}
 			}
-		} else if (plan.flash) {
+		} else if ((process.platform === "win32" || process.platform === "linux") && shouldSignalAttention(notification.type)) {
 			if (!isFlashing) {
 				isFlashing = true;
 				mainWindow.flashFrame(true);
@@ -3221,8 +3176,8 @@ if (!app.isPackaged) {
 	});
 }
 
-/** Sets the launcher badge. macOS's Dock badge needs no window; the Windows overlay does. */
-function applyBadgeCount(count: number): { ok?: boolean; error?: string } {
+ipcMain.handle("notifications:setBadge", (_event, count: number) => {
+	if (!mainWindow) return { error: "no mainWindow" };
 	const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 	if (process.platform === "darwin") {
 		const dock = app.dock;
@@ -3233,7 +3188,6 @@ function applyBadgeCount(count: number): { ok?: boolean; error?: string } {
 			return { error: String(e) };
 		}
 	} else if (process.platform === "win32") {
-		if (!mainWindow) return { error: "no mainWindow" };
 		if (n > 0) {
 			// Pre-built red dot PNG overlay — indicates unread without needing Canvas.
 			const badgeDataUrl =
@@ -3247,26 +3201,12 @@ function applyBadgeCount(count: number): { ok?: boolean; error?: string } {
 		// setBadgeCount drives a numeric launcher badge on Unity only, and only
 		// when the app ships a matching .desktop entry. Other Linux launchers
 		// (KDE, GNOME) expose no equivalent API, so the call is a no-op there.
+		// Surface the boolean result so the renderer can tell the badge was not
+		// applied instead of assuming unconditional success.
 		return { ok: app.setBadgeCount(n) };
 	}
 	return { ok: true };
-}
-
-ipcMain.handle("notifications:setBadge", (_event, count: number) => applyBadgeCount(count));
-
-// The Dock badge is owned here, not by the renderer: with the window closed AO keeps running and
-// there is no renderer to compute it. It follows the daemon's notifications on a short poll.
-const coordinatorBadge = createCoordinatorBadge({
-	getPort: () => (daemonStatus.state === "ready" && daemonStatus.port ? daemonStatus.port : undefined),
-	fetchJson: async (url, timeoutMs) => {
-		const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-		return response.ok ? ((await response.json()) as unknown) : undefined;
-	},
-	setBadge: (count) => void applyBadgeCount(count),
 });
-// The renderer just read a result or answered a question: re-read straight away.
-ipcMain.on("coordinator-badge:refresh", () => void coordinatorBadge.refresh());
-app.once("will-quit", () => coordinatorBadge.stop());
 
 ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.handleSetAttentionState(event, state));
 
@@ -3405,7 +3345,7 @@ app.on("second-instance", (_event, argv) => {
 // A live updater additionally requires a signed + notarized build — see
 // frontend/docs/desktop-release.md.
 function initAutoUpdates(): void {
-	if (!app.isPackaged || isPersonalBuild(app.getVersion())) return;
+	if (!app.isPackaged) return;
 	const runFile = runFilePath();
 	if (!runFile) return;
 	const stateDir = path.dirname(runFile);
@@ -3416,39 +3356,6 @@ function initAutoUpdates(): void {
 	// pushes.
 	setRendererSink(() => getShellWebContents());
 	void ensureUpdatePrefs(stateDir).then(() => startAutoUpdates(stateDir));
-}
-
-// The update runner's way to ask this app to quit without a dialog (see main/update-quit-request.ts and
-// frontend/docs/unattended-update.md). Only packaged builds listen; a request must name this process.
-function startUpdateQuitWatcher(): void {
-	if (!app.isPackaged) return;
-	const runFile = runFilePath();
-	if (!runFile) return;
-	const stateDir = path.dirname(runFile);
-	const watcher = createUpdateQuitWatcher({
-		stateDir,
-		pid: process.pid,
-		uid: process.getuid?.() ?? -1,
-		now: Date.now,
-		draftRiskCount: () => chatDraftRisks.length,
-		userIdleSeconds: () => powerMonitor.getSystemIdleTime(),
-		// The shell is a BaseWindow, which BrowserWindow.getFocusedWindow() never returns: ask both.
-		appWindowFocused: () => aoWindowFocused({ BaseWindow, BrowserWindow }),
-		// If the quit goes through and nothing brings AO back, this relaunches it hidden after ten minutes.
-		relaunchNet: createRelaunchNet({
-			stateDir,
-			appPath: resolveBundlePath(),
-			fromVersion: app.getVersion(),
-			uid: process.getuid?.() ?? -1,
-			lockPath: path.join(stateDir, "install.lock"),
-			markerPath: path.join(stateDir, "install-swap-marker"),
-		}),
-		cancelUpdateQuit: () => desktopQuit.cancelUpdateQuit(),
-		quitForUpdate: () => desktopQuit.quitForUpdate(),
-		log: (message, detail) => console.info(`[update-quit] ${message}`, detail ?? ""),
-	});
-	watcher.start();
-	app.once("will-quit", () => watcher.stop());
 }
 
 // Resolve the bundle path `ao start` will later `open` and stat as a usable app.
@@ -3498,10 +3405,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-	coordinatorBadge.start();
-	startUpdateQuitWatcher();
-	const personalBuild = isPersonalBuild(app.getVersion());
-	if (app.isPackaged && !personalBuild) {
+	if (app.isPackaged) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
 		await checkDesktopVersionFloor().catch((err) =>
 			console.warn("desktop version floor check failed:", err),
@@ -3537,7 +3441,7 @@ app.whenReady().then(async () => {
 		}
 	}
 
-	if (process.platform === "darwin" && app.isPackaged && !personalBuild) {
+	if (process.platform === "darwin" && app.isPackaged) {
 		const bundlePath = resolveBundlePath();
 		const action = decideRelocation({
 			inApplicationsFolder: app.isInApplicationsFolder(),
@@ -3583,7 +3487,7 @@ app.whenReady().then(async () => {
 		const { formatStaleAppCopies, retireStaleMacAppCopies } = await import("./main/stale-app-copies");
 		await retireStaleMacAppCopies({
 			platform: process.platform,
-			isPackaged: app.isPackaged && !personalBuild,
+			isPackaged: app.isPackaged,
 			runningPath: resolveBundlePath(),
 			runningVersion: app.getVersion(),
 			confirm: async (copies) => {
@@ -3628,18 +3532,17 @@ app.whenReady().then(async () => {
 		: { ...DEFAULT_UI_SETTINGS };
 	soundNotificationsEnabled = initialUiSettings.soundNotificationsEnabled;
 	terminalShellPreference = initialUiSettings.terminalShell;
-	uiLocale = initialUiSettings.locale;
 	if (browserQuitRequested) return;
 	if (isTrayEnabled(process.platform)) {
 		trayController = createTrayController({
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
-			quitCompletely: () => desktopQuit.requestUserQuit(),
+			quitCompletely: desktopQuit.quitCompletely,
 			locale: initialUiSettings.locale,
 		});
 	}
 	if (process.platform === "darwin") {
-		powerMonitor.on("shutdown", () => desktopQuit.quitForShutdown());
+		powerMonitor.on("shutdown", () => desktopQuit.quitCompletely());
 	}
 	// Boot the daemon alongside the window, not after it: the board cannot show
 	// until the daemon answers. createWindow links the browser runtime itself
@@ -3676,19 +3579,30 @@ app.whenReady().then(async () => {
 
 // Daemon teardown is now handled via the OS-native supervisor socket: the daemon
 // self-stops ~5s after the last client (this process) drops its connection.
-// Quit and Cmd-Q exit AO; closing the window leaves it running in the Dock and tray.
-// Exiting drops the supervisor socket, stopping the app-owned daemon after its
-// grace period. Sessions survive.
+// Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
+// Full exit drops the supervisor socket, stopping the app-owned daemon after
+// its grace period. Sessions survive.
 setUpdateRestartFailureHandler(() => {
 	if (!browserQuitRequested) focusMainWindow();
 });
 
 let updateQuitDeadlineArmed = false;
 app.on("before-quit", (event) => {
-	// Quit and Cmd-Q are a full exit; only the unsaved-draft confirmation and the
-	// agents-pause / Mac-will-sleep warnings can hold one back.
 	if (desktopQuit.handleBeforeQuit(event)) return;
-	if (desktopQuit.holdForWarnings(event)) return;
+	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
+		event.preventDefault();
+		if (confirmUnsafeChatDraftLeave(
+			chatDraftRisks,
+			(options) => dialog.showMessageBoxSync(options),
+			chatDraftDialog,
+		)) {
+			chatDraftQuitConfirmed = true;
+			app.quit();
+		} else {
+			desktopQuit.cancelQuit();
+		}
+		return;
+	}
 	quitHoldOver.start();
 	browserQuitRequested = true;
 	disposeBrowserRuntimeLink();
@@ -3701,10 +3615,10 @@ app.on("before-quit", (event) => {
 			const retireSides = async () => {
 				if (daemonStatus.state !== "ready" || !daemonStatus.port) return;
 				try {
-					const response = await daemonSignedFetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/retire`, {
+					const response = await fetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/retire`, {
 						method: "POST", headers: { "content-type": "application/json" },
 						body: JSON.stringify({ appRunId }), signal: AbortSignal.timeout(3000),
-					}, 1500);
+					});
 					if (!response.ok) console.warn("AO: side chat cleanup on quit failed", response.status);
 				} catch (error) { console.warn("AO: side chat cleanup on quit failed", error); }
 				sideLaunchState = undefined;
@@ -3754,5 +3668,7 @@ process.on("exit", () => {
 });
 
 app.on("window-all-closed", () => {
-	if (shouldQuitWhenAllWindowsClosed(process.platform)) app.quit();
+	if (process.platform !== "darwin") {
+		app.quit();
+	}
 });

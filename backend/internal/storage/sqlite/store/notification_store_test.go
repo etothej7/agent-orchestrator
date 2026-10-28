@@ -681,34 +681,3 @@ func TestNotificationStore_MarkNotificationsReadOnlyTouchesGivenIDs(t *testing.T
 		t.Fatalf("unread count = %d err=%v, want 1 (ntf_3 must stay reachable)", count, err)
 	}
 }
-
-// Every coordinator message is its own notification, deduped by message key, and
-// stays a seen-once fact: it is never held as an unresolved issue.
-func TestNotificationStore_CoordinatorMessagesDedupeBySourceKeyAndNeverStayUnresolved(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	seedProject(t, s, "mer")
-	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	newRecord := func(id, key string) domain.NotificationRecord {
-		return domain.NotificationRecord{ID: id, SessionID: sess.ID, ProjectID: sess.ProjectID, Type: domain.NotificationCoordinatorMessage, Title: "Your coordinator needs a decision", Body: "Blue or Green?", Status: domain.NotificationUnread, CreatedAt: now, SourceKey: key}
-	}
-	for _, tc := range []struct {
-		id, key  string
-		inserted bool
-	}{{"ntf_a", "coordinator-message:decision-a", true}, {"ntf_b", "coordinator-message:decision-b", true}, {"ntf_a2", "coordinator-message:decision-a", false}} {
-		if _, inserted, err := s.CreateNotification(ctx, newRecord(tc.id, tc.key)); err != nil || inserted != tc.inserted {
-			t.Fatalf("%s inserted=%v err=%v", tc.id, inserted, err)
-		}
-	}
-	rows, err := s.ListNotifications(ctx, domain.NotificationListUnread, time.Time{}, "", 10)
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("rows=%+v err=%v", rows, err)
-	}
-	if domain.NotificationCoordinatorMessage.NeedsResolution() {
-		t.Fatal("a coordinator message is a one-time fact, not an open issue")
-	}
-}

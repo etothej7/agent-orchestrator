@@ -250,36 +250,6 @@ describe("BrowserImportDialog", () => {
 		expect(historyRow.querySelector("svg:last-child")).toHaveClass("text-success");
 	});
 
-	it("when the build does not import cookies: the choice is off and disabled, the reason is plain, and only history is requested", async () => {
-		const refusedSource = {
-			...firefoxSource,
-			cookieSupport: "unsupported" as const,
-			cookieSupportReason: "cookies-stored-without-keychain" as const,
-		};
-		const importSpy = vi.fn(async () => ({ sourceName: "Firefox", entries: [{
-			sourceProfileNames: ["default-release"],
-			destinationProfile: { id: "11111111-1111-4111-8111-111111111111", name: "Imported Firefox", createdAt: "2026-01-01", updatedAt: "2026-01-01" },
-			importedCookies: 0, importedHistoryEntries: 4, skippedCookies: 0,
-			warnings: [{ code: "cookies-refused" as const }],
-		}] }));
-		aoBridge.browserProfiles = {
-			...originalBridge,
-			discoverImportSources: vi.fn(async () => ({ sources: [refusedSource] })),
-			import: importSpy,
-			onImportProgress: vi.fn(() => () => undefined),
-		};
-		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
-		await screen.findByText("Firefox");
-		const cookies = screen.getByRole("checkbox", { name: /Cookies and site sign-ins/ });
-		expect(cookies).toBeDisabled();
-		expect(cookies).not.toBeChecked();
-		expect(screen.getByText(/Cookies are not imported in this build.*Mac keychain.*History can still be imported/)).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
-		await waitFor(() => expect(importSpy).toHaveBeenCalledTimes(1));
-		expect(importSpy).toHaveBeenCalledWith(expect.objectContaining({ includeCookies: false, includeHistory: true }));
-		expect(await screen.findByText(/Cookies were not imported, because this build keeps browser logins in files/)).toBeInTheDocument();
-	});
-
 	it("does not warn when a requested cookie store is empty", async () => {
 		aoBridge.browserProfiles = {
 			...originalBridge,

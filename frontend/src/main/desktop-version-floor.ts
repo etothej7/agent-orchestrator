@@ -1,4 +1,3 @@
-import { isPersonalBuild } from "./personal-build";
 import { app, dialog, shell } from "electron";
 import semver from "semver";
 
@@ -31,7 +30,7 @@ function isBelow(running: string, floor: string): boolean {
 }
 
 export async function checkDesktopVersionFloor(): Promise<void> {
-  if (!app.isPackaged || isPersonalBuild(app.getVersion())) return;
+  if (!app.isPackaged) return;
   let floor: Floor;
   try {
     const response = await fetch(FLOOR_URL, {

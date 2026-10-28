@@ -1,12 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import {
-	meetsMinimumVersion,
-	parseGoVersion,
-	parseMinimumGoVersion,
-	requiredDaemonGoVersion,
-	SHIPPED_DAEMON_GO_VERSION,
-} from "./go-version.mjs";
+import { meetsMinimumVersion, parseGoVersion, parseMinimumGoVersion } from "./go-version.mjs";
 
 describe("parseGoVersion", () => {
 	it("parses stable Go versions and defaults a missing patch to zero", () => {
@@ -47,19 +41,5 @@ describe("meetsMinimumVersion", () => {
 
 	it("accepts an explicit minimum version", () => {
 		expect(meetsMinimumVersion([1, 25, 7], minimum)).toBe(true);
-	});
-});
-
-describe("requiredDaemonGoVersion", () => {
-	it("raises a lower go.mod floor to the shipped daemon release", () => {
-		expect(SHIPPED_DAEMON_GO_VERSION).toEqual([1, 27, 3]);
-		expect(requiredDaemonGoVersion([1, 27, 1])).toEqual([1, 27, 3]);
-		expect(requiredDaemonGoVersion([1, 26, 9])).toEqual([1, 27, 3]);
-	});
-
-	it("never lowers a stricter go.mod requirement", () => {
-		expect(requiredDaemonGoVersion([1, 27, 3])).toEqual([1, 27, 3]);
-		expect(requiredDaemonGoVersion([1, 27, 4])).toEqual([1, 27, 4]);
-		expect(requiredDaemonGoVersion([1, 28, 0])).toEqual([1, 28, 0]);
 	});
 });

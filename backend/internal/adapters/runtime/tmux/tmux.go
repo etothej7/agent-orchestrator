@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/inputdelay"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/ptyexec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -355,14 +356,9 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 
-	handoff, cleanupHandoff, err := writeLaunchHandoff(cfg)
-	if err != nil {
-		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
-	}
-	launchCmd := buildLaunchCommandWithHandoff(cfg, handoff)
+	launchCmd := buildLaunchCommand(cfg)
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
 	if _, err := r.run(ctx, args...); err != nil {
-		cleanupHandoff()
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
 			fmt.Errorf("tmux runtime: create session %s: %w", id, err),
 			ports.RuntimeHandle{ID: id},
@@ -443,13 +439,8 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 		return ports.RuntimeHandle{}, err
 	}
 
-	handoff, cleanupHandoff, err := writeLaunchHandoff(cfg)
-	if err != nil {
-		return ports.RuntimeHandle{}, err
-	}
-	launchCmd := buildLaunchCommandWithHandoff(cfg, handoff)
+	launchCmd := buildLaunchCommand(cfg)
 	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
-		cleanupHandoff()
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
 	alive, err := r.IsAlive(ctx, handle)
@@ -932,6 +923,7 @@ func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, m
 	}
 	enterCtx := ctx
 	if message != "" {
+		delay := inputdelay.ForMessage(message, r.enterDelay)
 		messageChunks := chunks(message, r.chunkSize)
 		sendCtx := ctx
 		var finishCancel context.CancelFunc
@@ -943,7 +935,7 @@ func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, m
 				return fmt.Errorf("tmux runtime: send message %s: %w", id, err)
 			}
 			if i == 0 {
-				completionBudget := sendCompletionBudget(len(messageChunks), r.timeout, r.enterDelay)
+				completionBudget := sendCompletionBudget(len(messageChunks), r.timeout, delay)
 				enterCtx, finishCancel = context.WithTimeout(context.WithoutCancel(ctx), completionBudget)
 				sendCtx = enterCtx
 			}
@@ -964,11 +956,11 @@ func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, m
 		// Errors reported by tmux after it accepts a chunk still return to the
 		// caller; they are not retried because AO cannot safely distinguish
 		// whether tmux applied the failed command.
-		if r.enterDelay > 0 {
+		if delay > 0 {
 			select {
 			case <-enterCtx.Done():
 				return enterCtx.Err()
-			case <-time.After(r.enterDelay):
+			case <-time.After(delay):
 			}
 		}
 	}
@@ -1663,29 +1655,12 @@ func shellQuote(s string) string {
 // PATH from cfg.Env is exported last, after all other keys, so an explicit
 // override takes effect.
 func buildLaunchCommand(cfg ports.RuntimeConfig) string {
-	return buildLaunchCommandWithHandoff(cfg, "")
-}
-
-// buildLaunchCommandWithHandoff builds the pane's shell command. Private variables
-// (privateEnvKeys) are never exported inline: when handoff names a file, the pane sources it
-// right after the cd guard and removes its directory, so they exist only in the pane's
-// environment. A pane that cannot read the file exits rather than run without them.
-func buildLaunchCommandWithHandoff(cfg ports.RuntimeConfig, handoff string) string {
 	path := cfg.Env["PATH"]
 	if path == "" {
 		path = getenv("PATH")
 	}
 
 	var b strings.Builder
-	// The private handoff comes FIRST: if the working-directory guard exited the shell before the
-	// file was sourced and removed, the proof would sit in the temp directory.
-	if handoff != "" {
-		b.WriteString(". ")
-		b.WriteString(shellQuote(handoff))
-		b.WriteString(" || exit; rm -rf ")
-		b.WriteString(shellQuote(filepath.Dir(handoff)))
-		b.WriteString("; ")
-	}
 	b.WriteString("cd ")
 	b.WriteString(shellQuote(cfg.WorkspacePath))
 	b.WriteString(" || exit; ")
@@ -1697,7 +1672,7 @@ func buildLaunchCommandWithHandoff(cfg ports.RuntimeConfig, handoff string) stri
 		b.WriteString("unset NO_COLOR; ")
 	}
 	for _, key := range sortedKeys(cfg.Env) {
-		if key == "PATH" || key == "COLORTERM" || isPrivateEnvKey(key) {
+		if key == "PATH" || key == "COLORTERM" {
 			continue
 		}
 		b.WriteString("export ")

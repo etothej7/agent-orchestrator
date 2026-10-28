@@ -56,8 +56,6 @@ type Service struct {
 	store                  Store
 	reader                 SnapshotReader
 	pageReader             SnapshotPageReader
-	humanPageReader        SnapshotPageReader
-	notifier               HumanNotifier
 	sessions               SessionReader
 	drivers                ports.ChatDriverRegistry
 	activity               ActivityRecorder
@@ -163,13 +161,8 @@ type Options struct {
 	Store      Store
 	Reader     SnapshotReader
 	PageReader SnapshotPageReader
-	// HumanPageReader preserves bounded pagination for the quiet coordinator view.
-	HumanPageReader SnapshotPageReader
-	// Notifier raises the human notification for an explicit coordinator
-	// message. Nil records the message without one.
-	Notifier HumanNotifier
-	Sessions SessionReader
-	Drivers  ports.ChatDriverRegistry
+	Sessions   SessionReader
+	Drivers    ports.ChatDriverRegistry
 	// Activity feeds derived session status from turn events. Nil leaves a chat
 	// session reading as idle while it works, so production always wires it.
 	Activity ActivityRecorder
@@ -219,8 +212,6 @@ func New(opts Options) *Service {
 		store:                  opts.Store,
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
-		humanPageReader:        opts.HumanPageReader,
-		notifier:               opts.Notifier,
 		sessions:               opts.Sessions,
 		drivers:                opts.Drivers,
 		activity:               opts.Activity,
@@ -296,38 +287,10 @@ type reviewerConversationStore interface {
 // keeps the old provider process, so it carries what that process runs in the
 // same write as the claim.
 func (s *Service) claimChatController(ctx context.Context, id domain.SessionID, generation string, liveReconnect bool) error {
-	var err error
 	if claimer, ok := s.store.(liveControllerClaimer); ok && liveReconnect {
-		err = claimer.ClaimLiveChatControllerGeneration(ctx, id, generation)
-	} else {
-		err = s.store.ClaimChatControllerGeneration(ctx, id, generation)
+		return claimer.ClaimLiveChatControllerGeneration(ctx, id, generation)
 	}
-	if err != nil {
-		return err
-	}
-	s.clearStopReason(ctx, id)
-	return err
-}
-
-// stopReasonClearer is the optional part of the store that records why an agent was
-// stopped on purpose.
-type stopReasonClearer interface {
-	SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error
-}
-
-// clearStopReason forgets why the agent was last stopped: a new controller is
-// running, so a later exit is a new fact. Every controller start claims a generation,
-// which makes this the one place that covers resume, wake, restore and handoffs.
-// Best effort: a stale reason only ever suppresses an automatic resume, never
-// causes one, and the failure is logged.
-func (s *Service) clearStopReason(ctx context.Context, id domain.SessionID) {
-	clearer, ok := s.store.(stopReasonClearer)
-	if !ok {
-		return
-	}
-	if err := clearer.SetStopReason(ctx, id, domain.StopReasonNone, s.now()); err != nil {
-		s.log.Warn("chat start: could not clear the stop reason", "session", id, "error", err)
-	}
+	return s.store.ClaimChatControllerGeneration(ctx, id, generation)
 }
 
 // ControllerCommit is the conversation state committed by ControllerReady.
@@ -778,9 +741,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	} else if !providerHandleOwnedByActiveBranch {
 		providerBoundaryID = providerScopeID
 	} else if cfg.ProviderConversationID == "" && cfg.ProviderScopeID == "" &&
-		// An inherited branch belongs to the previous orchestrator even if it
-		// never recorded a provider thread. This session's queued intake is new.
-		(activeBranch.SessionID != cfg.SessionID || activeBranch.ProviderConversationID != "" || hadProviderHistory ||
+		!queuedBeforeFirstController &&
+		(activeBranch.ProviderConversationID != "" || hadProviderHistory ||
 			(!preserveUndispatchedQueue && conversation.LatestSequence > 0)) {
 		// This conversation already owns provider history, but the caller proved it
 		// cannot resume that provider thread. Reserve the next provider boundary
@@ -856,7 +818,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			if prepareErr != nil {
 				return nil, fmt.Errorf("prepare chat controller environment: %w", prepareErr)
 			}
-			applyLaunchProof(cfg.MCPServers, env)
 			return env, nil
 		}
 	}
@@ -1420,11 +1381,7 @@ func (s *Service) Send(
 		return domain.ConversationTurn{}, err
 	}
 	var reports reportsvc.PreparedBatch
-	coordinator, coordErr := s.isHumanCoordinator(ctx, record.ProjectID)
-	if coordErr != nil {
-		return domain.ConversationTurn{}, coordErr
-	}
-	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation && !coordinator {
+	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation {
 		var err error
 		reports, err = s.reports.PreparePiggyback(ctx, id)
 		if err != nil {
@@ -2135,18 +2092,6 @@ func (s *Service) snapshotForReviewRows(review domain.Review, rows ConversationR
 // SnapshotPage reads one bounded timeline page. The live conversation metadata
 // remains current on every page; only turns/messages/activities are windowed.
 func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (Snapshot, error) {
-	return s.snapshotPage(ctx, id, beforeSequence, limit, false)
-}
-
-// InternalSnapshotPage is SnapshotPage without the overall coordinator's human
-// audience: every stored message, turn and activity, for the explicit
-// internal-activity view. Nothing is deleted or hidden at rest; the default
-// view only chooses what to show.
-func (s *Service) InternalSnapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (Snapshot, error) {
-	return s.snapshotPage(ctx, id, beforeSequence, limit, true)
-}
-
-func (s *Service) snapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64, internal bool) (Snapshot, error) {
 	record, err := s.requireChatSession(ctx, id)
 	if err != nil {
 		return Snapshot{}, err
@@ -2168,17 +2113,7 @@ func (s *Service) snapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		// old full read. Production always wires PageReader.
 		return s.Snapshot(ctx, id)
 	}
-	reader := s.pageReader
-	if s.humanPageReader != nil && !internal {
-		human, err := s.isHumanCoordinator(ctx, record.ProjectID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if human {
-			reader = s.humanPageReader
-		}
-	}
-	rows, err := reader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
+	rows, err := s.pageReader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}

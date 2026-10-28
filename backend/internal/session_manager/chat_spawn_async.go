@@ -386,32 +386,14 @@ func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, c
 	if errors.As(cause, &setupErr) {
 		message = setupErr.Error()
 	}
-	if errors.Is(cause, context.Canceled) {
-		if _, err := m.store.SetSessionProvisionCancelled(cleanupCtx, id, m.clock()); err != nil {
-			m.logger.Error("spawn: record cancelled start", "sessionID", id, "error", err)
-		}
-		return
-	}
 	if _, err := m.setProvisionState(cleanupCtx, id, domain.SessionProvisionFailed, message); err != nil {
 		m.logger.Error("spawn: record failed start", "sessionID", id, "error", err)
-	} else {
-		m.recordChatStartupFailure(cleanupCtx, id)
-	}
-}
-
-func (m *Manager) recordChatStartupFailure(ctx context.Context, id domain.SessionID) {
-	if recorder, ok := m.chat.(interface {
-		RecordChatStartupFailure(context.Context, domain.SessionID) error
-	}); ok {
-		if err := recorder.RecordChatStartupFailure(ctx, id); err != nil {
-			m.logger.Error("spawn: record actionable startup failure", "sessionID", id, "error", err)
-		}
 	}
 }
 
 // retryFailedChatSpawn reuses the published session and durable turn queue.
 // Queueing the opening brief again would send the user's task twice.
-func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRecord, releaseHarness func(), opts ...resumeOption) (RestoreResult, bool, error) {
+func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRecord, releaseHarness func()) (RestoreResult, bool, error) {
 	if (rec.Kind != domain.KindWorker && rec.Kind != domain.KindOrchestrator) || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
 		return RestoreResult{}, false, fmt.Errorf("retry start %s: %w", rec.ID, ports.ErrChatUnsupported)
 	}
@@ -455,7 +437,7 @@ func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRe
 			}
 			return RestoreResult{}, false, cause
 		}
-		resumed, err := m.resumeAgentRecordWithPolicy(ctx, "retry start", rec, false, opts...)
+		resumed, err := m.resumeAgentRecordWithPolicy(ctx, "retry start", rec, false)
 		if err != nil {
 			return fail(err)
 		}
@@ -489,25 +471,16 @@ func (m *Manager) retryFailedChatSpawn(ctx context.Context, rec domain.SessionRe
 		return RestoreResult{}, false, wrapSpawnStage(rec.ID, ErrSpawnSystemPrompt, err)
 	}
 	config := restoredAgentConfig(rec, project.Config)
+	if rec.Metadata.Model != "" {
+		config.Model = rec.Metadata.Model
+	}
+	if rec.Metadata.Permissions != "" {
+		config.Permissions = rec.Metadata.Permissions
+	}
 	cfg := ports.SpawnConfig{
 		ProjectID: rec.ProjectID, IssueID: rec.IssueID, Kind: rec.Kind,
 		Harness: rec.Harness, RequestedMode: domain.SessionModeChat,
 		AgentConfig: config, AgentConfigResolved: true, Async: true,
-	}
-	if rec.Harness == domain.HarnessCodex {
-		// ChatUI can change the saved model independently of effort, and provider
-		// capabilities can change between attempts. Validate the actual pair
-		// without merging today's project defaults back into the saved choices.
-		cfg.EffortOverride = true
-		resolved, err := m.resolveAgentConfig(ctx, cfg, domain.ProjectConfig{})
-		if errors.Is(err, ports.ErrUnsupportedEffort) {
-			cfg.AgentConfig.Effort = "" // use this model's provider default
-			resolved, err = m.resolveAgentConfig(ctx, cfg, domain.ProjectConfig{})
-		}
-		if err != nil {
-			return RestoreResult{}, false, err
-		}
-		cfg.AgentConfig = resolved
 	}
 	projectKind := projectKindForSession(project, rec.ProjectID)
 	branch := rec.Metadata.Branch
@@ -572,9 +545,6 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 	var failures []error
 	var retries []domain.SessionRecord
 	for _, rec := range recs {
-		if !rec.IsTerminated && !rec.ProvisionCancelled && rec.ProvisionState == domain.SessionProvisionFailed {
-			m.recordChatStartupFailure(ctx, rec.ID)
-		}
 		if rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
 			continue
 		}
@@ -582,8 +552,6 @@ func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs [
 			"AO restarted before this session finished starting"); err != nil {
 			failures = append(failures, fmt.Errorf("session %s: %w", rec.ID, err))
 			retries = append(retries, rec)
-		} else {
-			m.recordChatStartupFailure(ctx, rec.ID)
 		}
 	}
 	return retries, errors.Join(failures...)
@@ -625,18 +593,6 @@ func waitForWorkers(ctx context.Context, workers *sync.WaitGroup) error {
 }
 
 func (m *Manager) cancelAsyncChatSpawn(ctx context.Context, id domain.SessionID) error {
-	// Persist intent before interrupting provider I/O: recovery must not invent a
-	// setup failure if the daemon exits before the background goroutine settles.
-	rec, ok, err := m.store.GetSession(ctx, id)
-	if err != nil {
-		return err
-	}
-	if ok && rec.ProvisionState.IsProvisioning() {
-		if _, err := m.store.SetSessionProvisionCancelled(ctx, id, m.clock()); err != nil {
-			return err
-		}
-	}
-
 	m.asyncChatSpawnsMu.Lock()
 	run := m.asyncChatSpawns[id]
 	m.asyncChatSpawnsMu.Unlock()
@@ -648,11 +604,11 @@ func (m *Manager) cancelAsyncChatSpawn(ctx context.Context, id domain.SessionID)
 			return ctx.Err()
 		}
 	}
-	rec, ok, err = m.store.GetSession(ctx, id)
+	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok || !rec.ProvisionState.IsProvisioning() {
 		return err
 	}
-	_, err = m.store.SetSessionProvisionCancelled(ctx, id, m.clock())
+	_, err = m.setProvisionState(ctx, id, domain.SessionProvisionFailed, "Session start was cancelled")
 	return err
 }
 

@@ -17,13 +17,10 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 		CreatedAt: intent.CreatedAt,
 		SourceKey: strings.TrimSpace(intent.SourceKey),
 	}
-	if intent.Type == domain.NotificationCoordinatorMessage {
-		rec.Purpose = strings.TrimSpace(intent.Purpose)
-	}
 	if !intent.Type.Valid() {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationType
 	}
-	if intent.Type != domain.NotificationNeedsInput && intent.Type != domain.NotificationCoordinatorMessage && rec.PRURL == "" {
+	if intent.Type != domain.NotificationNeedsInput && rec.PRURL == "" {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationRecord
 	}
 	rec.Title = titleForIntent(intent)
@@ -36,11 +33,6 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 
 func titleForIntent(intent Intent) string {
 	switch intent.Type {
-	case domain.NotificationCoordinatorMessage:
-		if title := strings.TrimSpace(intent.Title); title != "" {
-			return title
-		}
-		return "Your coordinator has a message for you"
 	case domain.NotificationNeedsInput:
 		return fmt.Sprintf("%s needs your input", sessionLabel(intent))
 	case domain.NotificationReadyToMerge:
@@ -66,8 +58,6 @@ func titleForIntent(intent Intent) string {
 
 func bodyForIntent(intent Intent) string {
 	switch intent.Type {
-	case domain.NotificationCoordinatorMessage:
-		return strings.TrimSpace(intent.Body)
 	case domain.NotificationNeedsInput:
 		return "Your agent is waiting on you to continue."
 	case domain.NotificationReadyToMerge:

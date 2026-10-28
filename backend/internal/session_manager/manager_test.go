@@ -66,139 +66,11 @@ type fakeStore struct {
 
 	createClientRequestErr error
 	promoteTaskErr         error
-	// stopReasons records why each agent was stopped on purpose (the stopReasonStore
-	// part of the store); stopReasonErr makes the write fail.
-	stopReasons   map[domain.SessionID]domain.StopReason
-	stopReasonErr error
-	// protected makes AutoResumeAllowed false for a session (policy never);
-	// policyUnreadable makes every policy read fail (and so fail closed).
-	protected        map[domain.SessionID]bool
-	policyUnreadable bool
-	policies         map[domain.SessionID]domain.AutoResumePolicy
-	// parkRevisionBump makes the next park see a row someone else just changed.
-	parkRevisionBump bool
-	intents          map[domain.SessionID]domain.ResumeIntent
-	intentErr        error
-	interrupted      map[domain.SessionID][]domain.InterruptedTurn
-	stories          []domain.Story
-	storiesErr       error
-	storyReads       int
-	coordination     domain.CoordinationConfig
-	coordinationErr  error
 	// worktrees maps session ID to its saved worktree rows (shutdown-saved marker).
 	worktrees map[domain.SessionID][]domain.SessionWorktreeRecord
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
-}
-
-// AutoResumeAllowed is the optional autoResumePolicyStore part of the store. It
-// fails closed, like the real store.
-func (s *fakeStore) AutoResumeAllowed(_ context.Context, id domain.SessionID) bool {
-	return !s.policyUnreadable && !s.protected[id]
-}
-
-// SetAutoResumePolicy is the optional autoResumePolicyWriter part of the store.
-func (s *fakeStore) SetAutoResumePolicy(_ context.Context, id domain.SessionID, policy domain.AutoResumePolicy, _ time.Time) error {
-	if s.policies == nil {
-		s.policies = map[domain.SessionID]domain.AutoResumePolicy{}
-	}
-	s.policies[id] = policy
-	if s.protected == nil {
-		s.protected = map[domain.SessionID]bool{}
-	}
-	s.protected[id] = !policy.Allows()
-	return nil
-}
-
-// ParkSessionHibernated is the optional sessionParker part of the store: the revision
-// check and the idle-plus-marker write, like the real one.
-func (s *fakeStore) ParkSessionHibernated(_ context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
-	rec, ok := s.sessions[id]
-	if s.parkRevisionBump {
-		rec.Revision++
-		s.sessions[id] = rec
-	}
-	if !ok || rec.Revision != expectedRevision || rec.IsTerminated || rec.HibernatedAt != nil {
-		return false, nil
-	}
-	rec.HibernatedAt = &at
-	rec.Activity.State = domain.ActivityIdle
-	rec.Revision++
-	s.sessions[id] = rec
-	return true, nil
-}
-
-// StopReason is the optional resumeCaptureStore part of the store.
-func (s *fakeStore) StopReason(_ context.Context, id domain.SessionID) (domain.StopReason, error) {
-	return s.stopReasons[id], nil
-}
-
-// InterruptedHumanTurns is the optional resumeCaptureStore part of the store.
-func (s *fakeStore) InterruptedHumanTurns(_ context.Context, id domain.SessionID, _, _ time.Time) ([]domain.InterruptedTurn, error) {
-	return s.interrupted[id], nil
-}
-
-// CaptureResumeIntent keeps a live intent, like the real store.
-func (s *fakeStore) CaptureResumeIntent(_ context.Context, fresh domain.ResumeIntent) (domain.ResumeIntent, bool, error) {
-	if s.intents == nil {
-		s.intents = map[domain.SessionID]domain.ResumeIntent{}
-	}
-	if existing, ok := s.intents[fresh.SessionID]; ok && existing.State.Live() {
-		return existing, false, nil
-	}
-	s.intents[fresh.SessionID] = fresh
-	return fresh, true, nil
-}
-
-// GetResumeIntent and DeleteResumeIntent are the optional resumeIntentStore part of the store.
-func (s *fakeStore) GetResumeIntent(_ context.Context, id domain.SessionID) (domain.ResumeIntent, bool, error) {
-	if s.intentErr != nil {
-		return domain.ResumeIntent{}, false, s.intentErr
-	}
-	intent, ok := s.intents[id]
-	return intent, ok, nil
-}
-
-func (s *fakeStore) DeleteResumeIntent(_ context.Context, id domain.SessionID) error {
-	delete(s.intents, id)
-	return nil
-}
-
-// ListStories is the optional story reader part of the store.
-func (s *fakeStore) ListStories(ctx context.Context) ([]domain.Story, error) {
-	s.storyReads++
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if s.storiesErr != nil {
-		return nil, s.storiesErr
-	}
-	return s.stories, nil
-}
-
-// GetCoordination is the optional coordination reader part of the store.
-func (s *fakeStore) GetCoordination(context.Context) (domain.CoordinationConfig, error) {
-	if s.coordinationErr != nil {
-		return domain.CoordinationConfig{}, s.coordinationErr
-	}
-	return s.coordination, nil
-}
-
-// SetStopReason is the optional stopReasonStore part of the store.
-func (s *fakeStore) SetStopReason(_ context.Context, id domain.SessionID, reason domain.StopReason, _ time.Time) error {
-	if s.stopReasonErr != nil {
-		return s.stopReasonErr
-	}
-	if s.stopReasons == nil {
-		s.stopReasons = map[domain.SessionID]domain.StopReason{}
-	}
-	if reason == domain.StopReasonNone {
-		delete(s.stopReasons, id)
-		return nil
-	}
-	s.stopReasons[id] = reason
-	return nil
 }
 
 func newFakeStore() *fakeStore {
@@ -415,9 +287,6 @@ func (f *fakeStore) SetSessionProvisionState(_ context.Context, id domain.Sessio
 		return false, nil
 	}
 	rec.ProvisionState = state
-	if state == domain.SessionProvisionProvisioning || state == domain.SessionProvisionReady {
-		rec.ProvisionCancelled = false
-	}
 	rec.ProvisionError = message
 	rec.UpdatedAt = now
 	f.sessions[id] = rec
@@ -5021,9 +4890,9 @@ func TestRestore_WorkspaceProjectRestoresChildrenAndRecordsInventory(t *testing.
 	}
 }
 
-func TestRestore_AppliesProjectAgentMode(t *testing.T) {
+func TestRestore_AppliesProjectAgentConfig(t *testing.T) {
 	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "changed-model", Effort: "low", Mode: "restore-mode"}}}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "restore-model"}}}
 	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
 	agent := &recordingAgent{}
 	lookPath := func(string) (string, error) { return "/bin/true", nil }
@@ -5032,8 +4901,8 @@ func TestRestore_AppliesProjectAgentMode(t *testing.T) {
 	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
-	if agent.lastConfig.Mode != "restore-mode" || agent.lastConfig.Model != "" || agent.lastConfig.Effort != "" {
-		t.Fatalf("restore config = %+v, want project mode with provider-default model and effort", agent.lastConfig)
+	if agent.lastConfig.Model != "restore-model" {
+		t.Fatalf("restore config model = %q, want restore-model (config must carry across restore)", agent.lastConfig.Model)
 	}
 }
 
@@ -11565,7 +11434,7 @@ func TestSend_ConfirmsAndNudgesUntilActive(t *testing.T) {
 
 func TestSend_ConfirmBudgetCapsRetries(t *testing.T) {
 	// A signaling harness that never goes active must still terminate: at most
-	// maxAttempts Sends (initial + maxAttempts-1 nudges), and Send never errors.
+	// maxAttempts Sends (initial + maxAttempts-1 nudges), and Send surfaces ErrDeliveryUnconfirmed.
 	st := newFakeStore()
 	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: "claude-code",
 		Activity: domain.Activity{State: domain.ActivityIdle}})
@@ -11574,8 +11443,9 @@ func TestSend_ConfirmBudgetCapsRetries(t *testing.T) {
 	var logBuf bytes.Buffer
 	m.logger = slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	if err := m.Send(context.Background(), "s1", "stuck prompt", nil); err != nil {
-		t.Fatalf("Send: %v", err)
+	err := m.Send(context.Background(), "s1", "stuck prompt", nil)
+	if !errors.Is(err, ErrDeliveryUnconfirmed) {
+		t.Fatalf("Send error = %v, want ErrDeliveryUnconfirmed", err)
 	}
 	if len(msg.msgs) > m.sendConfirm.maxAttempts {
 		t.Fatalf("Send calls = %d, want <= %d (budget cap)", len(msg.msgs), m.sendConfirm.maxAttempts)
@@ -11591,6 +11461,59 @@ func TestSend_ConfirmBudgetCapsRetries(t *testing.T) {
 		t.Fatalf("log = %q, want exhausted confirmation warning with session and attempt count", logText)
 	}
 }
+
+func TestSend_ConfirmAcceptsRetainedSubmissionEvidence(t *testing.T) {
+	// A user prompt whose UserPromptSubmit hook lands AFTER delivery (advancing
+	// LatestUserPromptAt past the delivery instant) but whose turn completes
+	// between activity polls leaves the session idle, with Active never observed.
+	// Confirmation must treat that later durable submission evidence as success
+	// instead of returning a false ErrDeliveryUnconfirmed, which would prompt a
+	// duplicate retry of an already-delivered message. The baseline is the
+	// delivery instant (options.InteractionAt), so the hook's later write is
+	// detectable regardless of when, relative to a store read, it arrives.
+	st := newFakeStore()
+	base := time.Now()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: "claude-code",
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{LatestUserPromptAt: base}})
+	msg := &advancePromptOnNudgeMessenger{sessionID: "s1", store: st, at: base.Add(time.Hour)}
+	m := newSendTestManager(t, signalingAgent{}, msg, st)
+
+	if err := m.SendWithOptions(context.Background(), "s1", "do the thing", nil,
+		ports.MessageDeliveryOptions{AuthoredByUser: true}); err != nil {
+		t.Fatalf("Send error = %v, want nil (retained submission evidence recognized)", err)
+	}
+	if got := st.sessions["s1"].Activity.State; got == domain.ActivityActive {
+		t.Fatalf("Activity.State = active, want it to have stayed idle (evidence path, not the active path)")
+	}
+}
+
+func TestSend_CoordinationDeliveryIgnoresPromptEvidence(t *testing.T) {
+	// A coordination (ao send) delivery deliberately leaves LatestUserPromptAt
+	// unchanged, so that marker is the wrong evidence for it: an advance during
+	// the confirm window can only come from an unrelated concurrent user prompt,
+	// and crediting it would falsely confirm a coordination send. Here the nudge
+	// advances LatestUserPromptAt but no coordination checkpoint is recorded, so
+	// confirmation must still exhaust its budget and surface ErrDeliveryUnconfirmed.
+	st := newFakeStore()
+	base := time.Now().Add(-time.Hour)
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: "claude-code",
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{LatestUserPromptAt: base}})
+	msg := &advancePromptOnNudgeMessenger{sessionID: "s1", store: st, at: time.Now()}
+	m := newSendTestManager(t, signalingAgent{}, msg, st)
+
+	err := m.Send(context.Background(), "s1", "status update please", nil)
+	if !errors.Is(err, ErrDeliveryUnconfirmed) {
+		t.Fatalf("Send error = %v, want ErrDeliveryUnconfirmed (coordination send ignores prompt evidence)", err)
+	}
+}
+
+// The positive coordination-acceptance case (marker recorded, session back to
+// idle before confirmation polls) is covered end-to-end against a real sqlite
+// store and the real lifecycle write path by
+// TestSend_CoordinationAcceptanceMarker_RealStore in
+// send_confirm_coordination_integration_test.go.
 
 func TestSend_BlockedSessionRejectsDelivery(t *testing.T) {
 	// A session paused on a permission decision (blocked) must not receive the
@@ -11857,6 +11780,29 @@ func (m *flipOnNudgeMessenger) Send(_ context.Context, _ domain.SessionID, msg s
 			m.store.sessions[m.sessionID] = rec
 		}
 		m.flipped = true
+	}
+	return nil
+}
+
+// advancePromptOnNudgeMessenger models an Enter-only nudge whose prompt is
+// accepted (UserPromptSubmit advances LatestUserPromptAt) while the turn
+// completes within the poll gap, so Activity never settles on Active.
+type advancePromptOnNudgeMessenger struct {
+	msgs      []string
+	sessionID domain.SessionID
+	store     *fakeStore
+	at        time.Time
+	advanced  bool
+}
+
+func (m *advancePromptOnNudgeMessenger) Send(_ context.Context, _ domain.SessionID, msg string) error {
+	m.msgs = append(m.msgs, msg)
+	if msg == "" && !m.advanced {
+		if rec, ok := m.store.sessions[m.sessionID]; ok {
+			rec.Metadata.LatestUserPromptAt = m.at
+			m.store.sessions[m.sessionID] = rec
+		}
+		m.advanced = true
 	}
 	return nil
 }
@@ -12156,14 +12102,4 @@ func TestPromptOutputContainsMatchesAStyledPrompt(t *testing.T) {
 	if promptOutputContains("\x1b[34mloading…\x1b[39m", []string{"│ >"}) {
 		t.Fatal("output without the prompt matched")
 	}
-}
-
-func (f *fakeStore) SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
-	ok, err := f.SetSessionProvisionState(ctx, id, domain.SessionProvisionFailed, "Startup cancelled.", now)
-	if ok {
-		rec := f.sessions[id]
-		rec.ProvisionCancelled = true
-		f.sessions[id] = rec
-	}
-	return ok, err
 }

@@ -147,20 +147,6 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 	return adapter.ForceDestroy(ctx, info)
 }
 
-// PreflightRemoval delegates the non-destructive "can this worktree's work be
-// kept safe" check to the project-appropriate adapter; an adapter without one has
-// nothing to check.
-func (w *Workspace) PreflightRemoval(ctx context.Context, info ports.WorkspaceInfo) error {
-	adapter, err := w.adapterForProject(ctx, info.ProjectID)
-	if err != nil {
-		return err
-	}
-	if preflighter, ok := adapter.(ports.WorkspaceRemovalPreflighter); ok {
-		return preflighter.PreflightRemoval(ctx, info)
-	}
-	return nil
-}
-
 // StashUncommitted delegates preservation of dirty workspace state to the
 // project-appropriate workspace adapter.
 func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceInfo) (string, error) {

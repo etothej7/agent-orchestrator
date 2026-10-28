@@ -1,5 +1,3 @@
-import { NOTIFICATION_SIGNAL_POLICY, type NotificationSignalPolicy } from "../shared/notification-signal-policy";
-
 /**
  * Notification signal policy for the main process.
  *
@@ -11,19 +9,7 @@ import { NOTIFICATION_SIGNAL_POLICY, type NotificationSignalPolicy } from "../sh
  */
 
 /** The notification types defined by `backend/internal/domain/notification.go`. */
-export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged" | "coordinator_message";
-
-/**
- * `coordinator_message` purposes that need Ed: the `ao ask` purposes, and work
- * that stopped (`ao tell --kind stopped`, which says "needs you"). A verified
- * result is the only coordinator message that is just good news.
- */
-const COORDINATOR_URGENT_PURPOSES: ReadonlySet<string> = new Set([
-	"scope_question",
-	"blocking_decision",
-	"completion_decision",
-	"stopped_work",
-]);
+export type NotificationType = "needs_input" | "ready_to_merge" | "pr_merged" | "pr_closed_unmerged";
 
 /**
  * Whether to fire the Windows/Linux taskbar flash. Restricted to the
@@ -33,7 +19,7 @@ const COORDINATOR_URGENT_PURPOSES: ReadonlySet<string> = new Set([
  * The macOS dock bounce is deliberately NOT gated by this allowlist — every
  * notification bounces there, with urgency carried by {@link dockBounceType}.
  */
-const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge", "coordinator_message"]);
+const ATTENTION_TYPES: ReadonlySet<string> = new Set<NotificationType>(["needs_input", "ready_to_merge"]);
 
 /** Whether this notification type should flash the Windows/Linux taskbar. */
 export function shouldSignalAttention(type: string | undefined): boolean {
@@ -94,54 +80,10 @@ export function toastSilent(
 
 /**
  * macOS dock bounce style. A blocked agent waiting on the user keeps bouncing
- * until the app is activated ("critical"), and so does the coordinator asking Ed
- * for a decision or reporting stopped work; anything else bounces once
+ * until the app is activated ("critical"); anything else bounces once
  * ("informational"). This is where urgency lives, so every notification can
- * signal without a merged PR or a verified result nagging as insistently as a
- * blocked agent.
+ * signal without a merged PR nagging as insistently as a blocked agent.
  */
-export function dockBounceType(type: string | undefined, purpose?: string): "critical" | "informational" {
-	if (type === "needs_input") return "critical";
-	return type === "coordinator_message" && purpose !== undefined && COORDINATOR_URGENT_PURPOSES.has(purpose) ? "critical" : "informational";
-}
-
-export type NotificationSignalPlan = {
-	sound: boolean;
-	banner: boolean;
-	/** The macOS dock bounce to start, or null for none. */
-	dockBounce: "critical" | "informational" | null;
-	/** Flash the Windows/Linux taskbar. */
-	flash: boolean;
-};
-
-/**
- * Every OS signal a notification may raise, decided in one place so the policy constants
- * (shared/notification-signal-policy.ts) are the only switch. With the default policy this is
- * always "nothing".
- */
-export function planNotificationSignals(
-	input: {
-		type?: string;
-		purpose?: string;
-		title?: string;
-		platform: NodeJS.Platform;
-		/** The person is already looking at AO (window focused, or the prompt is on screen). */
-		looking: boolean;
-		soundNotificationsEnabled: boolean;
-		toastSupported: boolean;
-	},
-	policy: NotificationSignalPolicy = NOTIFICATION_SIGNAL_POLICY,
-): NotificationSignalPlan {
-	const sound =
-		policy.sound &&
-		shouldSignalAttention(input.type) &&
-		input.soundNotificationsEnabled &&
-		(input.platform === "linux" || !input.looking);
-	if (input.looking) return { sound, banner: false, dockBounce: null, flash: false };
-	return {
-		sound,
-		banner: policy.osBanners && shouldToast({ title: input.title }, input.toastSupported),
-		dockBounce: input.platform === "darwin" && policy.dockBounce ? dockBounceType(input.type, input.purpose) : null,
-		flash: (input.platform === "win32" || input.platform === "linux") && policy.taskbarFlash && shouldSignalAttention(input.type),
-	};
+export function dockBounceType(type: string | undefined): "critical" | "informational" {
+	return type === "needs_input" ? "critical" : "informational";
 }

@@ -71,18 +71,6 @@ UPDATE sessions
 SET hibernated_at = sqlc.narg(hibernated_at)
 WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
 
--- name: ParkSessionHibernated :execrows
--- Boot-time auto-resume parks an idle session: the sleep marker and the idle state
--- in ONE revision-checked write, so the row has exactly the shape the idle sweeper
--- leaves (idle plus the marker) and every reader that treats exited as dead sees a
--- session a message can wake. No provider is launched.
-UPDATE sessions
-SET hibernated_at = sqlc.arg(hibernated_at),
-    activity_state = 'idle',
-    updated_at = sqlc.arg(hibernated_at)
-WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision)
-    AND is_terminated = 0 AND hibernated_at IS NULL AND session_mode = 'chat';
-
 -- name: MarkHarnessSessionsStale :execrows
 -- Marks the live launches of a harness an update just replaced. A launch that
 -- was already marked keeps when it first went stale; the version moves on.
@@ -302,7 +290,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -324,7 +312,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -346,7 +334,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -368,7 +356,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
     requested_output,
-    provision_state, provision_error, provision_cancelled, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
+    provision_state, provision_error, provision_steps, branch_state, branch_naming, temporary_branch, is_task_preparation, automation_run_id, automation_launch_completed,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
@@ -515,14 +503,8 @@ WHERE id = sqlc.arg(id)
 -- (the controller commit writes the same row from its own goroutine).
 UPDATE sessions SET
     provision_state = sqlc.arg(provision_state),
-    provision_cancelled = CASE WHEN ?1 IN ('provisioning', 'ready') THEN FALSE ELSE provision_cancelled END,
     provision_error = sqlc.arg(provision_error),
     updated_at = sqlc.arg(updated_at)
-WHERE id = sqlc.arg(id);
-
--- name: SetSessionProvisionCancelled :execrows
-UPDATE sessions SET provision_state = sqlc.arg(provision_state), provision_cancelled = sqlc.arg(provision_cancelled),
-    provision_error = sqlc.arg(provision_error), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
 -- name: SetSessionProvisionSteps :execrows

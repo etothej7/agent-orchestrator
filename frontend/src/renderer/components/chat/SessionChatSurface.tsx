@@ -16,8 +16,6 @@ import { useSideChatsAvailable } from "../../lib/side-chats";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCoordinatorAskStatus } from "../../hooks/useCoordinatorAskStatus";
-import { useReadCoordinatorTells } from "../../hooks/useReadCoordinatorTells";
 import { useChatPermissionModes } from "../../hooks/useChatPermissionModes";
 import { useChatModelChoices } from "../../hooks/useChatModelChoices";
 import {
@@ -215,7 +213,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// boundary that decides whether switching to Terminal needs user consent.
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id, hostId);
-	const askStatusOf = useCoordinatorAskStatus(!hostId && session.kind === "orchestrator");
 	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness, hostId, session.kind);
 	const {
 		acknowledgeAcceptedTurn,
@@ -238,8 +235,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const [chosenSwitch, setChosenSwitch] = useState<PendingAgentSwitch>();
 	// The chat is the tab in front: not a file, terminal or reviewer tab.
 	const chatInFront = !workspaceFileActive && !workspaceActiveTabKey && !reviewerTarget && !reviewerChatSelected && !shellTarget;
-	// Results and stops count on the Dock badge until they are seen here, in the focused window.
-	const coordinatorUnread = useReadCoordinatorTells(!hostId && session.kind === "orchestrator", chatInFront && !arriving, snapshot?.items, askStatusOf, session.id);
 	// Sending is the switch, so a pick is dropped once another tab comes forward: a message
 	// typed on coming back could otherwise go to an agent no longer meant.
 	useEffect(() => {
@@ -263,9 +258,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const switchError = providerSwitch.error ?? sendSwitchError;
 	const clearSwitchError = () => { setSendSwitchError(undefined); providerSwitch.reset(); };
 	const currentHarness = snapshot?.harness;
-	// A pick made in Developer Mode lapses when the mode is turned off.
-	const developerMode = useUiStore((state) => state.developerMode);
-	const pendingSwitch = developerMode && currentHarness && chosenSwitch?.harness !== currentHarness ? chosenSwitch : undefined;
+	const pendingSwitch = currentHarness && chosenSwitch?.harness !== currentHarness ? chosenSwitch : undefined;
 	// Catalogs are cached by session; a switch made elsewhere (another window or device)
 	// leaves the outgoing agent's, so they follow the agent the chat reports.
 	useEffect(() => {
@@ -635,9 +628,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				onLoadOlder={loadOlder}
 				busy={commands.busy}
 				excerptsEnabled
-				askStatusOf={askStatusOf}
-				coordinatorUnread={!hostId && session.kind === "orchestrator" ? coordinatorUnread : undefined}
-				onSend={async (text, attachments, clientMessageId, excerpts, replyToAskId) => {
+				onSend={async (text, attachments, clientMessageId, excerpts) => {
 					// Only claim /btw and /side where side chats can open. Elsewhere the
 					// text goes to the agent as typed (it may be the harness's own skill),
 					// so a failed side launch can never strand the main draft.
@@ -657,7 +648,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 						text: viaClaude && (pendingSwitch ? pendingSwitch.ultracode : ultracode.on) ? withUltracode(text) : text,
 						attachments,
 						clientMessageId,
-						replyToAskId,
 						excerpts: excerpts?.map((excerpt) => ({
 							conversationId: excerpt.conversationId,
 							messageId: excerpt.messageId,

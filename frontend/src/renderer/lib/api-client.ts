@@ -4,7 +4,6 @@ import type { DaemonStatus } from "../../shared/daemon-status";
 import { daemonFailureMessage } from "./daemon-failure";
 import { captureRendererEvent } from "./telemetry";
 import { captureApiErrorToSentry } from "./sentry";
-import { HUMAN_CAPABILITY_REQUIRED_CODE, notifyHumanCapabilityRequired } from "./human-capability-notice";
 
 function devApiBaseUrl(): string {
 	return typeof window === "undefined" ? "http://127.0.0.1:3001" : window.location.origin;
@@ -67,11 +66,6 @@ const ROUTE_TEMPLATES = [
     "/api/v1/awake/low-power/authorize", "/api/v1/awake/low-power/revoke", "/api/v1/awake/sessions/{awakeId}/end",
     "/api/v1/awake/sessions/{awakeId}/extend",
 	"/api/v1/agents",
-	"/api/v1/human-requests",
-	"/api/v1/human-requests/{id}",
-	"/api/v1/human-requests/{id}/approve",
-	"/api/v1/human-requests/{id}/deny",
-	"/api/v1/terminal-tickets",
 	"/api/v1/agents/install-jobs",
 	"/api/v1/agents/auth-plans",
 	"/api/v1/agents/installers",
@@ -320,7 +314,6 @@ async function runtimeFetch(input: Request): Promise<Response> {
 			code,
 			requestId,
 		);
-		if (response.status === 403 && code === HUMAN_CAPABILITY_REQUIRED_CODE) notifyHumanCapabilityRequired();
 	}
 	return response;
 }

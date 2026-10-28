@@ -949,22 +949,6 @@ describe("SessionInspector PR section", () => {
     expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
   });
 
-  it("shows a quiet 'needs relaunch for identity' line only for a live session with no identity proof", () => {
-    const { unmount } = renderWithQuery(
-      <SessionInspector session={session([pr(7, "open")], { needsIdentityRelaunch: true })} />,
-    );
-    const note = document.querySelector("[data-slot='identity-relaunch-note']") as HTMLElement;
-    expect(note).toHaveTextContent("Needs relaunch for identity");
-    // It explains itself without asking for anything: no button but the explanation, no dialog, no alert.
-    expect(screen.getByRole("button", { name: /may relaunch it when it is idle/ })).toBeInTheDocument();
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    unmount();
-
-    renderWithQuery(<SessionInspector session={session([pr(7, "open")])} />);
-    expect(screen.queryByText("Needs relaunch for identity")).not.toBeInTheDocument();
-  });
-
   it("keeps durable session policies in Summary and operational review controls in Reviews", async () => {
     renderWithQuery(<SessionInspector session={session([pr(7, "open")])} />);
 

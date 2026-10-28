@@ -461,28 +461,24 @@ describe("HumanMessage attachments", () => {
 		);
 	});
 
-	it("draws ordinary user-authored path lists as a list without turning them into images", () => {
+	it("leaves ordinary user-authored path lists untouched", () => {
 		const text =
 			"Document this example:\n\nAttached files (read these files in the workspace):\n- docs/screenshot.png";
-		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
 
 		expect(screen.queryByRole("img")).not.toBeInTheDocument();
-		expect(document.body.textContent).toContain("Attached files (read these files in the workspace):");
-		expect([...container.querySelectorAll("ul > li")].map((item) => item.textContent)).toEqual(["docs/screenshot.png"]);
+		expect(document.body.textContent).toContain(text);
 	});
 
-	// Lists are the only structure a sent message is drawn with: emphasis, quotes and
-	// the rest of Markdown stay exactly as typed, and session URLs still link.
-	it("linkifies session URLs and draws only lists, never other Markdown, in the human message", () => {
+	it("linkifies session URLs without parsing the human message as Markdown", () => {
 		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
 		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
 
-		const body = container.querySelector(".cursor-chat-human-message [data-chat-message-body]");
-		expect([...container.querySelectorAll("ul > li")].map((item) => item.textContent)).toEqual(["fix *bug*"]);
-		expect(body?.textContent).toContain("Notes:");
-		expect(body?.textContent).toContain("ao://sessions/proj/sess\n> write test");
+		const paragraph = container.querySelector(".cursor-chat-human-message > p");
+		expect(paragraph).toHaveClass("whitespace-pre-wrap");
+		expect(paragraph?.textContent).toBe(text);
 		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
-		expect(container.querySelector("blockquote, em")).toBeNull();
+		expect(container.querySelector("ul, blockquote, em")).toBeNull();
 	});
 });
 
@@ -544,11 +540,9 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = chatFixtureLongHistory(8);
 		const view = render(<ChatWorkspace snapshot={snapshot} />);
 		const log = screen.getByRole("log");
-		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1100 });
-		// Wheel intent precedes the browser's scroll. Move afterward so cancellation
-		// of an in-flight follow cannot mistake the reader's new position for its own.
+		stubGeometry(log, { scrollHeight: 4000, clientHeight: 800, scrollTop: 1000 });
+		// Reading older turns: the upward wheel holds the follow, and the scroll it causes releases it.
 		fireEvent.wheel(log, { deltaY: -120 });
-		log.scrollTop = 1000;
 		fireEvent.scroll(log);
 		expect(screen.getByRole("button", { name: "Jump to latest" })).toBeInTheDocument();
 
@@ -1091,6 +1085,47 @@ describe("ChatWorkspace timeline", () => {
 
 		await user.click(worked);
 		expect(screen.getByText("I found the relevant component.")).toBeVisible();
+	});
+
+	it("keeps only the run the agent is working in open while the turn runs", () => {
+		const turnId = "live-turn-runs";
+		const at = "2026-08-11T10:01:00Z";
+		const call = (id: string, sequence: number, summary: string) => ({
+			kind: "activity" as const, id, turnId, sequence, revision: 0,
+			activityKind: "command" as const, status: "completed" as const, summary,
+			detail: { command: summary }, createdAt: at,
+		});
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			controller: { state: "busy" },
+			latestSequence: 7,
+			turns: [{ id: turnId, state: "running", requestedAt: at, startedAt: at }],
+			items: [
+				{
+					kind: "message", id: "prompt", turnId, sequence: 1, revision: 0,
+					role: "user", origin: "human", text: "Fix the build",
+					streaming: false, createdAt: at,
+				},
+				call("early-1", 2, "ls"),
+				call("early-2", 3, "cat go.mod"),
+				{
+					kind: "message", id: "between", turnId, sequence: 4, revision: 0,
+					role: "assistant", origin: "provider", text: "Found it, building now.",
+					streaming: false, createdAt: at,
+				},
+				call("late-1", 5, "go build ./..."),
+				call("late-2", 6, "go vet ./..."),
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		// The current run is open and shows each call; the earlier run is folded to
+		// its summary line.
+		const toggle = (name: RegExp) => screen.getByText(name).closest("button");
+		expect(toggle(/^Explored 2 tool calls$/)).toHaveAttribute("aria-expanded", "false");
+		expect(toggle(/^Ran 2 tool calls$/)).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getAllByText("Ran command")).toHaveLength(2);
 	});
 
 	it("starts a new visual turn at a steer: earlier work settles, the steer gets its own Working row", () => {

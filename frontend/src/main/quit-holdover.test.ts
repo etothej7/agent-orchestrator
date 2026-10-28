@@ -164,7 +164,8 @@ describe("quit hold-over wiring in main.ts", () => {
 
 	it("starts in before-quit only once the quit can no longer be held back, before any teardown", () => {
 		const handler = main.slice(main.indexOf('app.on("before-quit"'));
-		const gate = handler.indexOf("desktopQuit.holdForWarnings(event)");
+		// The last thing that can still call the quit off: the unsent-draft confirmation.
+		const gate = handler.indexOf("desktopQuit.cancelQuit()");
 		const start = handler.indexOf("quitHoldOver.start()");
 		const teardown = handler.indexOf("browserQuitRequested = true");
 		expect(gate).toBeGreaterThan(-1);

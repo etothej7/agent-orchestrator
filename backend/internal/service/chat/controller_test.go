@@ -18,7 +18,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
-	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -80,17 +79,7 @@ func boundedSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
 	return chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, id string, before, limit int64) (chatsvc.ConversationRows, error) {
 		rows, err := st.LoadConversationSnapshotPage(ctx, id, before, limit)
 		return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch,
-			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities,
-			OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
-	})
-}
-
-func boundedHumanSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {
-	return chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, id string, before, limit int64) (chatsvc.ConversationRows, error) {
-		rows, err := st.LoadCoordinatorHumanSnapshotPage(ctx, id, before, limit)
-		return chatsvc.ConversationRows{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch,
-			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities,
-			OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore}, err
+			Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, err
 	})
 }
 
@@ -3238,12 +3227,10 @@ func newHarnessWithConversationAndStoreForHarness(
 	)
 	chatStore := wrapStore(st)
 	svc := chatsvc.New(chatsvc.Options{
-		Store:           chatStore,
-		Reader:          fullSnapshotReader(st),
-		PageReader:      boundedSnapshotReader(st),
-		HumanPageReader: boundedHumanSnapshotReader(st),
-		Notifier:        notify.New(notify.Deps{Store: st}),
-		Sessions:        st,
+		Store:      chatStore,
+		Reader:     fullSnapshotReader(st),
+		PageReader: boundedSnapshotReader(st),
+		Sessions:   st,
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)
 			return nil
@@ -4418,58 +4405,50 @@ func turnStateByText(t *testing.T, s store.ConversationSnapshot) map[string]doma
 // finishes. That has to be true of the daemon, not just of the placeholder: a
 // second turn/start against a busy provider is not a thing the agent can run.
 func TestSendWhileBusyQueuesUntilTheTurnEnds(t *testing.T) {
-	for _, origin := range []domain.MessageOrigin{domain.MessageOriginHuman, domain.MessageOriginAutomation} {
-		t.Run(string(origin), func(t *testing.T) {
-			h := newHarness(t)
-			ctx := context.Background()
+	h := newHarness(t)
+	ctx := context.Background()
 
-			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-				Text: "first", ClientMessageID: "c1", Origin: origin,
-			}); err != nil {
-				t.Fatalf("first Send: %v", err)
-			}
-			h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
-			h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-				return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
-			})
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "first", ClientMessageID: "c1", Origin: domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("first Send: %v", err)
+	}
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateRunning
+	})
 
-			queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
-				Text: "second", ClientMessageID: "c2", Origin: origin,
-			})
-			if err != nil {
-				t.Fatalf("mid-turn Send: %v", err)
-			}
-			if queued.State != domain.TurnStateQueued {
-				t.Errorf("mid-turn send reported state %q, want queued", queued.State)
-			}
-			if queued.ProviderTurnID != "" {
-				t.Errorf("mid-turn send claimed provider turn %q; it was never dispatched", queued.ProviderTurnID)
-			}
-			if got := h.conv.sentTexts(); len(got) != 1 {
-				t.Fatalf("provider received %v; the second message must wait", got)
-			}
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "second", ClientMessageID: "c2", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("mid-turn Send: %v", err)
+	}
+	if queued.State != domain.TurnStateQueued {
+		t.Errorf("mid-turn send reported state %q, want queued", queued.State)
+	}
+	if queued.ProviderTurnID != "" {
+		t.Errorf("mid-turn send claimed provider turn %q; it was never dispatched", queued.ProviderTurnID)
+	}
+	if got := h.conv.sentTexts(); len(got) != 1 {
+		t.Fatalf("provider received %v; the second message must wait", got)
+	}
 
-			// The running turn ends, so the queued message goes out on its own.
-			eligibleAt := time.Now()
-			h.conv.emit(ports.ChatEvent{
-				Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
-				TurnState: domain.TurnStateCompleted,
-			})
+	// The running turn ends, so the queued message goes out on its own.
+	h.conv.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+		TurnState: domain.TurnStateCompleted,
+	})
 
-			snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-				return turnStateByText(t, s)["second"] == domain.TurnStateRunning
-			})
-			if elapsed := time.Since(eligibleAt); elapsed > 2*time.Second {
-				t.Fatalf("queue added a fixed delay after completion: %s", elapsed)
-			}
-			states := turnStateByText(t, snapshot)
-			if states["first"] != domain.TurnStateCompleted {
-				t.Errorf("first turn = %q, want completed", states["first"])
-			}
-			if got := h.conv.sentTexts(); len(got) != 2 || got[1] != "second" {
-				t.Fatalf("provider received %v, want the queued message dispatched second", got)
-			}
-		})
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["second"] == domain.TurnStateRunning
+	})
+	states := turnStateByText(t, snapshot)
+	if states["first"] != domain.TurnStateCompleted {
+		t.Errorf("first turn = %q, want completed", states["first"])
+	}
+	if got := h.conv.sentTexts(); len(got) != 2 || got[1] != "second" {
+		t.Fatalf("provider received %v, want the queued message dispatched second", got)
 	}
 }
 

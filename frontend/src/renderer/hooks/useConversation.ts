@@ -9,7 +9,6 @@
  * in bounded pages only when the reader asks for it.
  */
 
-import { conversationAudienceFor, useShowInternalActivity, type ConversationAudience } from "../stores/conversation-audience-store";
 import {
 	type InfiniteData,
 	type QueryClient,
@@ -20,7 +19,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
@@ -34,7 +33,6 @@ import type {
 	ApprovalMode,
 	ActivityStatus,
 	ConversationActivity,
-	ConversationAudienceTag,
 	ConversationItem,
 	ConversationMessage,
 	ConversationSnapshot,
@@ -75,8 +73,6 @@ export interface ConversationSendInput {
 	clientMessageId?: string;
 	/** The user's one-click "continue" after stopping a turn. */
 	continuation?: boolean;
-	/** The coordinator question this message answers: its message id. Only an explicit reply closes a question. */
-	replyToAskId?: string;
 	/** Switches the agent first; the new agent answers this message as its first turn. */
 	providerSwitch?: Omit<components["schemas"]["ProviderSwitchRequest"], "idempotencyKey" | "message">;
 	/** What the transcript's "Switched" line shows while the switch runs. Never sent. */
@@ -127,20 +123,8 @@ interface ConversationEditMutationInput extends ConversationRetryMutationInput {
 
 export const conversationQueryRoot = ["conversation"] as const;
 
-/**
- * The unfiltered coordinator view caches apart from the default one, as a child
- * of the session's key: invalidating `["conversation", id]` (change events,
- * mutations) refreshes both, and flipping the toggle never shows one audience's
- * rows under the other's key. Remote hosts have no unfiltered view.
- */
-export function conversationQueryKey(sessionId: string, hostId?: string, audience: ConversationAudience = hostId ? "human" : conversationAudienceFor(sessionId)) {
-	if (hostId) return ["remote-conversation", hostId, sessionId] as const;
-	return audience === "all" ? ([...conversationQueryRoot, sessionId, "all"] as const) : ([...conversationQueryRoot, sessionId] as const);
-}
-
-/** Every audience's cache of one local session's conversation. */
-export function conversationSessionQueryKey(sessionId: string) {
-	return [...conversationQueryRoot, sessionId] as const;
+export function conversationQueryKey(sessionId: string, hostId?: string) {
+	return hostId ? (["remote-conversation", hostId, sessionId] as const) : ([...conversationQueryRoot, sessionId] as const);
 }
 
 export function conversationModelsQueryKey(sessionId: string, hostId?: string) {
@@ -382,9 +366,9 @@ export interface ConversationQueryResult {
 	loadOlder: () => void;
 }
 
-async function fetchConversationPage(sessionId: string, hostId?: string, beforeSequence?: number, audience: ConversationAudience = "human"): Promise<ConversationSnapshot> {
+async function fetchConversationPage(sessionId: string, hostId?: string, beforeSequence?: number): Promise<ConversationSnapshot> {
 	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/conversation", {
-		params: { path: { sessionId }, query: { beforeSequence, limit: CONVERSATION_PAGE_SIZE, audience: audience === "all" ? "all" : undefined } },
+		params: { path: { sessionId }, query: { beforeSequence, limit: CONVERSATION_PAGE_SIZE } },
 	});
 	if (error) throw error;
 	return toSnapshot(data as WireSnapshot);
@@ -415,11 +399,11 @@ export async function refreshRemoteConversation(queryClient: QueryClient, sessio
 	});
 }
 
-export function conversationQueryOptions(sessionId: string, hostId?: string, audience: ConversationAudience = hostId ? "human" : conversationAudienceFor(sessionId)) {
+export function conversationQueryOptions(sessionId: string, hostId?: string) {
 	return infiniteQueryOptions({
-		queryKey: conversationQueryKey(sessionId, hostId, audience),
+		queryKey: conversationQueryKey(sessionId, hostId),
 		initialPageParam: undefined as number | undefined,
-		queryFn: ({ pageParam }) => fetchConversationPage(sessionId, hostId, pageParam, audience),
+		queryFn: ({ pageParam }) => fetchConversationPage(sessionId, hostId, pageParam),
 		getNextPageParam: (page) => (page.hasMoreBefore ? page.oldestSequence : undefined),
 		// A mode mismatch is authoritative for this committed controller epoch, so
 		// retrying the same request cannot help and would leave the surface loading
@@ -437,21 +421,6 @@ function selectConversationPages(data: InfiniteData<ConversationSnapshot>) {
 	return mergeConversationPages(data.pages);
 }
 
-/**
- * The default view never carries an internal row, but the previous (unfiltered)
- * pages stay on screen while it loads after the toggle goes off. Drop anything the
- * daemon labelled internal so it cannot flash in the normal view.
- */
-function selectHumanConversationPages(data: InfiniteData<ConversationSnapshot>) {
-	const merged = selectConversationPages(data);
-	if (!merged?.items.some((item) => item.audience === "internal") && !merged?.turns.some((turn) => turn.audience === "internal")) return merged;
-	return {
-		...merged,
-		items: merged.items.filter((item) => item.audience !== "internal"),
-		turns: merged.turns.filter((turn) => turn.audience !== "internal"),
-	};
-}
-
 export function useConversation(sessionId: string | undefined, hostId?: string): ConversationQueryResult {
 	const queryClient = useQueryClient();
 	const refreshError = useQuery({
@@ -460,26 +429,11 @@ export function useConversation(sessionId: string | undefined, hostId?: string):
 		initialData: false,
 		enabled: false,
 	}).data;
-	const [showInternal] = useShowInternalActivity(sessionId ?? "");
-	const audience: ConversationAudience = showInternal && !hostId ? "all" : "human";
 	const query = useInfiniteQuery({
-		...conversationQueryOptions(sessionId ?? "", hostId, audience),
+		...conversationQueryOptions(sessionId ?? "", hostId),
 		enabled: Boolean(sessionId),
-		select: audience === "all" ? selectConversationPages : selectHumanConversationPages,
-		// Flipping the audience swaps the query key. Keep this session's previous
-		// rows on screen until the other view arrives so the composer, its draft and
-		// the scroll position are not torn down by a loading state.
-		placeholderData: (previous, previousQuery) =>
-			previousQuery?.queryKey[0] === conversationQueryRoot[0] && previousQuery.queryKey[1] === sessionId ? previous : undefined,
+		select: selectConversationPages,
 	});
-	// A cached view of the other audience may have missed change events while it was
-	// closed. Flipping the toggle refreshes the one now open.
-	const lastAudience = useRef(audience);
-	useEffect(() => {
-		if (lastAudience.current === audience) return;
-		lastAudience.current = audience;
-		if (sessionId) void queryClient.invalidateQueries({ queryKey: conversationSessionQueryKey(sessionId) });
-	}, [audience, queryClient, sessionId]);
 	useEffect(() => {
 		if (!hostId || !sessionId) return;
 		const timer = window.setInterval(() => {
@@ -904,7 +858,7 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 	 * means "wait and try again", and one means this harness cannot do it at all.
 	 */
 	const steer = useMutation({
-		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean; replyToAskId?: string }) => {
+		mutationFn: async (input: { text: string; attachments?: WireImageContent[]; clientMessageId?: string; recoverOnly?: boolean }) => {
 			const { data, error } = await clientForSessionHost(hostId).POST(
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
@@ -991,12 +945,11 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 					applyQueuedTurnOrderToPages(previous, turnIds),
 				);
 			}
-			// The rollback targets the cache this edit touched, even if the audience toggle flipped meanwhile.
-			return { previous, queryKey };
+			return { previous };
 		},
 		onError: (_error, _turnIds, context) => {
-			if (!context?.previous || !context.queryKey) return;
-			queryClient.setQueryData(context.queryKey, context.previous);
+			if (!sessionId || !context?.previous) return;
+			queryClient.setQueryData(conversationQueryKey(sessionId, hostId), context.previous);
 		},
 		onSettled: () => {
 			invalidate();
@@ -1299,10 +1252,10 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
-		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean, replyToAskId?: string): Promise<ChatSteerOutcome> => {
+		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
 			try {
 				if (sessionId) recordDirectWorkerInteraction(sessionId, "chat", "worker", hostId);
-				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly, replyToAskId });
+				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
 				return { status: "accepted" };
 			} catch (error) {
 				const outcome = steerNonAcceptance(error);
@@ -1797,7 +1750,6 @@ export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 			retryOfTurnId: turn.retryOfTurnId,
 			hasRetryAttempt: turn.hasRetryAttempt,
 			hasHumanPrompt: turn.hasHumanPrompt,
-			audience: toAudienceTag(turn.audience),
 			errorMessage: turn.errorMessage,
 			usageLimit: turn.usageLimit ? {
 				resetsAt: turn.usageLimit.resetsAt ?? undefined,
@@ -1935,14 +1887,8 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		senderProjectId: wire.senderProjectId,
 		senderDisplayName: wire.senderDisplayName,
 		clientMessageId: wire.clientMessageId,
-		purpose: wire.purpose || undefined,
-		audience: toAudienceTag(wire.audience),
 		createdAt: wire.createdAt,
 	};
-}
-
-function toAudienceTag(value: unknown): ConversationAudienceTag | undefined {
-	return value === "human" || value === "internal" ? value : undefined;
 }
 
 function toActivity(wire: WireActivity): ConversationActivity {
@@ -1964,7 +1910,6 @@ function toActivity(wire: WireActivity): ConversationActivity {
 		decisions: readDecisions(detail),
 		inputResponse: wire.activityKind === "user_input" ? readInputResponse(detail) : undefined,
 		detail: detail as ConversationActivity["detail"],
-		audience: toAudienceTag(wire.audience),
 		createdAt: wire.createdAt,
 	};
 }

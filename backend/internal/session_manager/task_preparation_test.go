@@ -141,16 +141,6 @@ func (s *failedStartSignalStore) GetSession(ctx context.Context, id domain.Sessi
 	return rec, ok, err
 }
 
-// Cancellation uses a narrow atomic writer; observe that durable write rather
-// than depending on the older setProvisionState read-back side effect.
-func (s *failedStartSignalStore) SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
-	ok, err := s.fakeStore.SetSessionProvisionCancelled(ctx, id, now)
-	if ok && err == nil {
-		s.once.Do(func() { close(s.failed) })
-	}
-	return ok, err
-}
-
 func TestCancelledClaimedPreparationAccountsForPartialWorkspace(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -183,13 +173,7 @@ func TestCancelledClaimedPreparationAccountsForPartialWorkspace(t *testing.T) {
 			run := m.asyncChatSpawns[rec.ID]
 			m.asyncChatSpawnsMu.Unlock()
 			run.cancel()
-			select {
-			case <-signalStore.failed:
-			case <-time.After(5 * time.Second):
-				close(workspace.release)
-				<-run.done
-				t.Fatal("cancelled startup was not durably recorded")
-			}
+			<-signalStore.failed
 			var deferredRetry []func()
 			m.runBackground = func(work func()) { deferredRetry = append(deferredRetry, work) }
 			_, retryErr := m.ResumeAgentWithMode(context.Background(), rec.ID)

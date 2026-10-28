@@ -13,7 +13,6 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
@@ -118,10 +117,6 @@ type ReviewerChatStart struct {
 	Prompt                 string
 	SystemPrompt           string
 	ProviderConversationID string
-	// PrepareEnv, when set, builds the provider's launch environment (with the reviewer's
-	// identity proof) at the moment the provider is really launched. Env is then only the base
-	// the chat service falls back on.
-	PrepareEnv func(context.Context) (map[string]string, error)
 }
 
 // ReviewerChatController is the narrow bridge from the review engine to the
@@ -158,7 +153,6 @@ type reviewerRuntime interface {
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	proofs     ProofIssuer
 	reviewers  ports.ReviewerResolver
 	runtime    reviewerRuntime
 	dataDir    string
@@ -205,37 +199,6 @@ func WithExecutable(executable func() (string, error)) LauncherOption {
 	return func(l *agentLauncher) {
 		l.executable = executable
 	}
-}
-
-// ProofIssuer gives a native reviewer its identity proof (package identity). The daemon
-// keeps only the proof's hash; the plain proof goes into the reviewer's launch environment.
-type ProofIssuer interface {
-	IssueReview(ctx context.Context, reviewID string) (string, error)
-}
-
-// WithReviewerProofs makes every reviewer launch carry its own identity proof
-// (AO_SESSION_PROOF), so `ao review submit` can be limited to the reviewer of that run. A nil
-// issuer (embedders that do not authenticate callers) injects nothing.
-func WithReviewerProofs(proofs ProofIssuer) LauncherOption {
-	return func(l *agentLauncher) {
-		l.proofs = proofs
-	}
-}
-
-// injectReviewerProof gives the review a new proof and puts it in the launch environment of the
-// process about to be created. A project or an adapter can never supply one. A reviewer that
-// cannot be given a proof must not start: it could not identify itself to the daemon.
-func (l *agentLauncher) injectReviewerProof(ctx context.Context, reviewID string, env map[string]string) error {
-	delete(env, identity.EnvProof)
-	if l.proofs == nil {
-		return nil
-	}
-	proof, err := l.proofs.IssueReview(ctx, reviewID)
-	if err != nil {
-		return fmt.Errorf("issue reviewer identity proof: %w", err)
-	}
-	env[identity.EnvProof] = proof
-	return nil
 }
 
 // WithRunFilePath pins reviewer-local AO CLI calls to this daemon's run-file.
@@ -420,49 +383,7 @@ func (l *agentLauncher) prepareInvocation(ctx context.Context, spec LaunchSpec) 
 	inv.SystemPromptFile = systemPath
 	inv.TaskPromptFile = taskPath
 	inv.TaskPromptRoot = promptRoot
-	if l.proofs != nil {
-		inv.ProofFilePath = filepath.Join(promptRoot, reviewerProofFileName)
-	}
 	return inv, nil
-}
-
-// reviewerProofFileName is the private file (next to the reviewer's prompts, mode 0600 in a 0700
-// directory) the reviewer's proof is written to for harnesses that filter their shell's environment.
-const reviewerProofFileName = "reviewer-proof"
-
-// writeReviewerProofFile places the reviewer's freshly issued proof where AO_SESSION_PROOF_FILE
-// points, replacing any earlier one (the earlier proof no longer verifies anyway). The file is
-// written with owner-only permissions through a temp file and a rename, so a reader never sees a
-// partial proof, and a reviewer whose proof file cannot be written must not start.
-func writeReviewerProofFile(path, proof string) error {
-	if path == "" || proof == "" {
-		return nil
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create reviewer proof directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".reviewer-proof-*")
-	if err != nil {
-		return fmt.Errorf("write reviewer proof file: %w", err)
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write reviewer proof file: %w", err)
-	}
-	if _, err := tmp.WriteString(proof + "\n"); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write reviewer proof file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write reviewer proof file: %w", err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("write reviewer proof file: %w", err)
-	}
-	return nil
 }
 
 func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvocation, error) {
@@ -475,10 +396,6 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 	}
 	if err := os.WriteFile(systemPath, []byte(systemPrompt), 0o600); err != nil {
 		return ports.ReviewInvocation{}, fmt.Errorf("write reviewer system prompt: %w", err)
-	}
-	proofFile := ""
-	if l.proofs != nil {
-		proofFile = filepath.Join(promptRoot, reviewerProofFileName)
 	}
 	prompt := fmt.Sprintf("Reviewer terminal restored for worker session %s.\n\n%s\n\nWait for AO to send the next review task file path before submitting a new review.", spec.WorkerID, previousReviewHistoryText(spec.PreviousRuns))
 	return ports.ReviewInvocation{
@@ -493,7 +410,6 @@ func (l *agentLauncher) prepareIdleInvocation(spec LaunchSpec) (ports.ReviewInvo
 		SystemPrompt:     "",
 		SystemPromptFile: systemPath,
 		TaskPromptRoot:   promptRoot,
-		ProofFilePath:    proofFile,
 	}, nil
 }
 
@@ -580,7 +496,7 @@ func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, 
 	if spec.DeferInitialMessage {
 		prompt = ""
 	}
-	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: l.runtimeEnv(ctx, spec, nil, nil), PrepareEnv: l.reviewerChatPrepareEnv(spec), Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
+	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: l.runtimeEnv(ctx, spec, nil, nil), Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
 	if restore {
 		providerID, err = l.chat.RestoreReviewChat(ctx, start)
 	} else {
@@ -590,23 +506,6 @@ func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, 
 		return LaunchResult{}, agentlaunch.RedactError(err, spec.ProjectEnv)
 	}
 	return LaunchResult{HandleID: reviewerChatHandlePrefix + spec.ReviewSessionID, LaunchID: strings.TrimSpace(spec.LaunchID), AgentSessionID: providerID}, nil
-}
-
-// reviewerChatPrepareEnv builds the environment for an actual reviewer-provider launch, proof
-// included. The chat service calls it only when it launches the provider; a provider that is
-// still running from before a daemon restart is reconnected without it, keeping its original
-// environment and proof. nil when no proofs are issued, so the chat service uses Env as is.
-func (l *agentLauncher) reviewerChatPrepareEnv(spec LaunchSpec) func(context.Context) (map[string]string, error) {
-	if l.proofs == nil {
-		return nil
-	}
-	return func(ctx context.Context) (map[string]string, error) {
-		env := l.runtimeEnv(ctx, spec, nil, nil)
-		if err := l.injectReviewerProof(ctx, spec.ReviewSessionID, env); err != nil {
-			return nil, err
-		}
-		return env, nil
-	}
 }
 
 func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation, restoring bool) (LaunchResult, error) {
@@ -663,14 +562,6 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 		workingDirectory = spec.WorkspacePath
 	}
 	env := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
-	// A reviewer pane is always a new process (the stale pane was just destroyed), so this is a
-	// launch: the review gets a new proof now, as the environment is built.
-	if err := l.injectReviewerProof(ctx, spec.ReviewSessionID, env); err != nil {
-		return LaunchResult{}, err
-	}
-	if err := writeReviewerProofFile(inv.ProofFilePath, env[identity.EnvProof]); err != nil {
-		return LaunchResult{}, err
-	}
 	argv := cmd.Argv
 	if strings.TrimSpace(spec.LaunchID) != "" {
 		executable, resolveErr := l.executable()

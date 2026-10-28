@@ -388,9 +388,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && processalive.Alive(d.PID) {
 		return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, lastErr)
 	}
-	// A missing descriptor is not proof that the detached child/provider died.
-	// Keep ownership uncertain and expose a bounded, actionable startup failure.
-	return nil, fmt.Errorf("%w: local agent host did not become ready within %s; startup probes stopped. Check local process/network permissions before retrying: %w", ErrOwnershipInconclusive, startupTimeout, lastErr)
+	return nil, fmt.Errorf("start chat host: %w", lastErr)
 }
 
 // Reconcile terminates compatible authenticated hosts whose durable session no
@@ -510,25 +508,6 @@ func HostPID(dataDir, sessionID string) (int, bool) {
 		return 0, false
 	}
 	return d.PID, true
-}
-
-// DescriptorClaim returns the host pid and loopback listen port that the descriptor file of
-// sessionID CLAIMS. The file is writable by any process of the same user, so this is only a claim
-// to be validated (identity adoption checks the process itself); nothing is started or stopped.
-func DescriptorClaim(dataDir, sessionID string) (pid, port int, ok bool) {
-	d, err := readDescriptor(dataDir, sessionID)
-	if err != nil || d.PID <= 0 {
-		return 0, 0, false
-	}
-	i := strings.LastIndex(d.Address, ":")
-	if i < 0 {
-		return 0, 0, false
-	}
-	port, err = strconv.Atoi(d.Address[i+1:])
-	if err != nil || port <= 0 || port > 65535 {
-		return 0, 0, false
-	}
-	return d.PID, port, true
 }
 
 // Shutdown terminates current session ownership and waits for it to end.

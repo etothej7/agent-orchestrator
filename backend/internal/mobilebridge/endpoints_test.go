@@ -123,38 +123,3 @@ func TestLocalEndpointsKeepsEveryCandidateFromEveryInterface(t *testing.T) {
 		{Kind: KindTunnel, Host: "abc.trycloudflare.com", Port: 443, Secure: true},
 	})
 }
-
-func TestEndpointsAdvertisesSecureTailscaleFirstAndDropsPlaintext(t *testing.T) {
-	// The raw 100.x entry is plaintext, which iOS blocks, and keeping it would
-	// offer plaintext over the tailnet next to a TLS route to the same node.
-	got := Endpoints(EndpointInputs{
-		LANHosts:        []string{"192.168.1.42"},
-		TailscaleHosts:  []string{"100.72.46.7"},
-		SecureTailscale: "box.tail1.ts.net",
-		Port:            3011,
-		Tunnel:          &TunnelEndpoint{Ready: true, Hostname: "x.trycloudflare.com"},
-	})
-
-	want := []Endpoint{
-		{Kind: KindTailscale, Host: "box.tail1.ts.net", Port: 443, Secure: true},
-		{Kind: KindLAN, Host: "192.168.1.42", Port: 3011},
-		{Kind: KindTunnel, Host: "x.trycloudflare.com", Port: 443, Secure: true},
-	}
-	assertEndpoints(t, got, want)
-}
-
-func TestEndpointsKeepsRawTailscaleWhenSecureIsOff(t *testing.T) {
-	got := Endpoints(EndpointInputs{
-		TailscaleHosts: []string{"100.72.46.7"},
-		Port:           3011,
-	})
-	assertEndpoints(t, got, []Endpoint{{Kind: KindTailscale, Host: "100.72.46.7", Port: 3011}})
-}
-
-func TestEndpointsSecureTailscaleNeedsABoundListener(t *testing.T) {
-	// serve fronts the bridge port; with no listener there is nothing behind it.
-	got := Endpoints(EndpointInputs{SecureTailscale: "box.tail1.ts.net"})
-	if len(got) != 0 {
-		t.Fatalf("got %v, want no endpoints", got)
-	}
-}

@@ -18,9 +18,6 @@ const BASE: RelocationInputs = {
 };
 
 describe("decideRelocation", () => {
-  it.each([null, "0.14.5-ed.3", "99.0.0"])("neither relocates nor hands off a personal build with installed %s", installedVersion => {
-    expect(decideRelocation({ ...BASE, runningVersion: "0.14.5-ed.4", installedVersion, installedPresent: installedVersion !== null })).toBe("stay");
-  });
 	// The reported bug: a stale 0.10.3 download launching while /Applications
 	// holds a newer nightly. This MUST NOT relocate, or the nightly is trashed.
 	it("hands off when the install is newer", () => {

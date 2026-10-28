@@ -1,7 +1,7 @@
 -- name: CreateNotification :one
 INSERT INTO notifications (
-    id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key, purpose
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetNotificationBySourceKey :one
@@ -22,14 +22,13 @@ LIMIT sqlc.arg(page_limit);
 
 -- Unresolved is the still-actionable set: the underlying issue has not gone
 -- away yet. Terminal facts (pr_merged, pr_closed_unmerged) describe something
--- that already happened, so they are unseen-only and never listed here. A
--- coordinator question (ao ask) stays here until Ed replies or dismisses it.
+-- that already happened, so they are unseen-only and never listed here.
 -- name: ListUnresolvedNotificationsPage :many
 SELECT *
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')))
+  AND type IN ('needs_input', 'ready_to_merge')
   AND (
     CAST(sqlc.arg(before_id) AS TEXT) = ''
     OR created_at < sqlc.arg(before_created_at)
@@ -61,7 +60,7 @@ SELECT COUNT(*)
 FROM notifications
 WHERE resolved_at IS NULL
   AND dismissed_at IS NULL
-  AND (type IN ('needs_input', 'ready_to_merge') OR (type = 'coordinator_message' AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')));
+  AND type IN ('needs_input', 'ready_to_merge');
 
 -- name: MarkNotificationRead :one
 UPDATE notifications
@@ -184,30 +183,4 @@ UPDATE notifications
 SET dismissed_at = CURRENT_TIMESTAMP,
     status = 'read'
 WHERE id = ?
-  AND dismissed_at IS NULL;
-
--- A coordinator question closes only when it is answered explicitly: Ed's reply
--- names it, or the coordinator records it answered. An unrelated message never
--- does. The question's message id is carried by the notification's source key.
--- name: ResolveCoordinatorAsk :many
-UPDATE notifications
-SET resolved_at = sqlc.arg(resolved_at), resolution = sqlc.arg(resolution), resolution_note = sqlc.arg(resolution_note)
-WHERE type = 'coordinator_message'
-  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
-  AND source_key = sqlc.arg(source_key)
-  AND resolved_at IS NULL
-  AND dismissed_at IS NULL
-RETURNING *;
-
--- name: GetCoordinatorAskNotification :one
-SELECT * FROM notifications
-WHERE type = 'coordinator_message' AND source_key = ?
-LIMIT 1;
-
--- name: CountUnresolvedCoordinatorAsks :one
-SELECT COUNT(*)
-FROM notifications
-WHERE type = 'coordinator_message'
-  AND purpose IN ('scope_question', 'blocking_decision', 'completion_decision')
-  AND resolved_at IS NULL
   AND dismissed_at IS NULL;

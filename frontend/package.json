@@ -1,7 +1,7 @@
 {
 	"name": "agent-orchestrator",
 	"productName": "Agent Orchestrator",
-	"version": "0.14.5-ed.8.3",
+	"version": "0.14.6-thin.1",
 	"private": true,
 	"description": "Electron + TypeScript frontend for the agent-orchestrator rewrite",
 	"author": "Agent Orchestrator",
@@ -61,7 +61,7 @@
 		"@types/ws": "^8.18.1",
 		"@vitejs/plugin-react": "^6.0.2",
 		"app-builder-lib": "^26.15.3",
-		"electron": "^44.9.3",
+		"electron": "^44.7.0",
 		"jsdom": "^29.1.1",
 		"openapi-typescript": "^7.13.0",
 		"playwright": "^1.60.0",

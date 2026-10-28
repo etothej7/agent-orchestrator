@@ -12,7 +12,6 @@ import {
 } from "./api-client";
 import { captureRendererEvent } from "./telemetry";
 import { captureApiErrorToSentry } from "./sentry";
-import { useUiStore } from "../stores/ui-store";
 
 vi.mock("./telemetry", () => ({
 	captureRendererEvent: vi.fn().mockResolvedValue(undefined),
@@ -394,33 +393,6 @@ describe("api error telemetry", () => {
 		vi.setSystemTime(clock + 31_000);
 		await apiClient.GET("/api/v1/agents");
 		expect(captureMock).toHaveBeenCalledTimes(2);
-	});
-});
-
-describe("a state-changing call the daemon could not tie to the person", () => {
-	const forbidden = (code: string) => async () =>
-		new Response(JSON.stringify({ code, message: "agent-facing text" }), { status: 403, headers: { "Content-Type": "application/json" } });
-
-	beforeEach(() => {
-		setApiBaseUrl("http://127.0.0.1:3001");
-		useUiStore.setState({ globalToasts: [], globalToast: null });
-	});
-	afterEach(() => vi.restoreAllMocks());
-
-	it("tells the person once, in the app's words, not the daemon's agent-facing text", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(forbidden("HUMAN_CAPABILITY_REQUIRED"));
-		await apiClient.POST("/api/v1/sessions/{sessionId}/kill", { params: { path: { sessionId: "s-1" } } });
-		await apiClient.POST("/api/v1/sessions/{sessionId}/kill", { params: { path: { sessionId: "s-1" } } });
-		const toasts = useUiStore.getState().globalToasts;
-		expect(toasts).toHaveLength(1);
-		expect(toasts[0]).toMatchObject({ title: "AO could not confirm this was you", tone: "error" });
-		expect(JSON.stringify(toasts)).not.toContain("agent-facing text");
-	});
-
-	it("stays silent for any other refusal", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(forbidden("SOMETHING_ELSE"));
-		await apiClient.POST("/api/v1/sessions/{sessionId}/kill", { params: { path: { sessionId: "s-1" } } });
-		expect(useUiStore.getState().globalToasts).toHaveLength(0);
 	});
 });
 

@@ -545,31 +545,6 @@ const ReviewsView = memo(function ReviewsView({
 	);
 });
 
-/**
- * A quiet line for a live session that holds no identity proof yet. It clears by itself once the session is
- * relaunched (AO does that when it is idle), so it asks for nothing: no dialog, no toast, no action.
- */
-function IdentityRelaunchNote() {
-	const { t } = useTranslation();
-	return (
-		<div className="flex min-h-8 items-center gap-1.5 py-1" data-slot="identity-relaunch-note">
-			<span className="min-w-0 text-sm text-muted-foreground">{t("inspector.identityRelaunch")}</span>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						aria-label={t("inspector.identityRelaunchDescription")}
-						className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-						type="button"
-					>
-						<Info aria-hidden="true" className="size-icon-2xs" />
-					</button>
-				</TooltipTrigger>
-				<TooltipContent className="max-w-64 leading-normal">{t("inspector.identityRelaunchDescription")}</TooltipContent>
-			</Tooltip>
-		</div>
-	);
-}
-
 function InspectorPolicyRow({
 	id,
 	label,
@@ -893,7 +868,6 @@ function SessionControls({ session, hostId }: { session: WorkspaceSession; hostI
 	if (isStandaloneSession) {
 		return (
 			<Section title={t("inspector.sessionControls")}>
-				{session.needsIdentityRelaunch ? <IdentityRelaunchNote /> : null}
 				{terminateAction}
 			</Section>
 		);
@@ -901,7 +875,6 @@ function SessionControls({ session, hostId }: { session: WorkspaceSession; hostI
 
 	return (
 		<Section title={t("inspector.sessionControls")}>
-			{session.needsIdentityRelaunch ? <IdentityRelaunchNote /> : null}
 			<AutoInjectCIPolicyControl hostId={hostId} session={session} />
 			<AutoInjectReviewPolicyControl hostId={hostId} session={session} />
 			{session.kind === "orchestrator" ? null : canTerminateNow ? (
@@ -978,9 +951,7 @@ function PRSummaryCard({
 				body: { prUrl: pr.url, expectedHeadSha: pr.headSha },
 			});
 			if (error) throw new Error(apiErrorMessage(error, t("pr.merge.failed", { number: pr.number })));
-			// The app's own request is the person's, so it is always a merge; the daemon files a request for an
-			// agent's (202) instead, which carries no merge result.
-			return data && "state" in data ? data : undefined;
+			return data;
 		},
 		onSuccess: async (result) => {
 			if (!cloudOrgId && result?.state === "merged") {

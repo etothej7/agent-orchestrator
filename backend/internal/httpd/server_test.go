@@ -9,13 +9,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
-	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 func discardLogger() *slog.Logger {
@@ -319,34 +317,5 @@ func TestNewFallsBackOnPortConflict(t *testing.T) {
 	}
 	if second.boundPort() == 0 {
 		t.Fatal("second server bound port 0; want a real fallback port")
-	}
-}
-
-// /healthz and /readyz say, as a flag only, whether this daemon verifies the human-write
-// capability (started by the app with its per-launch key) or is a scratch daemon that cannot.
-func TestHealthProbesReportWhetherTheHumanCapabilityIsVerified(t *testing.T) {
-	for name, tc := range map[string]struct {
-		verifier *uicapability.Verifier
-		want     bool
-	}{"a scratch daemon": {nil, false}, "an app-started daemon": {uicapability.New(strings.Repeat("k", 32)), true}} {
-		router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{UICapability: tc.verifier}, ControlDeps{})
-		srv := httptest.NewServer(router)
-		for _, path := range []string{"/healthz", "/readyz"} {
-			resp, err := http.Get(srv.URL + path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var body map[string]any
-			err = json.NewDecoder(resp.Body).Decode(&body)
-			resp.Body.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, ok := body["humanCapability"].(bool)
-			if !ok || got != tc.want {
-				t.Errorf("%s %s: humanCapability = %v (present %v), want %v", name, path, body["humanCapability"], ok, tc.want)
-			}
-		}
-		srv.Close()
 	}
 }

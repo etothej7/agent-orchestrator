@@ -164,7 +164,6 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		autoReview: config.autoReview ?? false,
 		workersRequestReview: config.workersRequestReview ?? false,
-		agentMayMerge: config.agentMayMerge ?? false,
 		intakeEnabled: intake.enabled ?? false,
 		intakeRepo: intake.repo ?? "",
 		intakeAssignee: intake.assignee ?? "",
@@ -255,18 +254,12 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 					),
 					autoReview: values.autoReview,
 					workersRequestReview: values.workersRequestReview || undefined,
-					agentMayMerge: values.agentMayMerge || undefined,
 				};
-		const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).PUT("/api/v1/projects/{id}", {
+		const { error } = await (hostId ? clientForHost(hostId) : apiClient).PUT("/api/v1/projects/{id}", {
 			params: { path: { id: projectId } },
 			body: { displayName, config: next },
 		});
 		if (error) throw new Error(apiErrorMessage(error));
-		// Whether agents may merge is the person's setting alone: the daemon keeps its stored value for any write it
-		// cannot tie to the person, and says nothing. Never report a save that left it as it was.
-		if (data?.project?.config && Boolean(data.project.config.agentMayMerge) !== Boolean(next.agentMayMerge)) {
-			throw new Error(t("settings.project.agentMayMergeNotSaved"));
-		}
 		const replaceOrchestrator = replacementFailedRef.current || values.orchestratorAgent !== lastOrchestratorRef.current ||
 			(Boolean(activeOrchestrator && activeOrchestrator.provider !== values.orchestratorAgent) && !replacementAttemptedRef.current);
 		lastOrchestratorRef.current = values.orchestratorAgent;
@@ -331,7 +324,7 @@ function SettingsBody({ project, projectId, hostId, hostConnected, onSaved, sect
 		}
 	};
 	return <ProjectSettingsEditor initialValues={initialValues} section={section} disabled={!hostConnected}
-		capabilities={{ workflow: !isScratchProject, sessionPrefix: !isScratchProject, intake: intakeVisible, reviewer: !isScratchProject, requiredAgents: true, workersRequestReview: !isScratchProject, agentMayMerge: !isScratchProject && !hostId }}
+		capabilities={{ workflow: !isScratchProject, sessionPrefix: !isScratchProject, intake: intakeVisible, reviewer: !isScratchProject, requiredAgents: true, workersRequestReview: !isScratchProject }}
 		details={[{ label: t("settings.project.path"), value: project.path, href: hostId ? undefined : `file://${encodeURI(project.path)}` }, { label: t("settings.project.repo"), value: project.repo || "—", href: project.repo ? repositoryHref(project.repo) : undefined }]}
 		workspaceRepos={project.kind === "workspace" ? project.workspaceRepos ?? [] : undefined} repository={project.repo}
 		modelScope={() => ""} defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
@@ -373,7 +366,6 @@ function scratchSupportedConfig(config: ProjectConfig): ProjectConfig {
 		reviewers: _reviewers,
 		autoReview: _legacyAutoReview,
 		workersRequestReview: _workersRequestReview,
-		agentMayMerge: _agentMayMerge,
 		trackerIntake: _trackerIntake,
 		...supported
 	} = config as ProjectConfig;

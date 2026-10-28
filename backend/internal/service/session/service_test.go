@@ -2619,12 +2619,8 @@ func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 // fakeCommander records Kill/Spawn calls so a test can assert the
 // clean-orchestrator ordering without wiring a real session engine.
 type fakeCommander struct {
-	// protectedSessions are the sessions SessionProtected reports as protected.
-	protectedSessions map[domain.SessionID]bool
 	killed            []domain.SessionID
 	retired           []domain.SessionID
-	preflighted       []domain.SessionID
-	preflightErr      map[domain.SessionID]error
 	exited            []domain.SessionID
 	resumed           []domain.SessionID
 	ready             []domain.SessionID
@@ -2730,9 +2726,6 @@ func (f *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, erro
 	}
 	return true, nil
 }
-func (f *fakeCommander) SessionProtected(_ context.Context, id domain.SessionID) bool {
-	return f.protectedSessions[id]
-}
 func (f *fakeCommander) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
 	if f.retireFunc != nil {
 		return f.retireFunc(ctx, id)
@@ -2742,10 +2735,6 @@ func (f *fakeCommander) RetireForReplacement(ctx context.Context, id domain.Sess
 	}
 	f.retired = append(f.retired, id)
 	return nil
-}
-func (f *fakeCommander) PreflightRetireForReplacement(_ context.Context, id domain.SessionID) error {
-	f.preflighted = append(f.preflighted, id)
-	return f.preflightErr[id]
 }
 func (f *fakeCommander) WaitForMessageDeliveryReady(_ context.Context, id domain.SessionID) error {
 	f.ready = append(f.ready, id)
@@ -2941,28 +2930,6 @@ func TestSpawnOrchestratorCleanRetiresActiveOrchestratorsBeforeSpawn(t *testing.
 	}
 	if len(fc.killed) != 0 {
 		t.Fatalf("interactive Kill must not be used for replacement: killed=%v", fc.killed)
-	}
-}
-
-// A worktree that cannot be backed up leaves EVERY existing orchestrator running:
-// no retire notice, no retirement, no replacement, and a clear conflict.
-func TestSpawnOrchestratorCleanLeavesOrchestratorsRunningWhenAWorktreeCannotBeBackedUp(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator}
-	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer", Kind: domain.KindOrchestrator}
-	fc := &fakeCommander{preflightErr: map[domain.SessionID]error{
-		"mer-2": fmt.Errorf("retire replacement mer-2: worktree /ws/mer-2 has work that cannot be backed up: %w", ports.ErrWorkspaceDirty),
-	}}
-	svc := &Service{manager: fc, store: st}
-
-	_, err := svc.SpawnOrchestrator(context.Background(), "mer", true, "", "")
-	var apiErr *apierr.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != "ORCHESTRATOR_WORKTREE_NOT_PRESERVABLE" || !strings.Contains(apiErr.Message, "/ws/mer-2") {
-		t.Fatalf("SpawnOrchestrator err = %v, want a conflict naming the worktree", err)
-	}
-	if len(fc.retired) != 0 || len(fc.sent) != 0 || fc.spawned {
-		t.Fatalf("nothing may change when preflight refuses: retired=%v notices=%v spawned=%v", fc.retired, fc.sent, fc.spawned)
 	}
 }
 
@@ -3819,6 +3786,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"artifact output unavailable", fmt.Errorf("spawn: %w", sessionmanager.ErrArtifactOutputUnavailable), apierr.KindInvalid, "ARTIFACT_OUTPUT_UNAVAILABLE"},
 		{"harness install active", fmt.Errorf("spawn: %w", sessionmanager.ErrHarnessInstallActive), apierr.KindConflict, "HARNESS_INSTALL_ACTIVE"},
 		{"awaiting decision", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAwaitingDecision), apierr.KindConflict, "SESSION_AWAITING_DECISION"},
+		{"delivery unconfirmed", fmt.Errorf("send mer-1: %w", sessionmanager.ErrDeliveryUnconfirmed), apierr.KindConflict, "SESSION_DELIVERY_UNCONFIRMED"},
 		{"startup pending", fmt.Errorf("send mer-1: %w", sessionmanager.ErrStartupPending), apierr.KindConflict, "SESSION_STARTUP_PENDING"},
 		{"agent exited", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAgentExited), apierr.KindConflict, "AGENT_EXITED"},
 		{"agent not exited", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited), apierr.KindConflict, "AGENT_NOT_EXITED"},

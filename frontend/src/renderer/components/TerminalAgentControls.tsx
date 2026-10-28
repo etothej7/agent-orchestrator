@@ -1,21 +1,17 @@
-import { MoreHorizontal, ShieldCheck } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
 import { useProviderSwitchCommand } from "../hooks/useConversation";
-import { useSessionAutoResumePolicy } from "../hooks/useSessionAutoResume";
 import { agentLabel } from "../lib/agent-options";
 import { apiErrorMessage } from "../lib/api-client";
-import { useShowInternalActivity } from "../stores/conversation-audience-store";
 import { useUiStore } from "../stores/ui-store";
-import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace";
-import { AllowAutoResumeDialog } from "./AllowAutoResumeDialog";
+import type { WorkspaceSession } from "../types/workspace";
 import { AgentModelPicker, DismissButton, switchEffort, type PendingAgentSwitch } from "./chat/AgentSwitchPicker";
 import { ProviderMark } from "./chat/ProviderMark";
 import type { SessionInterfaceMode } from "../hooks/useSessionInterfaceTransition";
 import { RoundedInterfaceIcon } from "./SessionInterfaceSwitch";
 import { TopbarButton } from "./TopbarButton";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 const NO_CHOICES = { models: [], modelLabel: "", efforts: [] };
 
@@ -46,25 +42,10 @@ export function SessionTabMenu({
 	const [pending, setPending] = useState<PendingAgentSwitch>();
 	const providerSwitch = useProviderSwitchCommand(session.id, hostId);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
-	// Agent switching ships behind Developer Mode for its first week.
-	const switching = useUiStore((state) => state.developerMode) && switchTarget === "chat";
+	// The agent picker belongs to a terminal; a chat switches agent from its composer.
+	const switching = switchTarget === "chat";
 	const agentSwitch = { projectId: session.workspaceId, hostId, pending, onPendingChange: setPending };
-	// The main coordinator's conversation hides routine processing; this opens it, off until asked.
-	const mayBeMainCoordinator = !hostId && switchTarget === "tui" && isOrchestratorSession(session);
-	const coordination = useCoordinationQuery(mayBeMainCoordinator);
-	const isMainCoordinator = mayBeMainCoordinator && coordination.data?.coordinatorProjectId === session.workspaceId;
-	const [showInternal, setShowInternal] = useShowInternalActivity(session.id);
-	// A session protected from automatic resume offers the one way to lift it: Ed's own click, here in the app.
-	const autoResume = useSessionAutoResumePolicy(session.id, !hostId);
-	const canAllowResume = !hostId && autoResume.data === "never";
-	const [allowResumeOpen, setAllowResumeOpen] = useState(false);
-	// Rendered on every path so the dialog survives the item disappearing once the policy flips to allowed.
-	const allowResumeDialog = (
-		<AllowAutoResumeDialog open={allowResumeOpen} onOpenChange={setAllowResumeOpen} sessionId={session.id} sessionName={session.title} />
-	);
-	if (!switchAction && (switchControl || (!switching && !isMainCoordinator && !canAllowResume))) {
-		return switchControl ? <><div className="inline-flex shrink-0 items-center">{switchControl}</div>{allowResumeDialog}</> : allowResumeDialog;
-	}
+	if (!switchAction && (switchControl || !switching)) return switchControl ? <div className="inline-flex shrink-0 items-center">{switchControl}</div> : null;
 	const switchNow = () => {
 		if (!pending) return;
 		const { harness: targetHarness, model, fastMode, ultracode, autoCompactWindow } = pending;
@@ -94,7 +75,6 @@ export function SessionTabMenu({
 		</div>
 	) : null;
 	return (
-		<>
 		<DropdownMenu open={open} onOpenChange={setOpen}>
 			<DropdownMenuTrigger asChild>
 				<TopbarButton
@@ -116,20 +96,7 @@ export function SessionTabMenu({
 						{switchTarget === "chat" ? t("agentSwitch.switchToChat") : t("agentSwitch.switchToTerminal")}
 					</DropdownMenuItem>
 				) : null}
-				{isMainCoordinator ? (
-					<DropdownMenuCheckboxItem checked={showInternal} onCheckedChange={setShowInternal}>
-						{t("workspace.showInternalActivity")}
-					</DropdownMenuCheckboxItem>
-				) : null}
-				{canAllowResume ? (
-					<DropdownMenuItem onSelect={() => setAllowResumeOpen(true)}>
-						<ShieldCheck aria-hidden="true" className="size-icon-lg" />
-						{t("session.allowAutoResume")}
-					</DropdownMenuItem>
-				) : null}
 			</DropdownMenuContent>
 		</DropdownMenu>
-		{allowResumeDialog}
-		</>
 	);
 }

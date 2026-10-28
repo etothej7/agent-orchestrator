@@ -84,13 +84,6 @@ func (m *Manager) Notify(ctx context.Context, intent Intent) error {
 	if m == nil || m.store == nil {
 		return errors.New("notify: store is required")
 	}
-	quiet, err := m.quietCoordination(ctx, intent)
-	if err != nil {
-		return fmt.Errorf("notification coordination gate: %w", err)
-	}
-	if quiet {
-		return nil
-	}
 	if intent.CreatedAt.IsZero() {
 		intent.CreatedAt = m.clock().UTC()
 	}
@@ -145,29 +138,6 @@ func (m *Manager) Resolve(ctx context.Context, res Resolution) error {
 	}
 	if err != nil {
 		return fmt.Errorf("notify resolve: %w", err)
-	}
-	return m.publishResolved(ctx, resolved)
-}
-
-// ResolveCoordinatorAsk closes the open coordinator question whose message is
-// askMessageID and publishes the rows it changed. A question closes only because
-// it was answered explicitly (see domain.NotificationResolution*); resolving one
-// that is already closed does nothing, so a retry never publishes twice.
-func (m *Manager) ResolveCoordinatorAsk(ctx context.Context, askMessageID, resolution, note string) error {
-	if m == nil || m.store == nil {
-		return errors.New("notify: store is required")
-	}
-	resolver, ok := m.store.(interface {
-		ResolveCoordinatorAsk(context.Context, string, string, string, time.Time) ([]domain.NotificationRecord, error)
-	})
-	if !ok {
-		return nil
-	}
-	m.barrier.Lock()
-	defer m.barrier.Unlock()
-	resolved, err := resolver.ResolveCoordinatorAsk(ctx, askMessageID, resolution, note, m.clock().UTC())
-	if err != nil {
-		return fmt.Errorf("notify resolve coordinator ask: %w", err)
 	}
 	return m.publishResolved(ctx, resolved)
 }

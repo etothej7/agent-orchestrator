@@ -3022,269 +3022,6 @@ paths:
         is signed in as
       tags:
       - github
-  /api/v1/human-requests:
-    get:
-      operationId: listHumanRequests
-      parameters:
-      - description: pending (default) lists open requests; all lists the most recent
-          of any state.
-        in: query
-        name: state
-        schema:
-          description: pending (default) lists open requests; all lists the most recent
-            of any state.
-          enum:
-          - pending
-          - all
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersListHumanRequestsResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: List the human requests waiting for the person, or the most recent
-        of any state
-      tags:
-      - human-requests
-    post:
-      operationId: fileHumanRequest
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ControllersFileHumanRequestRequest'
-        required: true
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersFileHumanRequestResponse'
-          description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "429":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Too Many Requests
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Ask the person to confirm a human-only action
-      tags:
-      - human-requests
-  /api/v1/human-requests/{id}:
-    get:
-      operationId: getHumanRequest
-      parameters:
-      - description: Pending request identifier.
-        in: path
-        name: id
-        required: true
-        schema:
-          description: Pending request identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Read one human request
-      tags:
-      - human-requests
-  /api/v1/human-requests/{id}/approve:
-    post:
-      operationId: approveHumanRequest
-      parameters:
-      - description: Pending request identifier.
-        in: path
-        name: id
-        required: true
-        schema:
-          description: Pending request identifier.
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ControllersApproveHumanRequestRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Approve a human request as the person (requires the app's capability)
-      tags:
-      - human-requests
-  /api/v1/human-requests/{id}/deny:
-    post:
-      operationId: denyHumanRequest
-      parameters:
-      - description: Pending request identifier.
-        in: path
-        name: id
-        required: true
-        schema:
-          description: Pending request identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersHumanRequestEnvelope'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Deny a human request as the person (requires the app's capability)
-      tags:
-      - human-requests
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -3302,34 +3039,6 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Identify the daemon so a client can confirm which machine answered
-      tags:
-      - identity
-  /api/v1/identity/observations:
-    get:
-      operationId: getIdentityObservations
-      parameters:
-      - description: How many of the most-called routes, claimed sessions and processes
-          to return (default 20, at most 100).
-        in: query
-        name: top
-        schema:
-          description: How many of the most-called routes, claimed sessions and processes
-            to return (default 20, at most 100).
-          type: integer
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IdentityObservationsResponse'
-          description: OK
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Top offenders among calls that arrived without an identity proof
       tags:
       - identity
   /api/v1/import:
@@ -4884,45 +4593,6 @@ paths:
       summary: Initialize a selected folder as a Git repository with an initial commit
       tags:
       - projects
-  /api/v1/prs/{id}:
-    get:
-      operationId: getPR
-      parameters:
-      - description: PR number.
-        in: path
-        name: id
-        required: true
-        schema:
-          description: PR number.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersPRSummaryResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Read a tracked pull request's URL and head commit by number
-      tags:
-      - prs
   /api/v1/prs/{id}/merge:
     post:
       operationId: mergePR
@@ -4947,24 +4617,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/MergePRResponse'
           description: OK
-        "202":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersFileHumanRequestResponse'
-          description: Accepted
         "400":
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Bad Request
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
         "404":
           content:
             application/json:
@@ -4989,8 +4647,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Squash-merge a pull request (an agent on a project that has not allowed
-        agent merges files a request for the person instead)
+      summary: Squash-merge a pull request
       tags:
       - prs
   /api/v1/prs/{id}/resolve-comments:
@@ -6570,101 +6227,6 @@ paths:
       summary: Set the auto-inject review setting for a session
       tags:
       - sessions
-  /api/v1/sessions/{sessionId}/auto-resume:
-    get:
-      operationId: getSessionAutoResume
-      parameters:
-      - description: Session identifier, e.g. project-1.
-        in: path
-        name: sessionId
-        required: true
-        schema:
-          description: Session identifier, e.g. project-1.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersSessionAutoResumeResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Read a session's auto-resume policy
-      tags:
-      - sessions
-    put:
-      operationId: setSessionAutoResume
-      parameters:
-      - description: Session identifier, e.g. project-1.
-        in: path
-        name: sessionId
-        required: true
-        schema:
-          description: Session identifier, e.g. project-1.
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ControllersSetSessionAutoResumeRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersSessionAutoResumeResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Set whether AO may resume, replace or tear down a session on its own
-      tags:
-      - sessions
   /api/v1/sessions/{sessionId}/auto-review:
     put:
       operationId: setSessionAutoReview
@@ -6803,20 +6365,6 @@ paths:
           type:
           - "null"
           - integer
-      - description: 'Set to all to open the internal-activity view of the overall
-          coordinator conversation: every stored message, turn and activity instead
-          of what is shown to the human. Omit for the default view.'
-        in: query
-        name: audience
-        schema:
-          description: 'Set to all to open the internal-activity view of the overall
-            coordinator conversation: every stored message, turn and activity instead
-            of what is shown to the human. Omit for the default view.'
-          enum:
-          - all
-          type:
-          - "null"
-          - string
       responses:
         "200":
           content:
@@ -7118,108 +6666,6 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Choose one provider-advertised session configuration value
-      tags:
-      - conversations
-  /api/v1/sessions/{sessionId}/conversation/human-decisions:
-    post:
-      operationId: recordHumanDecision
-      parameters:
-      - description: Session identifier, e.g. project-1.
-        in: path
-        name: sessionId
-        required: true
-        schema:
-          description: Session identifier, e.g. project-1.
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/HumanDecisionRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HumanDecisionResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Record an explicit human blocking question
-      tags:
-      - conversations
-  /api/v1/sessions/{sessionId}/conversation/human-decisions/resolve:
-    post:
-      operationId: resolveHumanDecision
-      parameters:
-      - description: Session identifier, e.g. project-1.
-        in: path
-        name: sessionId
-        required: true
-        schema:
-          description: Session identifier, e.g. project-1.
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ResolveHumanDecisionRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HumanDecisionResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Record that the human answered one of the coordinator's questions
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/conversation/inputs/{requestId}/resolve:
@@ -13184,44 +12630,6 @@ paths:
         can adopt it
       tags:
       - identity
-  /api/v1/terminal-tickets:
-    post:
-      operationId: issueTerminalTicket
-      responses:
-        "201":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ControllersTerminalTicketResponse'
-          description: Created
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
-        "429":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Too Many Requests
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Get a single-use ticket to attach a terminal on /mux (requires the
-        app's capability)
-      tags:
-      - terminals
   /api/v1/usage/memory/pressure:
     get:
       operationId: getMemoryPressure
@@ -13350,337 +12758,6 @@ paths:
       summary: List resident memory of each live session's runtime process tree
       tags:
       - usage
-  /api/v1/workspace:
-    get:
-      operationId: getWorkspace
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WorkspaceResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: getWorkspace
-      tags:
-      - workspace
-  /api/v1/workspace/commands:
-    post:
-      operationId: applyStoryCommand
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/StoryCommandRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StoryEventResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: applyStoryCommand
-      tags:
-      - workspace
-  /api/v1/workspace/epics:
-    post:
-      operationId: createEpic
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateEpicRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateEpicRequest'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: createEpic
-      tags:
-      - workspace
-  /api/v1/workspace/intake:
-    post:
-      operationId: adoptStoryIntake
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/StoryIntakeRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StoryIntakeRequest'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Adopt one human request into an epic and stories atomically
-      tags:
-      - workspace
-  /api/v1/workspace/stories:
-    post:
-      operationId: createStory
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateStoryRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateStoryRequest'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: createStory
-      tags:
-      - workspace
-  /api/v1/workspace/stories/{storyId}:
-    get:
-      operationId: getStory
-      parameters:
-      - in: path
-        name: storyId
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StoryDetailResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: getStory
-      tags:
-      - workspace
-  /api/v1/workspace/stories/{storyId}/continuation:
-    get:
-      operationId: getStoryContinuation
-      parameters:
-      - in: path
-        name: storyId
-        required: true
-        schema:
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StoryContinuationResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: getStoryContinuation
-      tags:
-      - workspace
-    post:
-      operationId: resumeStoryContinuation
-      parameters:
-      - in: path
-        name: storyId
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ResumeStoryContinuationRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StoryContinuationResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: resumeStoryContinuation
-      tags:
-      - workspace
 components:
   schemas:
     APIError:
@@ -15936,138 +15013,6 @@ components:
         disabled:
           type: boolean
       type: object
-    ControllersApproveHumanRequestRequest:
-      properties:
-        payloadHash:
-          description: The payloadHash of the request as it was shown; anything else
-            is refused.
-          type: string
-      required:
-      - payloadHash
-      type: object
-    ControllersFileHumanRequestRequest:
-      properties:
-        kind:
-          description: What is being asked.
-          enum:
-          - auto_resume_lift
-          - conversation_settings
-          - provider_switch
-          - pr_merge
-          type: string
-        payload:
-          additionalProperties: {}
-          description: The structured action; its shape depends on kind.
-          type: object
-        projectId:
-          description: The project the action is about, for a request about a project.
-            Exactly one of sessionId and projectId is given, matching the kind.
-          type: string
-        sessionId:
-          description: The session the action is about, for a request about a session.
-          type: string
-      required:
-      - kind
-      type: object
-    ControllersFileHumanRequestResponse:
-      properties:
-        message:
-          type: string
-        request:
-          $ref: '#/components/schemas/ControllersHumanRequestResponse'
-      required:
-      - request
-      - message
-      type: object
-    ControllersHumanRequestChangeResponse:
-      properties:
-        field:
-          type: string
-        from:
-          type: string
-        to:
-          type: string
-      required:
-      - field
-      - from
-      - to
-      type: object
-    ControllersHumanRequestEnvelope:
-      properties:
-        request:
-          $ref: '#/components/schemas/ControllersHumanRequestResponse'
-      required:
-      - request
-      type: object
-    ControllersHumanRequestRequesterResponse:
-      properties:
-        kind:
-          enum:
-          - session
-          - terminal
-          type: string
-        sessionId:
-          type: string
-      required:
-      - kind
-      type: object
-    ControllersHumanRequestResponse:
-      properties:
-        changes:
-          items:
-            $ref: '#/components/schemas/ControllersHumanRequestChangeResponse'
-          type: array
-        createdAt:
-          format: date-time
-          type: string
-        decidedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        expiresAt:
-          format: date-time
-          type: string
-        id:
-          type: string
-        kind:
-          type: string
-        payloadHash:
-          type: string
-        projectId:
-          description: The project the request is about; empty for a request about
-            a session.
-          type: string
-        requester:
-          $ref: '#/components/schemas/ControllersHumanRequestRequesterResponse'
-        result:
-          type: string
-        sessionId:
-          description: The session the request is about; empty for a request about
-            a project.
-          type: string
-        state:
-          enum:
-          - pending
-          - approved
-          - denied
-          - expired
-          - applied
-          - failed
-          type: string
-        summary:
-          type: string
-      required:
-      - id
-      - kind
-      - requester
-      - summary
-      - changes
-      - payloadHash
-      - state
-      - createdAt
-      - expiresAt
-      type: object
     ControllersKeepAwakeStatus:
       properties:
         active:
@@ -16096,43 +15041,6 @@ components:
       properties:
         deleteArtifacts:
           type: boolean
-      type: object
-    ControllersListHumanRequestsResponse:
-      properties:
-        requests:
-          items:
-            $ref: '#/components/schemas/ControllersHumanRequestResponse'
-          type: array
-      required:
-      - requests
-      type: object
-    ControllersPRSummaryResponse:
-      properties:
-        headSha:
-          type: string
-        prNumber:
-          type: integer
-        prUrl:
-          type: string
-        projectId:
-          type: string
-        sessionId:
-          type: string
-        state:
-          enum:
-          - draft
-          - open
-          - merged
-          - closed
-          type: string
-        title:
-          type: string
-      required:
-      - prNumber
-      - prUrl
-      - headSha
-      - state
-      - sessionId
       type: object
     ControllersRemoteHostAccountTokenResponse:
       properties:
@@ -16222,19 +15130,6 @@ components:
       - port
       - reason
       type: object
-    ControllersSessionAutoResumeResponse:
-      properties:
-        policy:
-          enum:
-          - allowed
-          - never
-          type: string
-        sessionId:
-          type: string
-      required:
-      - sessionId
-      - policy
-      type: object
     ControllersSessionView:
       properties:
         activity:
@@ -16297,8 +15192,6 @@ components:
           - string
         id:
           type: string
-        identity:
-          $ref: '#/components/schemas/SessionIdentityView'
         isPinned:
           type: boolean
         isTerminated:
@@ -16496,40 +15389,12 @@ components:
       required:
       - enabled
       type: object
-    ControllersSetSessionAutoResumeRequest:
-      properties:
-        confirmedInApp:
-          type: boolean
-        policy:
-          description: allowed lets AO resume the session after a reboot; never protects
-            it from automatic resume, replacement and teardown.
-          enum:
-          - allowed
-          - never
-          type: string
-        senderSessionId:
-          type: string
-      required:
-      - policy
-      type: object
     ControllersSetSessionAutoReviewRequest:
       properties:
         enabled:
           type: boolean
       required:
       - enabled
-      type: object
-    ControllersTerminalTicketResponse:
-      properties:
-        expiresInSeconds:
-          type: integer
-        ticket:
-          description: Single-use ticket; offer it on the /mux WebSocket upgrade as
-            the subprotocol ao.ticket.<ticket>.
-          type: string
-      required:
-      - ticket
-      - expiresInSeconds
       type: object
     ControllersUpdateCloudOfferingRequest:
       properties:
@@ -16587,11 +15452,6 @@ components:
           - auto_review
           - user_input
           - ao_action
-          type: string
-        audience:
-          enum:
-          - human
-          - internal
           type: string
         createdAt:
           type: string
@@ -16820,11 +15680,6 @@ components:
       type: object
     ConversationMessageResponse:
       properties:
-        audience:
-          enum:
-          - human
-          - internal
-          type: string
         clientMessageId:
           type: string
         content:
@@ -16849,8 +15704,6 @@ components:
           - automation
           - daemon
           - provider
-          type: string
-        purpose:
           type: string
         revision:
           format: int64
@@ -17179,11 +16032,6 @@ components:
       type: object
     ConversationTurnResponse:
       properties:
-        audience:
-          enum:
-          - human
-          - internal
-          type: string
         completedAt:
           type:
           - "null"
@@ -17385,17 +16233,8 @@ components:
       required:
       - projectId
       type: object
-    CreateEpicRequest:
-      properties:
-        epic:
-          $ref: '#/components/schemas/Epic'
-      required:
-      - epic
-      type: object
     CreateReportRequest:
       properties:
-        clientReportId:
-          type: string
         message:
           maxLength: 1000
           type: string
@@ -17415,8 +16254,6 @@ components:
           - stuck
           - done
           type: string
-        storyId:
-          type: string
       required:
       - sessionId
       type: object
@@ -17426,13 +16263,6 @@ components:
           type: string
       required:
       - id
-      type: object
-    CreateStoryRequest:
-      properties:
-        story:
-          $ref: '#/components/schemas/Story'
-      required:
-      - story
       type: object
     CueDefinitionRequest:
       properties:
@@ -17749,27 +16579,6 @@ components:
       - selection
       - sourceRole
       type: object
-    DomainStoryContinuationStatus:
-      properties:
-        checkpoint:
-          type: string
-        reason:
-          type: string
-        recipientSessionId:
-          type: string
-        revision:
-          format: int64
-          type: integer
-        state:
-          type: string
-        storyId:
-          type: string
-      required:
-      - storyId
-      - revision
-      - state
-      - checkpoint
-      type: object
     EditConversationMessageRequest:
       properties:
         clientMessageId:
@@ -17860,16 +16669,6 @@ components:
           type: boolean
         includeUsage:
           type: boolean
-      type: object
-    Epic:
-      properties:
-        id:
-          type: string
-        title:
-          type: string
-      required:
-      - id
-      - title
       type: object
     EstimatedCostResponse:
       properties:
@@ -18092,91 +16891,6 @@ components:
           maxItems: 20000
           type: array
       type: object
-    HumanDecisionRequest:
-      properties:
-        id:
-          type: string
-        purpose:
-          enum:
-          - scope_question
-          - blocking_decision
-          - completion_decision
-          - verified_result
-          - stopped_work
-          type: string
-        question:
-          type: string
-        storyId:
-          type: string
-        whyBlocked:
-          type: string
-      required:
-      - id
-      - purpose
-      - question
-      type: object
-    HumanDecisionResponse:
-      properties:
-        id:
-          type: string
-      required:
-      - id
-      type: object
-    IdentityObservationsResponse:
-      properties:
-        allowed:
-          type: integer
-        droppedLookups:
-          type: integer
-        mode:
-          type: string
-        processes:
-          items:
-            $ref: '#/components/schemas/IdentityProcessObservation'
-          type: array
-        refused:
-          type: integer
-        routes:
-          items:
-            $ref: '#/components/schemas/IdentityRouteObservation'
-          type: array
-        sessions:
-          items:
-            $ref: '#/components/schemas/IdentitySessionObservation'
-          type: array
-        since:
-          format: date-time
-          type: string
-        total:
-          type: integer
-      required:
-      - mode
-      - since
-      - total
-      - allowed
-      - refused
-      - droppedLookups
-      - routes
-      - sessions
-      - processes
-      type: object
-    IdentityProcessObservation:
-      properties:
-        calls:
-          type: integer
-        lastSeen:
-          format: date-time
-          type: string
-        name:
-          type: string
-        pid:
-          type: integer
-      required:
-      - name
-      - calls
-      - pid
-      - lastSeen
-      type: object
     IdentityResponse:
       properties:
         apiVersion:
@@ -18186,46 +16900,6 @@ components:
       required:
       - hostId
       - apiVersion
-      type: object
-    IdentityRouteObservation:
-      properties:
-        allowed:
-          type: integer
-        calls:
-          type: integer
-        class:
-          type: string
-        lastSeen:
-          format: date-time
-          type: string
-        method:
-          type: string
-        refused:
-          type: integer
-        route:
-          type: string
-      required:
-      - method
-      - route
-      - class
-      - calls
-      - allowed
-      - refused
-      - lastSeen
-      type: object
-    IdentitySessionObservation:
-      properties:
-        anonymousCalls:
-          type: integer
-        lastSeen:
-          format: date-time
-          type: string
-        sessionId:
-          type: string
-      required:
-      - sessionId
-      - anonymousCalls
-      - lastSeen
       type: object
     ImportReport:
       properties:
@@ -18635,15 +17309,12 @@ components:
           type: array
         unreadCount:
           type: integer
-        unresolvedAskCount:
-          type: integer
         unresolvedCount:
           type: integer
       required:
       - notifications
       - unreadCount
       - unresolvedCount
-      - unresolvedAskCount
       type: object
     ListPRFilesResponse:
       properties:
@@ -19091,26 +17762,9 @@ components:
           type: string
         id:
           type: string
-        messageId:
-          type: string
         prUrl:
           type: string
         projectId:
-          type: string
-        purpose:
-          enum:
-          - scope_question
-          - blocking_decision
-          - completion_decision
-          - verified_result
-          - stopped_work
-          type: string
-        resolution:
-          enum:
-          - answered
-          - coordinator
-          type: string
-        resolutionNote:
           type: string
         resolvedAt:
           format: date-time
@@ -19138,7 +17792,6 @@ components:
           - pr_closed_unmerged
           - review_completed
           - review_changes_requested
-          - coordinator_message
           type: string
       required:
       - id
@@ -19366,8 +18019,6 @@ components:
       properties:
         agentConfig:
           $ref: '#/components/schemas/AgentConfig'
-        agentMayMerge:
-          type: boolean
         agentRules:
           type: string
         agentRulesFile:
@@ -19814,20 +18465,8 @@ components:
       type: object
     ReportResponse:
       properties:
-        acknowledgedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
         createdAt:
           format: date-time
-          type: string
-        deliveryAttempts:
-          format: int64
-          type: integer
-        deliveryBatchId:
-          type: string
-        deliveryState:
           type: string
         id:
           type: string
@@ -19841,18 +18480,12 @@ components:
           type: array
         projectId:
           type: string
-        recipientProjectId:
-          type: string
-        recipientSessionId:
-          type: string
         repeatCount:
           format: int64
           type: integer
         sessionId:
           type: string
         state:
-          type: string
-        storyId:
           type: string
       required:
       - id
@@ -19891,15 +18524,6 @@ components:
           type: object
       required:
       - action
-      type: object
-    ResolveHumanDecisionRequest:
-      properties:
-        id:
-          type: string
-        note:
-          type: string
-      required:
-      - id
       type: object
     RestoreArtifactVersionRequest:
       properties:
@@ -19974,17 +18598,6 @@ components:
       - resumeMode
       - session
       type: object
-    ResumeStoryContinuationRequest:
-      properties:
-        id:
-          type: string
-        revision:
-          format: int64
-          type: integer
-      required:
-      - id
-      - revision
-      type: object
     RetryTurnResponse:
       properties:
         providerTurnId:
@@ -20030,8 +18643,6 @@ components:
         sessionId:
           type: string
         status:
-          type: string
-        storyId:
           type: string
         targetSha:
           type: string
@@ -20137,8 +18748,6 @@ components:
           items:
             $ref: '#/components/schemas/ConversationExcerptReferenceRequest'
           type: array
-        replyToAskId:
-          type: string
         resources:
           items:
             $ref: '#/components/schemas/ConversationResourceContentRequest'
@@ -20309,19 +18918,6 @@ components:
       - userRequest
       - agentResponse
       - at
-      type: object
-    SessionIdentityView:
-      properties:
-        anonymousCalls:
-          type: integer
-        proof:
-          enum:
-          - present
-          - missing
-          type: string
-      required:
-      - proof
-      - anonymousCalls
       type: object
     SessionInterfaceTransition:
       properties:
@@ -22082,8 +20678,6 @@ components:
           type: string
         recoverOnly:
           type: boolean
-        replyToAskId:
-          type: string
         senderSessionId:
           type: string
         text:
@@ -22127,267 +20721,6 @@ components:
       required:
       - outcome
       - duplicate
-      type: object
-    Story:
-      properties:
-        assignments:
-          items:
-            $ref: '#/components/schemas/StoryAssignment'
-          type: array
-        autonomous:
-          type: boolean
-        blockedReason:
-          type: string
-        epicId:
-          type: string
-        id:
-          type: string
-        projectIds:
-          items:
-            type: string
-          type: array
-        question:
-          type: string
-        questionEventId:
-          type: string
-        questionRequesterSessionId:
-          type: string
-        revision:
-          format: int64
-          type: integer
-        scope:
-          type: string
-        status:
-          type: string
-        title:
-          type: string
-      required:
-      - id
-      - epicId
-      - title
-      - scope
-      - projectIds
-      - assignments
-      - status
-      - blockedReason
-      - question
-      - revision
-      type: object
-    StoryAssignment:
-      properties:
-        role:
-          type: string
-        sessionId:
-          type: string
-      required:
-      - sessionId
-      - role
-      type: object
-    StoryCommandRequest:
-      properties:
-        id:
-          type: string
-        kind:
-          type: string
-        outcome:
-          type: string
-        questionEventId:
-          type: string
-        recipientSessionId:
-          type: string
-        reference:
-          type: string
-        replyMessageId:
-          type: string
-        revision:
-          format: int64
-          type: integer
-        role:
-          type: string
-        senderSessionId:
-          type: string
-        storyId:
-          type: string
-        text:
-          type: string
-      required:
-      - outcome
-      - id
-      - storyId
-      - revision
-      - kind
-      - senderSessionId
-      - recipientSessionId
-      - text
-      - reference
-      - role
-      type: object
-    StoryContinuationResponse:
-      properties:
-        continuation:
-          $ref: '#/components/schemas/DomainStoryContinuationStatus'
-      required:
-      - continuation
-      type: object
-    StoryDetailResponse:
-      properties:
-        continuation:
-          $ref: '#/components/schemas/DomainStoryContinuationStatus'
-        events:
-          items:
-            $ref: '#/components/schemas/StoryEvent'
-          type: array
-        replyThreads:
-          items:
-            $ref: '#/components/schemas/StoryReplyThread'
-          type: array
-        reports:
-          items:
-            $ref: '#/components/schemas/ReportResponse'
-          type: array
-        story:
-          $ref: '#/components/schemas/Story'
-      required:
-      - replyThreads
-      - reports
-      - story
-      - events
-      type: object
-    StoryEvent:
-      properties:
-        createdAt:
-          format: date-time
-          type: string
-        deliveryKind:
-          type: string
-        id:
-          type: string
-        kind:
-          type: string
-        recipientSessionId:
-          type: string
-        reference:
-          type: string
-        relatedEventId:
-          type: string
-        replyMessageId:
-          type: string
-        result:
-          type: string
-        reviewId:
-          type: string
-        reviewRunId:
-          type: string
-        senderSessionId:
-          type: string
-        storyId:
-          type: string
-        text:
-          type: string
-      required:
-      - id
-      - storyId
-      - kind
-      - senderSessionId
-      - recipientSessionId
-      - text
-      - reference
-      - result
-      - createdAt
-      type: object
-    StoryEventResponse:
-      properties:
-        event:
-          $ref: '#/components/schemas/StoryEvent'
-      required:
-      - event
-      type: object
-    StoryIntakeItem:
-      properties:
-        id:
-          type: string
-        projectIds:
-          items:
-            type: string
-          type: array
-        scope:
-          type: string
-        title:
-          type: string
-      required:
-      - id
-      - title
-      - scope
-      - projectIds
-      type: object
-    StoryIntakeRequest:
-      properties:
-        epic:
-          $ref: '#/components/schemas/Epic'
-        id:
-          type: string
-        sessionId:
-          type: string
-        sourceMessageId:
-          type: string
-        stories:
-          items:
-            $ref: '#/components/schemas/StoryIntakeItem'
-          type: array
-      required:
-      - id
-      - sourceMessageId
-      - sessionId
-      - epic
-      - stories
-      type: object
-    StoryReply:
-      properties:
-        conversationId:
-          type: string
-        createdAt:
-          format: date-time
-          type: string
-        id:
-          type: string
-        recipientSessionId:
-          type: string
-        senderSessionId:
-          type: string
-        streaming:
-          type: boolean
-        text:
-          type: string
-        turnId:
-          type: string
-        updatedAt:
-          format: date-time
-          type: string
-      required:
-      - id
-      - conversationId
-      - turnId
-      - senderSessionId
-      - recipientSessionId
-      - text
-      - streaming
-      - createdAt
-      - updatedAt
-      type: object
-    StoryReplyThread:
-      properties:
-        attribution:
-          type: string
-        exchangeId:
-          type: string
-        messages:
-          items:
-            $ref: '#/components/schemas/StoryReply'
-          type: array
-      required:
-      - exchangeId
-      - attribution
-      - messages
       type: object
     SubmitReviewInput:
       properties:
@@ -22554,6 +20887,8 @@ components:
           type: string
         githubLogin:
           type: string
+        installId:
+          type: string
         optedOut:
           type: boolean
       required:
@@ -22633,8 +20968,6 @@ components:
           enum:
           - manual
           - agent
-          type: string
-        storyId:
           type: string
       type: object
     TriggerReviewResponse:
@@ -23595,24 +21928,6 @@ components:
       - relativePath
       - repo
       type: object
-    WorkspaceResponse:
-      properties:
-        continuations:
-          items:
-            $ref: '#/components/schemas/DomainStoryContinuationStatus'
-          type: array
-        epics:
-          items:
-            $ref: '#/components/schemas/Epic'
-          type: array
-        stories:
-          items:
-            $ref: '#/components/schemas/Story'
-          type: array
-      required:
-      - epics
-      - stories
-      type: object
     WorkspaceSummary:
       properties:
         additions:
@@ -23706,11 +22021,6 @@ tags:
   name: notifications
 - description: Durable worker reports
   name: reports
-- description: Terminal attachment tickets
-  name: terminals
-- description: Human-only actions an agent or terminal asked for and the person confirms
-    in the app
-  name: human-requests
 - description: Token usage telemetry for AO sessions
   name: usage
 - description: Mobile push-device registration for OS push notifications

@@ -380,24 +380,6 @@ func (s *Store) SetSessionHibernated(ctx context.Context, id domain.SessionID, e
 	return rows > 0, nil
 }
 
-// ParkSessionHibernated puts an exited Chat session to sleep as idle in one write,
-// if the caller's session snapshot is still current. It reports false when the row
-// changed first (the caller retries) or is no longer a live Chat session.
-func (s *Store) ParkSessionHibernated(ctx context.Context, id domain.SessionID, expectedRevision int64, at time.Time) (bool, error) {
-	at = at.UTC()
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	rows, err := s.qw.ParkSessionHibernated(ctx, gen.ParkSessionHibernatedParams{
-		HibernatedAt:     sql.NullTime{Time: at, Valid: true},
-		ID:               id,
-		ExpectedRevision: expectedRevision,
-	})
-	if err != nil {
-		return false, fmt.Errorf("park session %s: %w", id, err)
-	}
-	return rows > 0, nil
-}
-
 // MarkHarnessSessionsStale marks the live launches of harness as running a
 // release that version replaced, and returns how many it marked.
 func (s *Store) MarkHarnessSessionsStale(ctx context.Context, harness domain.AgentHarness, version string, at time.Time) (int64, error) {
@@ -1040,18 +1022,17 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			Effort:                           row.Effort,
 			Permissions:                      domain.PermissionMode(row.SessionPermissions),
 		},
-		RequestedOutput:    domain.RequestedOutput(row.RequestedOutput),
-		CleanupGeneration:  row.CleanupGeneration,
-		CreatedAt:          row.CreatedAt,
-		UpdatedAt:          row.UpdatedAt,
-		ProvisionState:     row.ProvisionState.WithDefault(),
-		ProvisionError:     row.ProvisionError,
-		ProvisionCancelled: row.ProvisionCancelled,
-		ProvisionSteps:     decodeProvisionSteps(row.ProvisionSteps),
-		BranchState:        decodeBranchState(row.BranchState),
-		BranchNaming:       row.BranchNaming,
-		TemporaryBranch:    row.TemporaryBranch,
-		IsTaskPreparation:  row.IsTaskPreparation,
+		RequestedOutput:   domain.RequestedOutput(row.RequestedOutput),
+		CleanupGeneration: row.CleanupGeneration,
+		CreatedAt:         row.CreatedAt,
+		UpdatedAt:         row.UpdatedAt,
+		ProvisionState:    row.ProvisionState.WithDefault(),
+		ProvisionError:    row.ProvisionError,
+		ProvisionSteps:    decodeProvisionSteps(row.ProvisionSteps),
+		BranchState:       decodeBranchState(row.BranchState),
+		BranchNaming:      row.BranchNaming,
+		TemporaryBranch:   row.TemporaryBranch,
+		IsTaskPreparation: row.IsTaskPreparation,
 	}
 }
 
@@ -1336,13 +1317,4 @@ func normalActivity(a domain.Activity, fallback time.Time) domain.Activity {
 	// rather than trusting each caller's clock.
 	a.LastActivityAt = a.LastActivityAt.UTC()
 	return a
-}
-
-// SetSessionProvisionCancelled atomically records the failed start and cancellation
-// intent, so restart recovery cannot turn a user's stop into a setup failure.
-func (s *Store) SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	rows, err := s.qw.SetSessionProvisionCancelled(ctx, gen.SetSessionProvisionCancelledParams{ID: id, UpdatedAt: now, ProvisionState: domain.SessionProvisionFailed, ProvisionCancelled: true, ProvisionError: "Startup cancelled."})
-	return rows > 0, err
 }

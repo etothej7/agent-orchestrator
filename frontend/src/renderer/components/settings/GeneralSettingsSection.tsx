@@ -4,7 +4,6 @@ import { previewDocumentThemeStyle, type ThemePreference, type ThemeStyle } from
 import { THEMES, getThemeDefinition } from "../../lib/theme-palettes";
 import type { AppLocale } from "../../i18n";
 import { useLocaleStore } from "../../stores/locale-store";
-import { NOTIFICATION_SIGNAL_POLICY } from "../../../shared/notification-signal-policy";
 import { useSoundNotificationsStore } from "../../stores/sound-notifications-store";
 import { useUiStore } from "../../stores/ui-store";
 import { useTelemetryPolicyStore } from "../../stores/telemetry-policy-store";
@@ -253,22 +252,19 @@ export function GeneralSettingsSection({
 						onCheckedChange={setTerminalCopyOnSelect}
 					/>
 				</SettingsRow>
-				{/* The sound is off by policy and has no setting (shared/notification-signal-policy.ts). */}
-				{NOTIFICATION_SIGNAL_POLICY.sound ? (
-					<SettingsRow
-						label={t("settings.soundNotifications")}
-						description={soundNotificationsSaveError ? <span role="alert" className="text-error">{t("settings.soundNotifications.saveFailed")}</span> : undefined}
-					>
-						<Switch
-							aria-label={t("settings.soundNotifications")}
-							checked={soundNotificationsEnabled}
-							disabled={soundNotificationsSaving}
-							onCheckedChange={(next) => {
-								void setSoundNotificationsEnabled(next);
-							}}
-						/>
-					</SettingsRow>
-				) : null}
+				<SettingsRow
+					label={t("settings.soundNotifications")}
+					description={soundNotificationsSaveError ? <span role="alert" className="text-error">{t("settings.soundNotifications.saveFailed")}</span> : undefined}
+				>
+					<Switch
+						aria-label={t("settings.soundNotifications")}
+						checked={soundNotificationsEnabled}
+						disabled={soundNotificationsSaving}
+						onCheckedChange={(next) => {
+							void setSoundNotificationsEnabled(next);
+						}}
+					/>
+				</SettingsRow>
 			</SettingsSection>
 
 			<DefaultCloudSandboxSection />

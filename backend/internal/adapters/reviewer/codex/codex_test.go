@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -177,39 +176,5 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlySandbox(t *testing.T)
 	}
 	if agent.gotRestore.Permissions != ports.PermissionModeAuto {
 		t.Fatalf("restore permissions = %q, want auto", agent.gotRestore.Permissions)
-	}
-}
-
-// The reviewer's proof reaches `ao review submit` through a private file: only the file's PATH goes
-// on the command line, never the proof, and nothing is added when no file is named.
-func TestReviewCommandPassesTheProofFilePathNotTheProof(t *testing.T) {
-	t.Setenv("AO_PORT", "")
-	t.Setenv("AO_DATA_DIR", "")
-	t.Setenv("AO_RUN_FILE", "")
-	r := &Reviewer{agent: &captureAgent{}}
-	got, err := r.ReviewCommand(context.Background(), ports.ReviewInvocation{
-		ReviewerID: "review-w1", WorkspacePath: "/ws/w1", Prompt: "review it",
-		ProofFilePath: "/data/prompts/w1/reviewer/reviewer-proof",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `shell_environment_policy.set.AO_SESSION_PROOF_FILE="/data/prompts/w1/reviewer/reviewer-proof"`
-	if !slices.Contains(got.Argv, want) {
-		t.Fatalf("argv = %#v, want it to carry %s", got.Argv, want)
-	}
-	for _, arg := range got.Argv {
-		if strings.Contains(arg, "aop1.") {
-			t.Fatalf("a proof is on the command line: %q", arg)
-		}
-	}
-	none, err := r.ReviewCommand(context.Background(), ports.ReviewInvocation{ReviewerID: "review-w1", WorkspacePath: "/ws/w1", Prompt: "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, arg := range none.Argv {
-		if strings.Contains(arg, "AO_SESSION_PROOF_FILE") {
-			t.Fatalf("a proof file was named with none issued: %q", arg)
-		}
 	}
 }

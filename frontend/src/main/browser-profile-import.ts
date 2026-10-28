@@ -111,12 +111,6 @@ export type BrowserProfileImportOptions = {
 	profileStore: BrowserProfileStore;
 	historyStore: BrowserHistoryStore;
 	fromPartition: (partition: string) => ImportSession;
-	/**
-	 * Cookies are not imported: this build keeps browser logins protected by file permissions only (the stand-in
-	 * keychain key), and an import copies the person's real browser sessions into a persistent profile. History
-	 * still imports. Nothing is read from, or asked of, any browser's keychain entry.
-	 */
-	cookieImportRefused?: boolean;
 	platform?: NodeJS.Platform;
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
@@ -556,15 +550,10 @@ async function hasImportableDatabase(
 	return false;
 }
 
-export const COOKIE_IMPORT_REFUSED_MESSAGE =
-	"Importing cookies is switched off in this build, because it keeps browser logins in files instead of the Mac keychain. Select history to import that instead.";
-
 function cookieCapability(
 	family: BrowserFamily,
 	platform: NodeJS.Platform,
-	refused = false,
 ): { support: BrowserImportSource["cookieSupport"]; reason: BrowserImportCookieSupportReason } {
-	if (refused) return { support: "unsupported", reason: "cookies-stored-without-keychain" };
 	if (family === "firefox") return { support: "supported", reason: "firefox-plaintext" };
 	if (family === "safari") return { support: "supported", reason: "safari-plaintext" };
 	return {
@@ -641,7 +630,7 @@ export class BrowserProfileImportService {
 				if (!root) continue;
 				const publicSourceId = opaqueSourceId(`${descriptor.id}:source`, root);
 				if (options.sourceId && publicSourceId !== options.sourceId) continue;
-				const capability = cookieCapability(descriptor.family, this.context.platform, this.options.cookieImportRefused === true);
+				const capability = cookieCapability(descriptor.family, this.context.platform);
 				if (descriptor.family === "safari" && !options.includeProtectedSource) {
 					sources.push({
 						descriptor,
@@ -730,13 +719,7 @@ export class BrowserProfileImportService {
 			});
 			throwIfImportAborted(signal);
 			sourceRoots = sources.map((source) => source.root);
-			let request = validateRequest(rawRequest, sources, this.options.profileStore.profiles);
-			// Refused before anything is read: no cookie database, and no browser keychain entry, is touched.
-			const cookiesRefused = this.options.cookieImportRefused === true && request.includeCookies;
-			if (cookiesRefused) {
-				if (!request.includeHistory) throw new Error(COOKIE_IMPORT_REFUSED_MESSAGE);
-				request = { ...request, includeCookies: false };
-			}
+			const request = validateRequest(rawRequest, sources, this.options.profileStore.profiles);
 			const source = sources.find((candidate) => candidate.public.id === request.sourceId)!;
 			const selected = request.profileIds.map((id) => source.profiles.find((profile) => profile.id === id)!);
 			onProgress({ requestId: request.requestId, phase: "preparing", completed: 0, total: selected.length });
@@ -756,7 +739,7 @@ export class BrowserProfileImportService {
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index + 1, total: selected.length });
 			}
-			return await this.commitImport(source, request, readData, onProgress, signal, cookiesRefused);
+			return await this.commitImport(source, request, readData, onProgress, signal);
 		} catch (error) {
 			throw redactImportPaths(error, sourceRoots, this.stagingBase());
 		} finally {
@@ -771,7 +754,6 @@ export class BrowserProfileImportService {
 		readData: ReadProfileData[],
 		onProgress: (progress: BrowserImportProgress) => void,
 		signal: AbortSignal,
-		cookiesRefused = false,
 	): Promise<BrowserImportResult> {
 		const destination = request.destination;
 		const groups =
@@ -817,7 +799,6 @@ export class BrowserProfileImportService {
 						...group.data.flatMap((data) => data.warnings),
 						...limitWarnings,
 						...cookieOutcome.warnings,
-						...(cookiesRefused ? [{ code: "cookies-refused" as const }] : []),
 					]),
 				});
 				onProgress({ requestId: request.requestId, phase: "importing", completed: index + 1, total: groups.length });

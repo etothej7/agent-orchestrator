@@ -29,8 +29,9 @@ import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { useSessionLinkNavigation } from "../lib/use-session-link-navigation";
 import { getApiBaseUrl } from "../lib/api-client";
 import {
-	createDaemonTerminalMux,
+	createTerminalMux,
 	createTerminalMuxPool,
+	muxUrlFromApiBase,
 	type TerminalMux,
 	type TerminalMuxPool,
 } from "../lib/terminal-mux";
@@ -353,7 +354,7 @@ export function TerminalCacheProvider({
 	const muxPoolRef = useRef<TerminalMuxPool | null>(null);
 	if (!muxPoolRef.current) {
 		muxPoolRef.current = createTerminalMuxPool(() =>
-			createDaemonTerminalMux(getApiBaseUrl()),
+			createTerminalMux(muxUrlFromApiBase(getApiBaseUrl())),
 		);
 	}
 	const muxPool = muxPoolRef.current;

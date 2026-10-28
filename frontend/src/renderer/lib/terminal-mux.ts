@@ -13,8 +13,6 @@
 // The renderer connects directly to the loopback daemon (same host/port as the
 // REST API, path `/mux`); it is not proxied through the Electron main process.
 
-import { notifyHumanCapabilityRequired } from "./human-capability-notice";
-
 type ServerFrame = {
 	ch: string;
 	id?: string;
@@ -85,79 +83,6 @@ export function muxUrlFromApiBase(apiBaseUrl: string): string {
 	return `${ws.replace(/\/+$/, "")}/mux`;
 }
 
-// ---- local-daemon attach tickets ----
-//
-// The local daemon only lets the app open a terminal: attaching on /mux takes a single-use ticket that only a
-// request carrying the app's capability can obtain (the Electron main process signs it, see
-// main/human-capability.ts). The ticket rides the WebSocket upgrade as the subprotocol `ao.ticket.<ticket>` next
-// to `ao.mux`. A daemon that issues none (headless, remote, web build) simply refuses the request and the socket
-// is opened without one, as before.
-
-const TICKET_PATH = "/api/v1/terminal-tickets";
-const TICKET_TIMEOUT_MS = 3000;
-// A daemon that has no tickets (404/501) is not asked again for a while; a refusal or a failed request may be a
-// moment of start-up (main has not finished proving the daemon yet), so it is retried almost at once.
-const TICKET_UNSUPPORTED_CACHE_MS = 5 * 60_000;
-const TICKET_RETRY_CACHE_MS = 1500;
-const CAPABILITY_REQUIRED_CODE = "HUMAN_CAPABILITY_REQUIRED";
-const TICKET_SHAPE = /^[A-Za-z0-9_-]{16,128}$/;
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
-const ticketRefusedUntil = new Map<string, number>();
-
-/** Asks for a ticket to attach on `muxUrl`; resolves to undefined when none is available. Never rejects. */
-export type TicketSource = (muxUrl: string) => Promise<string | undefined>;
-
-/** The http base of a mux URL when it is the root `/mux` of a loopback daemon (the app's own), else undefined. */
-function localDaemonBase(muxUrl: string): string | undefined {
-	try {
-		const url = new URL(muxUrl);
-		// A path in front of /mux is a remote host reached through a relay, not the daemon the app spawned.
-		if (!LOOPBACK_HOSTS.has(url.hostname) || url.pathname !== "/mux") return undefined;
-		return `${url.protocol === "wss:" ? "https:" : "http:"}//${url.host}`;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * `onCapabilityRequired` runs when the daemon refused the request because it could not tie it to the app: a terminal
- * that then opens without a ticket will be refused too, and the person should be told why (as for any other write).
- */
-export async function fetchTerminalTicket(
-	muxUrl: string,
-	fetchImpl: typeof fetch = fetch,
-	onCapabilityRequired?: () => void,
-): Promise<string | undefined> {
-	const base = localDaemonBase(muxUrl);
-	if (base === undefined) return undefined;
-	if ((ticketRefusedUntil.get(base) ?? 0) > Date.now()) return undefined;
-	let cacheMs = TICKET_RETRY_CACHE_MS;
-	try {
-		const response = await fetchImpl(`${base}${TICKET_PATH}`, { method: "POST", signal: AbortSignal.timeout(TICKET_TIMEOUT_MS) });
-		if (!response.ok) {
-			if (response.status === 404 || response.status === 501) cacheMs = TICKET_UNSUPPORTED_CACHE_MS;
-			if (response.status === 403) {
-				const body = (await response.json().catch(() => undefined)) as { code?: unknown } | undefined;
-				if (body?.code === CAPABILITY_REQUIRED_CODE) onCapabilityRequired?.();
-			}
-			throw new Error(`ticket answered ${response.status}`);
-		}
-		const body = (await response.json()) as { ticket?: unknown };
-		if (typeof body.ticket !== "string" || !TICKET_SHAPE.test(body.ticket)) throw new Error("ticket has an unexpected shape");
-		return body.ticket;
-	} catch {
-		ticketRefusedUntil.set(base, Date.now() + cacheMs);
-		return undefined;
-	}
-}
-
-/** The mux client the app uses for its own (local or remote) daemon: asks for an attach ticket where one applies. */
-export function createDaemonTerminalMux(apiBaseUrl: string): TerminalMux {
-	const url = muxUrlFromApiBase(apiBaseUrl);
-	// Only the local daemon takes tickets; every other address connects at once, exactly as before.
-	return createTerminalMux(url, WebSocket, localDaemonBase(url) === undefined ? undefined : (muxUrl) => fetchTerminalTicket(muxUrl, fetch, notifyHumanCapabilityRequired));
-}
-
 type DataListener = (bytes: Uint8Array) => void;
 type ExitListener = () => void;
 type OpenedListener = () => void;
@@ -221,10 +146,8 @@ function subscribeById<T>(map: Map<string, Set<T>>, id: string, listener: T): ()
  * layer: a dropped socket is reported through onConnectionChange("closed") and
  * the owner (useTerminalSession) decides whether to build a fresh client.
  */
-export function createTerminalMux(url: string, WebSocketImpl: typeof WebSocket = WebSocket, ticketSource?: TicketSource): TerminalMux {
-	// With a ticket source the socket is opened once the ticket is in hand (or known to be unavailable); until
-	// then frames queue exactly as they do for a socket that is still connecting.
-	let socket: WebSocket | undefined;
+export function createTerminalMux(url: string, WebSocketImpl: typeof WebSocket = WebSocket): TerminalMux {
+	const socket = new WebSocketImpl(url);
 	const encoder = new TextEncoder();
 	const queue: string[] = [];
 	const dataListeners = new Map<string, Set<DataListener>>();
@@ -247,78 +170,60 @@ export function createTerminalMux(url: string, WebSocketImpl: typeof WebSocket =
 	const flush = () => {
 		while (queue.length > 0) {
 			const frame = queue.shift();
-			if (frame !== undefined) socket?.send(frame);
+			if (frame !== undefined) socket.send(frame);
 		}
 	};
 
 	const send = (frame: string) => {
 		if (disposed) return;
-		if (socket?.readyState === WebSocketImpl.OPEN) {
+		if (socket.readyState === WebSocketImpl.OPEN) {
 			socket.send(frame);
 		} else {
 			queue.push(frame);
 		}
 	};
 
-	const attach = (target: WebSocket) => {
-		socket = target;
-		target.addEventListener("open", () => {
-			if (disposed) return;
-			flush();
-			pingTimer = setInterval(() => send(pingFrame()), PING_INTERVAL_MS);
-			setConnectionState("open");
-		});
+	socket.addEventListener("open", () => {
+		if (disposed) return;
+		flush();
+		pingTimer = setInterval(() => send(pingFrame()), PING_INTERVAL_MS);
+		setConnectionState("open");
+	});
 
-		target.addEventListener("close", () => {
-			setConnectionState("closed");
-		});
-		target.addEventListener("error", () => {
-			setConnectionState("closed");
-		});
+	socket.addEventListener("close", () => {
+		setConnectionState("closed");
+	});
+	socket.addEventListener("error", () => {
+		setConnectionState("closed");
+	});
 
-		target.addEventListener("message", (event: MessageEvent) => {
-			if (typeof event.data !== "string") return;
-			let frame: ServerFrame;
-			try {
-				frame = JSON.parse(event.data) as ServerFrame;
-			} catch {
-				return;
+	socket.addEventListener("message", (event: MessageEvent) => {
+		if (typeof event.data !== "string") return;
+		let frame: ServerFrame;
+		try {
+			frame = JSON.parse(event.data) as ServerFrame;
+		} catch {
+			return;
+		}
+		if (frame.ch !== "terminal") return;
+		if (frame.type === "error") {
+			const message = frame.error ?? "unknown terminal error";
+			if (frame.id !== undefined) {
+				errorListeners.get(frame.id)?.forEach((listener) => listener(message));
+			} else {
+				errorListeners.forEach((set) => set.forEach((listener) => listener(message)));
 			}
-			if (frame.ch !== "terminal") return;
-			if (frame.type === "error") {
-				const message = frame.error ?? "unknown terminal error";
-				if (frame.id !== undefined) {
-					errorListeners.get(frame.id)?.forEach((listener) => listener(message));
-				} else {
-					errorListeners.forEach((set) => set.forEach((listener) => listener(message)));
-				}
-				return;
-			}
-			if (frame.id === undefined) return;
-			if (frame.type === "data" && frame.data) {
-				dataListeners.get(frame.id)?.forEach((listener) => listener(base64ToBytes(frame.data as string)));
-			} else if (frame.type === "exited") {
-				exitListeners.get(frame.id)?.forEach((listener) => listener());
-			} else if (frame.type === "opened") {
-				openedListeners.get(frame.id)?.forEach((listener) => listener());
-			}
-		});
-	};
-
-	if (ticketSource) {
-		void ticketSource(url)
-			.catch(() => undefined)
-			.then((ticket) => {
-				if (disposed) return;
-				try {
-					attach(ticket ? new WebSocketImpl(url, ["ao.mux", `ao.ticket.${ticket}`]) : new WebSocketImpl(url));
-				} catch {
-					setConnectionState("closed");
-				}
-			});
-	} else {
-		attach(new WebSocketImpl(url));
-	}
+			return;
+		}
+		if (frame.id === undefined) return;
+		if (frame.type === "data" && frame.data) {
+			dataListeners.get(frame.id)?.forEach((listener) => listener(base64ToBytes(frame.data as string)));
+		} else if (frame.type === "exited") {
+			exitListeners.get(frame.id)?.forEach((listener) => listener());
+		} else if (frame.type === "opened") {
+			openedListeners.get(frame.id)?.forEach((listener) => listener());
+		}
+	});
 
 	const dispose = () => {
 		if (disposed) return;
@@ -330,7 +235,7 @@ export function createTerminalMux(url: string, WebSocketImpl: typeof WebSocket =
 		errorListeners.clear();
 		connectionListeners.clear();
 		try {
-			socket?.close();
+			socket.close();
 		} catch {
 			// socket may already be closing; ignore.
 		}

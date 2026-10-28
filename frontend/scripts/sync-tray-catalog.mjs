@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regenerates src/main/tray-catalog.generated.ts from the renderer locale JSON.
 //
-// The tray and the quit UI (Electron main) need ~16 strings. Importing the renderer catalogs
+// The tray (Electron main) needs ~9 strings. Importing the renderer catalogs
 // put all 8 locale files (1.3 MB, 58% of main.js) on the main process's startup
 // path. tray-catalog.test.ts fails when this file drifts from the JSON; run
 // `node scripts/sync-tray-catalog.mjs` from frontend/ to fix it.
@@ -21,13 +21,6 @@ const KEYS = [
 	"tray.quit",
 	"zone.merge",
 	"zone.action",
-	"menu.quit",
-	"quit.keepRunning",
-	"quit.quitAnyway",
-	"quit.sleep.title",
-	"quit.sleep.body",
-	"quit.agents.title",
-	"quit.agents.body",
 ];
 
 const catalogs = {};

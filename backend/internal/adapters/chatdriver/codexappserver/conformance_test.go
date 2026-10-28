@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver/codexproto"
-	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 // Does the driver still agree with the provider about the protocol?
@@ -172,8 +171,6 @@ func TestGeneratedProtocolMatchesTheInstalledProvider(t *testing.T) {
 		t.Skip("codex not installed; nothing to compare the generated protocol against")
 	}
 
-	testparent.IsolateHome(t) // a real provider binary must not touch the real account
-	t.Setenv("CODEX_HOME", t.TempDir())
 	dir := t.TempDir()
 	out, err := exec.Command(bin, "app-server", "generate-json-schema", "--out", dir).CombinedOutput()
 	if err != nil {
@@ -300,8 +297,6 @@ func TestRealtimeStaysUnreachableUntilTheProviderPublishesAnEntryPoint(t *testin
 		t.Skip("codex not installed; nothing to check the realtime surface against")
 	}
 
-	testparent.IsolateHome(t) // a real provider binary must not touch the real account
-	t.Setenv("CODEX_HOME", t.TempDir())
 	dir := t.TempDir()
 	if out, err := exec.Command(bin, "app-server", "generate-json-schema", "--out", dir).CombinedOutput(); err != nil {
 		t.Skipf("provider declined to emit its schema (%v): %s", err, out)

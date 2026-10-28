@@ -298,18 +298,7 @@ func claudeACPLaunchEnv(
 	}
 	if selected != "" {
 		if _, exists := seen[selected]; !exists {
-			seen[selected] = struct{}{}
 			ids = append(ids, selected)
-		}
-	}
-	// The allow-list replaces Claude Code's own picker, so the model the user
-	// already runs by default must be on it or the CLI reports it as restricted
-	// on every start. The selected model stays pinned; the default is appended.
-	// Only to a list that already exists: a list holding just the default would
-	// replace the CLI's full picker with a single entry.
-	if def := claudeUserDefaultModel(input); def != "" && len(ids) > 0 {
-		if _, exists := seen[def]; !exists {
-			ids = append(ids, def)
 		}
 	}
 	if len(ids) == 0 {
@@ -327,51 +316,6 @@ func claudeACPLaunchEnv(
 	}
 	env["CLAUDE_MODEL_CONFIG"] = string(encodedConfig)
 	return env
-}
-
-// readClaudeSettings returns the user's Claude Code settings.json from the
-// given config dir. A variable so tests never read the developer's real file.
-var readClaudeSettings = defaultReadClaudeSettings
-
-func defaultReadClaudeSettings(dir string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(dir, "settings.json"))
-}
-
-// claudeUserDefaultModel is the model Claude Code would use for this user
-// without AO: ANTHROPIC_MODEL (project env, then daemon env), else the "model"
-// in settings.json under CLAUDE_CONFIG_DIR (default ~/.claude). Read-only, and
-// every failure (missing, unreadable, malformed, not a string) yields "" so the
-// launch behaves exactly as before.
-func claudeUserDefaultModel(input map[string]string) string {
-	if v := strings.TrimSpace(input["ANTHROPIC_MODEL"]); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")); v != "" {
-		return v
-	}
-	dir := strings.TrimSpace(input["CLAUDE_CONFIG_DIR"])
-	if dir == "" {
-		dir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-	}
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".claude")
-	}
-	raw, err := readClaudeSettings(dir)
-	if err != nil {
-		return ""
-	}
-	var settings struct {
-		Model any `json:"model"`
-	}
-	if json.Unmarshal(raw, &settings) != nil {
-		return ""
-	}
-	model, _ := settings.Model.(string)
-	return strings.TrimSpace(model)
 }
 
 func isClaudeNativeModelAlias(model string) bool {
@@ -422,7 +366,7 @@ func validateClaudeACPExecutable(binary, goos string) error {
 func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 	meta := map[string]any{}
 	standing := strings.TrimSpace(cfg.SystemPrompt)
-	if claudeTodoToolsEnabled(cfg.Env) {
+	if !cfg.DisableTools && claudeTodoToolsEnabled(cfg.Env) {
 		if standing != "" {
 			standing += "\n\n"
 		}
@@ -436,8 +380,17 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 		}
 	}
 	// Also per session, so a choice made after the adapter started still applies.
+	options := map[string]any{}
 	if window := cfg.Env[claudeAutoCompactWindowEnv]; window != "" {
-		meta["claudeCode"] = map[string]any{"options": map[string]any{"env": map[string]string{claudeAutoCompactWindowEnv: window}}}
+		options["env"] = map[string]string{claudeAutoCompactWindowEnv: window}
+	}
+	if cfg.DisableTools {
+		options["tools"] = []string{}
+		options["strictMcpConfig"] = true
+		options["disallowedTools"] = []string{"mcp__*"}
+	}
+	if len(options) > 0 {
+		meta["claudeCode"] = map[string]any{"options": options}
 	}
 	if len(meta) == 0 {
 		return nil

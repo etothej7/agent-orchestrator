@@ -1,101 +1,30 @@
 package controllers
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
-	humanrequestsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/humanrequest"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 )
 
 var prIDPattern = regexp.MustCompile(`^[1-9]\d*$`)
 
-// PRMergeStore is what the merge route reads to decide who may merge: the tracked pull request, the
-// session that owns it, and that session's project (whose agentMayMerge setting applies).
-type PRMergeStore interface {
-	GetPR(ctx context.Context, url string) (domain.PullRequest, bool, error)
-	GetPRByNumber(ctx context.Context, number int) (domain.PullRequest, bool, error)
-	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
-	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
-}
-
-// SessionReproof asks the daemon to give a live session that has no identity proof one at its next idle moment. It
-// reports whether it did: false for a session that does not exist, has ended, or already has a proof.
-type SessionReproof interface {
-	Prioritize(ctx context.Context, id domain.SessionID) bool
-}
-
 // PRsController owns the /prs action routes.
-//
-// With Store set, a merge is decided by who is calling (identity.DecideMerge): the person always may; an agent
-// that is the pull request's own worker or the project's manager may when the project allows agent merges, and
-// otherwise files a pending request for the person; any other agent or a reviewer is refused. A caller that
-// proved nothing but claims to be a live session is told to be relaunched rather than getting a request. Without
-// Store the route is as before (the daemon always sets it; unit tests and headless builds may not).
 type PRsController struct {
-	Svc      prsvc.ActionManager
-	Store    PRMergeStore
-	Requests HumanRequestService
-	// Reproof tells an unproven live session (see identity.ClaimFromContext) from a terminal. Nil treats every
-	// unproven caller as a terminal.
-	Reproof SessionReproof
+	Svc prsvc.ActionManager
 }
 
 // Register mounts the PR action routes on the supplied router.
 func (c *PRsController) Register(r chi.Router) {
-	r.Get("/prs/{id}", c.get)
 	r.Post("/prs/{id}/merge", c.merge)
 	r.Post("/prs/{id}/resolve-comments", c.resolveComments)
-}
-
-// get reads the tracked pull request with this number: what a caller needs to name in a merge. It is a read, so it
-// needs no class; it changes nothing and exposes only facts the app already shows.
-func (c *PRsController) get(w http.ResponseWriter, r *http.Request) {
-	if c.Store == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/prs/{id}")
-		return
-	}
-	prID := chi.URLParam(r, "id")
-	number, err := strconv.Atoi(prID)
-	if !prIDPattern.MatchString(prID) || err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR", "Invalid PR number", nil)
-		return
-	}
-	pr, found, err := c.Store.GetPRByNumber(r.Context(), number)
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
-		return
-	}
-	if !found {
-		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
-		return
-	}
-	state := string(domain.PRStateOpen)
-	switch {
-	case pr.Merged:
-		state = string(domain.PRStateMerged)
-	case pr.Closed:
-		state = string(domain.PRStateClosed)
-	case pr.Draft:
-		state = string(domain.PRStateDraft)
-	}
-	out := PRSummaryResponse{PRNumber: pr.Number, PRURL: pr.URL, HeadSHA: pr.HeadSHA, State: state, Title: pr.Title, SessionID: string(pr.SessionID)}
-	if owner, ok, err := c.Store.GetSession(r.Context(), pr.SessionID); err == nil && ok {
-		out.ProjectID = string(owner.ProjectID)
-	}
-	envelope.WriteJSON(w, http.StatusOK, out)
 }
 
 func (c *PRsController) merge(w http.ResponseWriter, r *http.Request) {
@@ -113,14 +42,8 @@ func (c *PRsController) merge(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	// What is authorised below is exactly what is merged: trim once, here, and use these values for both.
-	in.PRURL = strings.TrimSpace(in.PRURL)
-	in.ExpectedHeadSHA = strings.TrimSpace(in.ExpectedHeadSHA)
-	if in.PRURL == "" || in.ExpectedHeadSHA == "" {
+	if strings.TrimSpace(in.PRURL) == "" || strings.TrimSpace(in.ExpectedHeadSHA) == "" {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_PR", "PR URL and expected head SHA are required", nil)
-		return
-	}
-	if c.Store != nil && !c.mayMergeNow(w, r, prID, in) {
 		return
 	}
 	res, err := c.Svc.Merge(r.Context(), prsvc.MergeRequest{PRID: prID, PRURL: in.PRURL, ExpectedHeadSHA: in.ExpectedHeadSHA})
@@ -135,80 +58,6 @@ func (c *PRsController) merge(w http.ResponseWriter, r *http.Request) {
 		State:          res.State,
 		StateChangedAt: res.StateChangedAt,
 	})
-}
-
-// mayMergeNow applies the caller's authority to a merge. It returns true when the merge should go on; otherwise it
-// has already answered (a refusal, or the filed request).
-func (c *PRsController) mayMergeNow(w http.ResponseWriter, r *http.Request, prID string, in MergePRRequest) bool {
-	ctx := r.Context()
-	caller := identity.FromContext(ctx)
-	if caller.IsHuman() {
-		return true
-	}
-	pr, found, err := c.Store.GetPR(ctx, in.PRURL)
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
-		return false
-	}
-	if !found || strconv.Itoa(pr.Number) != prID {
-		// Nothing tracked to decide about, so nobody but the person may act on it (the service would say the same).
-		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
-		return false
-	}
-	owner, found, err := c.Store.GetSession(ctx, pr.SessionID)
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
-		return false
-	}
-	if !found {
-		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PR_NOT_FOUND", "Unknown PR", nil)
-		return false
-	}
-	project, _, err := c.Store.GetProject(ctx, string(owner.ProjectID))
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
-		return false
-	}
-	switch identity.DecideMerge(caller, project.Config.AgentMergeAllowed(), identity.Target{Session: pr.SessionID, Project: owner.ProjectID}) {
-	case identity.Allow:
-		return true
-	case identity.Refuse:
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "MERGE_NOT_PERMITTED", "Only the pull request's own worker or its project's manager may merge it, and only when the project allows agent merges. Ask the person.", nil)
-		return false
-	}
-	// NeedsHuman. A caller that proved nothing but claims to be a live session is a session that started before
-	// it could be given a proof: it is asked to be relaunched, and it is not given a request the person would
-	// have to approve on its behalf for every routine action.
-	// ClaimFromContext is the session an UNPROVEN caller is attributed to: the kernel-matched session of a pre-upgrade
-	// session recognised by its process tree (a bridged caller: Kind agent, but not IsAgent), else the claim an
-	// anonymous caller made. The re-proof service says whether it is a live session that can be given a proof.
-	if c.Reproof != nil {
-		if claimed := identity.ClaimFromContext(ctx); claimed != "" && c.Reproof.Prioritize(ctx, claimed) {
-			envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "SESSION_NEEDS_IDENTITY", "This session has no identity proof yet; it will be relaunched automatically when idle.", nil)
-			return false
-		}
-	}
-	if c.Requests == nil {
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "MERGE_NOT_PERMITTED", "Only the person may merge this pull request.", nil)
-		return false
-	}
-	payload, err := json.Marshal(map[string]string{"prId": prID, "prUrl": in.PRURL, "expectedHeadSha": in.ExpectedHeadSHA})
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PR_OPERATION_FAILED", "PR operation failed", nil)
-		return false
-	}
-	req, err := c.Requests.File(ctx, humanrequestsvc.FileInput{
-		Kind: domain.HumanRequestPRMerge, ProjectID: string(owner.ProjectID), Payload: payload, Requester: requesterOf(caller),
-	})
-	if err != nil {
-		envelope.WriteError(w, r, err)
-		return false
-	}
-	envelope.WriteJSON(w, http.StatusAccepted, FileHumanRequestResponse{
-		Request: humanRequestResponse(req),
-		Message: "This project does not let agents merge, so the merge is not done. Filed request " + req.ID + " for the person to approve in the AO app; you will be told how it ends. Do not retry it.",
-	})
-	return false
 }
 
 func (c *PRsController) resolveComments(w http.ResponseWriter, r *http.Request) {

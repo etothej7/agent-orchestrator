@@ -412,17 +412,6 @@ type ConversationTurn struct {
 	UsageLimitResumeError string
 }
 
-type CoordinatorHumanMessage struct {
-	MessageID string
-	Purpose   string
-}
-
-type CoordinatorNoticeKey struct {
-	DedupeKey string
-	MessageID string
-	CreatedAt time.Time
-}
-
 type Cue struct {
 	ID        domain.CueID
 	ProjectID domain.ProjectID
@@ -432,32 +421,6 @@ type Cue struct {
 	Prompt    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-}
-
-type DaemonRun struct {
-	BootID            string
-	StartedAt         time.Time
-	HeartbeatAt       time.Time
-	ShutdownStartedAt sql.NullTime
-	EndedCleanAt      sql.NullTime
-}
-
-type HumanRequest struct {
-	ID                 string
-	Kind               string
-	SessionID          sql.NullString
-	ProjectID          sql.NullString
-	RequesterKind      string
-	RequesterSessionID string
-	Payload            string
-	PayloadHash        string
-	Summary            string
-	Changes            string
-	State              string
-	Result             string
-	CreatedAt          time.Time
-	ExpiresAt          time.Time
-	DecidedAt          sql.NullTime
 }
 
 type ManagedHarnessRelease struct {
@@ -490,21 +453,18 @@ type ModelUsageEvent struct {
 }
 
 type Notification struct {
-	ID             string
-	SessionID      domain.SessionID
-	ProjectID      *domain.ProjectID
-	PRURL          string
-	Type           domain.NotificationType
-	Title          string
-	Body           string
-	Status         domain.NotificationStatus
-	CreatedAt      time.Time
-	ResolvedAt     sql.NullTime
-	DismissedAt    sql.NullTime
-	SourceKey      string
-	Purpose        string
-	Resolution     string
-	ResolutionNote string
+	ID          string
+	SessionID   domain.SessionID
+	ProjectID   *domain.ProjectID
+	PRURL       string
+	Type        domain.NotificationType
+	Title       string
+	Body        string
+	Status      domain.NotificationStatus
+	CreatedAt   time.Time
+	ResolvedAt  sql.NullTime
+	DismissedAt sql.NullTime
+	SourceKey   string
 }
 
 type PR struct {
@@ -641,9 +601,6 @@ type Report struct {
 	LastError          string
 	DeliveryBatchID    string
 	RecipientProjectID sql.NullString
-	StoryID            sql.NullString
-	ClientReportID     sql.NullString
-	RecipientSessionID sql.NullString
 }
 
 type ReportOutput struct {
@@ -678,13 +635,6 @@ type Review struct {
 	IsArchived             bool
 }
 
-type ReviewIdentity struct {
-	ReviewID    string
-	ProofSha256 string
-	IssuedAt    time.Time
-	Generation  int64
-}
-
 type ReviewRun struct {
 	ID               string
 	ReviewID         string
@@ -701,7 +651,6 @@ type ReviewRun struct {
 	BatchID          string
 	AutoInjectReview bool
 	TriggerSource    domain.ReviewTriggerSource
-	StoryID          sql.NullString
 }
 
 type Session struct {
@@ -784,7 +733,6 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
-	ProvisionCancelled               bool
 }
 
 type SessionAgentAccount struct {
@@ -808,13 +756,6 @@ type SessionArtifactVersion struct {
 	RestoredFrom int64
 }
 
-type SessionAutoResume struct {
-	SessionID  string
-	Policy     string
-	StopReason string
-	UpdatedAt  time.Time
-}
-
 type SessionCleanupFact struct {
 	SessionID            domain.SessionID
 	SessionGeneration    int64
@@ -831,15 +772,6 @@ type SessionHarnessRelease struct {
 	Launch    string
 	Harness   string
 	Release   string
-}
-
-type SessionIdentity struct {
-	SessionID     string
-	ProofSha256   string
-	IssuedAt      time.Time
-	Generation    int64
-	PendingSha256 sql.NullString
-	ConfirmedAt   sql.NullTime
 }
 
 type SessionInterfaceTransition struct {
@@ -870,12 +802,6 @@ type SessionInterfaceTransitionMessage struct {
 	ClientMessageID string
 	SenderSessionID string
 	AuthoredByUser  bool
-}
-
-type SessionResumeIntent struct {
-	SessionID string
-	Record    string
-	Revision  int64
 }
 
 type SessionTerminalTurn struct {
@@ -911,20 +837,6 @@ type ShellTerminal struct {
 	SessionID                 sql.NullString
 	Transient                 bool
 	PreviewCapabilityVerifier string
-}
-
-type StoryContinuation struct {
-	StoryID  string
-	Record   string
-	Revision int64
-}
-
-type StoryIntake struct {
-	ID              string
-	SourceMessageID string
-	SenderSessionID string
-	RequestHash     string
-	EpicID          string
 }
 
 type TelemetryEvent struct {
@@ -988,11 +900,6 @@ type UsageSource struct {
 	UpdatedAt       time.Time
 }
 
-type WorkspaceEpic struct {
-	ID    string
-	Title string
-}
-
 type WorkspaceRepo struct {
 	ProjectID     domain.ProjectID
 	Name          string
@@ -1001,18 +908,4 @@ type WorkspaceRepo struct {
 	RegisteredAt  time.Time
 	DefaultBranch string
 	GitStatus     string
-}
-
-type WorkspaceStory struct {
-	ID       string
-	EpicID   string
-	Record   string
-	Revision int64
-}
-
-type WorkspaceStoryEvent struct {
-	ID      string
-	StoryID string
-	Record  string
-	Request string
 }

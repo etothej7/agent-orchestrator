@@ -184,9 +184,6 @@ type UsageHookRecorder interface {
 // SessionsController owns the session routes. Nil keeps routes registered but
 // returns OpenAPI-backed 501s.
 type SessionsController struct {
-	// Identity reports which sessions hold an identity proof, for the session views. Nil: no
-	// identity field.
-	Identity SessionIdentitySource
 	Svc      SessionService
 	Projects interface {
 		Get(context.Context, domain.ProjectID) (projectsvc.GetResult, error)
@@ -259,8 +256,6 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Patch("/sessions/{sessionId}/auto-inject-ci", c.setAutoInjectCIPolicy)
 	r.Put("/sessions/{sessionId}/reviewer", c.setReviewer)
 	r.Put("/sessions/{sessionId}/auto-review", c.setAutoReview)
-	r.Get("/sessions/{sessionId}/auto-resume", c.getAutoResume)
-	r.Put("/sessions/{sessionId}/auto-resume", c.setAutoResume)
 	r.Post("/sessions/{sessionId}/restore", c.restore)
 	r.Post("/sessions/{sessionId}/exit-agent", c.exitAgent)
 	r.Post("/sessions/{sessionId}/resume-agent", c.resumeAgent)
@@ -305,9 +300,7 @@ func (c *SessionsController) list(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	views := sessionViews(r, sessions)
-	c.attachIdentity(r.Context(), views)
-	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: views})
+	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViews(r, sessions)})
 }
 
 func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
@@ -496,11 +489,7 @@ func (c *SessionsController) get(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	view := sessionView(r, sess)
-	if views := []SessionView{view}; c.attachIdentity(r.Context(), views) {
-		view = views[0]
-	}
-	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: view})
+	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: sessionView(r, sess)})
 }
 
 func (c *SessionsController) preview(w http.ResponseWriter, r *http.Request) {
@@ -2016,62 +2005,6 @@ func (c *SessionsController) setAutoReview(w http.ResponseWriter, r *http.Reques
 	envelope.WriteJSON(w, http.StatusOK, SessionResponse{Session: sessionView(r, sess)})
 }
 
-// sessionAutoResumeSetter is the optional service capability behind the
-// auto-resume policy route.
-type sessionAutoResumeSetter interface {
-	SetAutoResumePolicy(ctx context.Context, id domain.SessionID, policy domain.AutoResumePolicy, sender domain.SessionID) error
-}
-
-// sessionAutoResumeReader is the optional service capability behind the policy read.
-type sessionAutoResumeReader interface {
-	AutoResumePolicy(ctx context.Context, id domain.SessionID) (domain.AutoResumePolicy, error)
-}
-
-// getAutoResume reports the policy now in force so the app can offer to lift a protection.
-func (c *SessionsController) getAutoResume(w http.ResponseWriter, r *http.Request) {
-	reader, ok := c.Svc.(sessionAutoResumeReader)
-	if c.Svc == nil || !ok {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/auto-resume")
-		return
-	}
-	policy, err := reader.AutoResumePolicy(r.Context(), sessionID(r))
-	if err != nil {
-		envelope.WriteError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, SessionAutoResumeResponse{SessionID: sessionID(r), Policy: policy})
-}
-
-func (c *SessionsController) setAutoResume(w http.ResponseWriter, r *http.Request) {
-	setter, ok := c.Svc.(sessionAutoResumeSetter)
-	if c.Svc == nil || !ok {
-		apispec.NotImplemented(w, r, "PUT", "/api/v1/sessions/{sessionId}/auto-resume")
-		return
-	}
-	var in SetSessionAutoResumeRequest
-	if err := decodeJSON(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	if !in.Policy.Valid() {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_AUTO_RESUME_POLICY", "policy must be allowed or never", nil)
-		return
-	}
-	// Lifting a protection is the person's decision, made in the app. The CLI cannot do
-	// it, and a client that does not say the app confirmed it (an old CLI with --human,
-	// a script, an agent) is refused before anything changes.
-	if in.Policy.Allows() && !in.ConfirmedInApp {
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "AUTO_RESUME_LIFT_REQUIRES_APP",
-			"Only the person can allow automatic resume, and only in the AO app: open the session's ... menu and choose Allow automatic resume. Requests that do not come from the app's confirmation are refused; agents and scripts must not try to get around this.", nil)
-		return
-	}
-	if err := setter.SetAutoResumePolicy(r.Context(), sessionID(r), in.Policy, in.SenderSessionID); err != nil {
-		envelope.WriteError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, SessionAutoResumeResponse{SessionID: sessionID(r), Policy: in.Policy})
-}
-
 func (c *SessionsController) restore(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/restore")
@@ -3275,45 +3208,4 @@ func workspaceSnapshotQuery(query url.Values) (sessionsvc.WorkspaceSelectionRevi
 // Source selectors must never be silently answered with mutable worktree data.
 func workspaceSnapshotRequested(query url.Values) bool {
 	return query.Get("snapshot") == "true" || query.Has("branch") || query.Has("prNumber") || query.Has("sourceUrl") || query.Has("expectedTipSha") || query.Has("expectedBaseSha") || query.Has("commitShas")
-}
-
-// SessionIdentitySource reports the identity-proof state of sessions.
-type SessionIdentitySource interface {
-	// SessionsWithProof returns which of ids hold a proof now, in one query.
-	SessionsWithProof(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID]bool, error)
-	// AnonymousCallsFor is how many anonymous calls claimed to come from the session.
-	AnonymousCallsFor(id domain.SessionID) int
-}
-
-// attachIdentity fills each live session's identity field from ONE batched lookup. It leaves the
-// views untouched (and reports false) when there is no source or the lookup fails: the field is
-// informational, so a failure must never fail the read.
-func (c *SessionsController) attachIdentity(ctx context.Context, views []SessionView) bool {
-	if c.Identity == nil {
-		return false
-	}
-	var ids []domain.SessionID
-	for _, v := range views {
-		if !v.IsTerminated {
-			ids = append(ids, v.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return false
-	}
-	proven, err := c.Identity.SessionsWithProof(ctx, ids)
-	if err != nil {
-		return false
-	}
-	for i := range views {
-		if views[i].IsTerminated {
-			continue
-		}
-		state := SessionIdentityView{Proof: "missing", AnonymousCalls: c.Identity.AnonymousCallsFor(views[i].ID)}
-		if proven[views[i].ID] {
-			state.Proof = "present"
-		}
-		views[i].Identity = &state
-	}
-	return true
 }

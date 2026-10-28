@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	base64ToBytes,
 	bytesToBase64,
 	closeFrame,
-	createDaemonTerminalMux,
 	createTerminalMux,
 	createTerminalMuxPool,
 	dataFrame,
-	fetchTerminalTicket,
 	muxUrlFromApiBase,
 	openFrame,
 	resizeFrame,
@@ -64,7 +62,7 @@ class FakeSocket {
 	sent: string[] = [];
 	closed = false;
 	private listeners: Record<string, ((ev: unknown) => void)[]> = {};
-	constructor(public url: string, public protocols?: string | string[]) {
+	constructor(public url: string) {
 		FakeSocket.instances.push(this);
 	}
 	addEventListener(type: string, cb: (ev: unknown) => void) {
@@ -271,154 +269,6 @@ describe("createTerminalMux client", () => {
 		mux.dispose();
 		socket.emitClose(); // browser fires close after socket.close()
 		expect(states).toEqual([]);
-	});
-});
-
-describe("createTerminalMux with an attach ticket", () => {
-	afterEach(() => {
-		FakeSocket.instances = [];
-	});
-	const Fake = FakeSocket as unknown as typeof WebSocket;
-	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-	it("opens the socket only once the ticket is in hand, offering it as a subprotocol, and flushes what queued", async () => {
-		const mux = createTerminalMux("ws://127.0.0.1:41234/mux", Fake, async () => "T".repeat(24));
-		mux.open("a", 80, 24); // before the socket exists
-		expect(FakeSocket.instances).toHaveLength(0);
-		await settle();
-		const socket = FakeSocket.instances[0]!;
-		expect(socket.protocols).toEqual(["ao.mux", `ao.ticket.${"T".repeat(24)}`]);
-		socket.emitOpen();
-		expect(socket.sent.map((frame) => JSON.parse(frame).type)).toContain("open");
-	});
-
-	it("opens without a ticket when none is available, and when the source throws", async () => {
-		createTerminalMux("ws://127.0.0.1:41234/mux", Fake, async () => undefined);
-		createTerminalMux("ws://127.0.0.1:41234/mux", Fake, async () => {
-			throw new Error("boom");
-		});
-		await settle();
-		expect(FakeSocket.instances).toHaveLength(2);
-		expect(FakeSocket.instances.every((socket) => socket.protocols === undefined)).toBe(true);
-	});
-
-	it("never opens a socket for a mux disposed while waiting for its ticket", async () => {
-		const mux = createTerminalMux("ws://127.0.0.1:41234/mux", Fake, async () => "T".repeat(24));
-		mux.dispose();
-		await settle();
-		expect(FakeSocket.instances).toHaveLength(0);
-	});
-
-	it("reports closed when the socket cannot be built after the ticket arrives", async () => {
-		class Throwing {
-			constructor() {
-				throw new Error("bad url");
-			}
-		}
-		const mux = createTerminalMux("ws://x/mux", Throwing as unknown as typeof WebSocket, async () => undefined);
-		const states: string[] = [];
-		mux.onConnectionChange((state) => states.push(state));
-		await settle();
-		expect(states).toEqual(["closed"]);
-	});
-});
-
-describe("createDaemonTerminalMux", () => {
-	afterEach(() => {
-		FakeSocket.instances = [];
-		vi.unstubAllGlobals();
-	});
-
-	it("connects at once, with no ticket, to a remote host and to a relayed one", () => {
-		vi.stubGlobal("WebSocket", FakeSocket);
-		createDaemonTerminalMux("https://remote.example");
-		createDaemonTerminalMux("http://127.0.0.1:4500/token-a");
-		expect(FakeSocket.instances.map((socket) => [socket.url, socket.protocols])).toEqual([
-			["wss://remote.example/mux", undefined],
-			["ws://127.0.0.1:4500/token-a/mux", undefined],
-		]);
-	});
-
-	it("waits for a ticket before connecting to the local daemon", () => {
-		vi.stubGlobal("WebSocket", FakeSocket);
-		vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
-		createDaemonTerminalMux("http://127.0.0.1:50300");
-		expect(FakeSocket.instances).toHaveLength(0);
-	});
-});
-
-describe("fetchTerminalTicket", () => {
-	const ticket = "abcdefghijklmnopqrstuvwx";
-	const answering = (status: number, body: unknown) =>
-		vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(body), { status }));
-
-	it("posts to the local daemon's ticket route and returns the ticket", async () => {
-		const fetchImpl = answering(201, { ticket, expiresInSeconds: 30 });
-		expect(await fetchTerminalTicket("ws://127.0.0.1:50001/mux", fetchImpl as never)).toBe(ticket);
-		expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:50001/api/v1/terminal-tickets");
-		expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("POST");
-	});
-
-	it("asks nobody but a loopback daemon (a remote host is never offered the app's request)", async () => {
-		const fetchImpl = answering(201, { ticket, expiresInSeconds: 30 });
-		for (const url of ["wss://remote.example/mux", "ws://192.168.1.20:3001/mux", "ws://evil.example:80/mux", "ws://127.0.0.1:4500/token-a/mux", "not a url"]) {
-			expect(await fetchTerminalTicket(url, fetchImpl as never)).toBeUndefined();
-		}
-		expect(fetchImpl).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		["a refusal", 403, { code: "HUMAN_CAPABILITY_REQUIRED" }],
-		["no ticket in the body", 201, {}],
-		["a ticket that cannot be a subprotocol", 201, { ticket: "has space and, commas" }],
-		["a non-string ticket", 201, { ticket: 7 }],
-	])("returns nothing for %s, and does not ask that daemon again at once", async (name, status, body) => {
-		const fetchImpl = answering(status, body);
-		const url = `ws://127.0.0.1:${50100 + name.length}/mux`; // a port of its own: refusals are remembered per daemon
-		expect(await fetchTerminalTicket(url, fetchImpl as never)).toBeUndefined();
-		expect(await fetchTerminalTicket(url, fetchImpl as never)).toBeUndefined();
-		expect(fetchImpl).toHaveBeenCalledTimes(1);
-	});
-
-	it("tells the person when the daemon could not tie the request to the app, and only then", async () => {
-		const notify = vi.fn();
-		await fetchTerminalTicket("ws://127.0.0.1:50201/mux", answering(403, { code: "HUMAN_CAPABILITY_REQUIRED" }) as never, notify);
-		expect(notify).toHaveBeenCalledTimes(1);
-		await fetchTerminalTicket("ws://127.0.0.1:50202/mux", answering(403, { code: "SOMETHING_ELSE" }) as never, notify);
-		await fetchTerminalTicket("ws://127.0.0.1:50203/mux", answering(500, { code: "HUMAN_CAPABILITY_REQUIRED" }) as never, notify);
-		await fetchTerminalTicket("ws://127.0.0.1:50204/mux", answering(201, { ticket, expiresInSeconds: 30 }) as never, notify);
-		expect(notify).toHaveBeenCalledTimes(1);
-	});
-
-	it("retries a refusal or failure within a couple of seconds but leaves a daemon without tickets alone for minutes", async () => {
-		vi.useFakeTimers();
-		try {
-			vi.setSystemTime(new Date("2026-10-27T09:00:00Z"));
-			const refused = answering(403, { code: "HUMAN_CAPABILITY_REQUIRED" });
-			const noTickets = answering(404, {});
-			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
-			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
-			vi.setSystemTime(new Date("2026-10-27T09:00:01Z"));
-			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
-			expect(refused).toHaveBeenCalledTimes(1); // inside the pause
-			vi.setSystemTime(new Date("2026-10-27T09:00:03Z"));
-			await fetchTerminalTicket("ws://127.0.0.1:50211/mux", refused as never);
-			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
-			expect(refused).toHaveBeenCalledTimes(2); // asked again once the pause passed
-			expect(noTickets).toHaveBeenCalledTimes(1); // still left alone
-			vi.setSystemTime(new Date("2026-10-27T09:06:00Z"));
-			await fetchTerminalTicket("ws://127.0.0.1:50212/mux", noTickets as never);
-			expect(noTickets).toHaveBeenCalledTimes(2);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("returns nothing when the request fails", async () => {
-		const fetchImpl = vi.fn(async () => {
-			throw new Error("ECONNREFUSED");
-		});
-		expect(await fetchTerminalTicket("ws://127.0.0.1:50003/mux", fetchImpl as never)).toBeUndefined();
 	});
 });
 

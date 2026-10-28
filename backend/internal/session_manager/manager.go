@@ -24,7 +24,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	coordinationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/coordination"
@@ -129,6 +128,11 @@ var (
 	// agent hook callback, so the native startup sequence (including pre-session
 	// approval dialogs) may still be consuming pane input.
 	ErrStartupPending = errors.New("session: agent startup not ready for input")
+	// ErrDeliveryUnconfirmed means the prompt was written to the pane, but the
+	// harness never confirmed that the agent became active before the
+	// confirmation budget was exhausted (e.g. trailing Enter absorbed or dropped).
+	// The API maps it to a 409; the caller retries or inspects the terminal.
+	ErrDeliveryUnconfirmed = errors.New("session: message delivery was not acknowledged")
 
 	// Spawn-stage sentinels. Each is the existing log word after "spawn" /
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
@@ -204,9 +208,6 @@ const (
 	// EnvBrowserRuntimeTokenStdin is the daemon-only token handoff marker and
 	// must be cleared before a worker process is spawned.
 	EnvBrowserRuntimeTokenStdin = "AO_BROWSER_RUNTIME_TOKEN_STDIN" //nolint:gosec // Environment variable name, not a credential.
-	// EnvUICapabilityStdin is the daemon-only marker that line two of the app's stdin handoff is the
-	// human-capability key. Like its sibling it is inert for a worker and must not reach one.
-	EnvUICapabilityStdin = "AO_UI_CAPABILITY_STDIN"
 )
 
 type lifecycleRecorder interface {
@@ -345,7 +346,6 @@ type Store interface {
 	// Kill and successful RestoreAll must remove these rows to prevent
 	// resurrecting sessions the user intentionally terminated.
 	DeleteSessionWorktrees(ctx context.Context, id domain.SessionID) error
-	SetSessionProvisionCancelled(ctx context.Context, id domain.SessionID, now time.Time) (bool, error)
 	SetSessionProvisionState(ctx context.Context, id domain.SessionID, state domain.SessionProvisionState, message string, now time.Time) (bool, error)
 	SetSessionProvisionSteps(ctx context.Context, id domain.SessionID, steps []domain.SessionProvisionStep, now time.Time) error
 	SetSessionProvisionedWorkspace(ctx context.Context, id domain.SessionID, branch, workspacePath, workspaceRepoPath string, now time.Time) (bool, error)
@@ -394,7 +394,6 @@ type Manager struct {
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
 	browserCapabilities         BrowserCapabilityIssuer
-	proofs                      ProofIssuer
 	agentAccounts               ports.AgentAccountLaunchEnv
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
@@ -440,28 +439,18 @@ type Manager struct {
 	newLaunchID                    func() string
 	codexOperationGate             ports.CodexOperationGate
 	startupBackgroundReconcileDone chan struct{}
-	// startupRetries tracks the background reattach retries of chats whose boot check
-	// failed transiently; their last attempt may capture a resume intent minutes in.
-	startupRetries sync.WaitGroup
-	// workspaceExistsFn replaces the on-disk worktree check in tests.
-	workspaceExistsFn func(string) bool
-	// policyErrLogged remembers sessions whose unreadable policy was already logged.
-	policyErrLogged                sync.Map
 	startupBackgroundReconcileOnce sync.Once
 	// A cold Chat resume must not launch a new persistent host while startup's
 	// orphan-host sweep is using its earlier snapshot of sleeping sessions.
 	persistentHostReconcileDone <-chan struct{}
 	statusRecoveryMu            sync.RWMutex
 	statusRecoveryFailed        bool
-	// resumeCapture arms boot-time resume-intent capture (SetBootWindow).
-	resumeCaptureMu         sync.Mutex
-	resumeCapture           *resumeCapture
-	statusRecoveryRevision  uint64
-	statusRecoveries        map[domain.SessionID]statusRecovery
-	statusVerificationLimit time.Duration
-	startupChatRetryDelays  []time.Duration
-	agentOpMu               sync.Mutex
-	agentOperations         map[domain.SessionID]agentOperationKind
+	statusRecoveryRevision      uint64
+	statusRecoveries            map[domain.SessionID]statusRecovery
+	statusVerificationLimit     time.Duration
+	startupChatRetryDelays      []time.Duration
+	agentOpMu                   sync.Mutex
+	agentOperations             map[domain.SessionID]agentOperationKind
 	// launchStartWait bounds the wait to see a new supervised launch alive.
 	launchStartWait           time.Duration
 	interfaceRecoveryMu       sync.Mutex
@@ -506,9 +495,6 @@ type Manager struct {
 	updateStops updateStops
 	// versionRetries are sessions a version move could not start again.
 	versionRetries versionRetries
-	// chatWorkloads, when set, replaces the process-table read behind a chat session's
-	// background-work count (tests).
-	chatWorkloads func(ctx context.Context, id domain.SessionID) (int, error)
 	// versionMoves bounds the version moves restarting sessions at once.
 	versionMoves versionMoveSlots
 	// versionPolicy says whether and when sessions move to a new release;
@@ -716,12 +702,6 @@ type BrowserLifecycle interface {
 	DestroySession(ctx context.Context, id domain.SessionID) error
 }
 
-// ProofIssuer gives a session its identity proof (package identity). The daemon keeps only
-// the proof's hash; the plain proof goes into the session's environment at launch.
-type ProofIssuer interface {
-	Issue(ctx context.Context, id domain.SessionID) (string, error)
-}
-
 // BrowserCapabilityIssuer mints the split capability injected into a worker
 // and persisted as a one-way verifier on its session row.
 type BrowserCapabilityIssuer interface {
@@ -734,7 +714,10 @@ type BrowserCapabilityIssuer interface {
 // prompt — so UserPromptSubmit never fires and the orchestrator cannot tell the
 // worker started. confirmActive observes the durable Activity.State (written by
 // the user-prompt-submit hook) and re-sends Enter until the session is active or
-// the budget is exhausted. It never fails the send.
+// the budget is exhausted. If the budget is exhausted without the session going
+// active and no delivery-specific acceptance marker is found, it fails the send
+// with ErrDeliveryUnconfirmed rather than silently reporting a delivery it could
+// not confirm.
 type sendConfirmConfig struct {
 	// pollInterval is the gap between activity reads.
 	pollInterval time.Duration
@@ -782,9 +765,6 @@ type Deps struct {
 	Preview             PreviewLifecycle
 	Browser             BrowserLifecycle
 	BrowserCapabilities BrowserCapabilityIssuer
-	// Identity issues each launched session's identity proof (AO_SESSION_PROOF). Nil in
-	// embedders that do not authenticate callers: no proof is injected.
-	Identity ProofIssuer
 	// DataDir owns durable attachment storage and is exported to spawned agents
 	// as AO_DATA_DIR so their hook commands can open the same store.
 	DataDir string
@@ -850,7 +830,6 @@ func New(d Deps) *Manager {
 		preview:                        d.Preview,
 		browser:                        d.Browser,
 		browserCapabilities:            d.BrowserCapabilities,
-		proofs:                         d.Identity,
 		attachments:                    attachmentstore.New(d.DataDir),
 		attachmentSuffix:               randomSuffix,
 		dataDir:                        d.DataDir,
@@ -2285,12 +2264,9 @@ func (m *Manager) sessionLaunchOptions(ctx context.Context, id domain.SessionID)
 
 func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
 	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
-	// Model and effort are durable session choices for every harness. Empty
-	// values mean provider defaults, not today's project or role defaults.
-	merged.Model = rec.Metadata.Model
-	merged.Effort = rec.Metadata.Effort
-	if rec.Metadata.Permissions != "" {
-		merged.Permissions = rec.Metadata.Permissions
+	if rec.Harness == domain.HarnessClaudeCode {
+		merged.Model = rec.Metadata.Model
+		merged.Effort = rec.Metadata.Effort
 	}
 	return merged
 }
@@ -2628,25 +2604,6 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	// one in the same race window. A runtime that cannot be confirmed dead
 	// stops Kill here — same shape as a dirty-workspace refusal — rather than
 	// letting the worktree disappear out from under it.
-	// A protected session is still terminated (that is Ed's explicit choice) but its
-	// worktree is never removed. The decision comes before EVERY destroyer below: the
-	// background cleanup branch, the pre-remove user scripts (which may delete files
-	// before the worktree goes), the workspace-project rows and workspace.Destroy.
-	if ws.Path != "" && m.SessionProtected(ctx, id) {
-		m.logger.Info("kill: protected session terminated; its worktree is preserved", "sessionID", id)
-		// Shell terminals scoped to the session still close with it (they must not
-		// linger on a terminated session), though the worktree stays. The gate is only
-		// held for the termination write.
-		if release, err := m.beginShellTerminalTeardown(ctx, id); err != nil {
-			m.logger.Warn("kill: protected session's shell terminals could not be confirmed closed", "sessionID", id, "error", err)
-		} else if release != nil {
-			defer release()
-		}
-		// A workspace project's per-repo rows stay as non-restorable inventory, exactly
-		// as for any preserved workspace project, so `ao session cleanup` can reclaim
-		// the repos after the unlock.
-		return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, nil, !workspaceProject)
-	}
 	var releaseTerminals func()
 	defer func() {
 		if releaseTerminals != nil {
@@ -2747,11 +2704,6 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 // This deliberately does not write a session_worktrees row: those rows are
 // boot-restore markers, and a replaced orchestrator must stay terminated.
 func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID) error {
-	// A protected session is never retired: retirement force-removes even a dirty
-	// worktree. Checked first, before any operation gate or side effect.
-	if m.SessionProtected(ctx, id) {
-		return fmt.Errorf("retire replacement %s: %w", id, ErrSessionProtected)
-	}
 	if err := m.beginAgentOperation(ctx, id, agentOperationRetire); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrOperationInProgress
@@ -2766,13 +2718,6 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	}
 	if !ok || rec.IsTerminated {
 		return nil
-	}
-	// Ask first, before anything is stopped or terminated: a worktree whose work
-	// cannot be backed up leaves this orchestrator running and the replacement
-	// fails cleanly, instead of a terminated session with a worktree that still
-	// holds the branch.
-	if err := m.preflightRetireWorkspace(ctx, rec); err != nil {
-		return fmt.Errorf("retire replacement %s: %w", id, err)
 	}
 	m.stopPreviewBestEffort(ctx, id)
 	m.destroyBrowserBestEffort(ctx, id)
@@ -2896,50 +2841,6 @@ func (m *Manager) destroyBrowserBestEffort(ctx context.Context, id domain.Sessio
 	}
 }
 
-// PreflightRetireForReplacement reports, changing nothing, whether
-// RetireForReplacement could remove this session's worktree without losing work.
-// The service asks for every orchestrator it is about to replace before it sends a
-// retire notice to, or terminates, any of them.
-func (m *Manager) PreflightRetireForReplacement(ctx context.Context, id domain.SessionID) error {
-	rec, ok, err := m.store.GetSession(ctx, id)
-	if err != nil {
-		return fmt.Errorf("retire replacement %s: %w", id, err)
-	}
-	if !ok || rec.IsTerminated {
-		return nil
-	}
-	if err := m.preflightRetireWorkspace(ctx, rec); err != nil {
-		return fmt.Errorf("retire replacement %s: %w", id, err)
-	}
-	return nil
-}
-
-// preflightRetireWorkspace asks the workspace, when it can say, whether the
-// session's worktree (or each repo worktree of a workspace project) can be force
-// removed without losing work. It changes nothing.
-func (m *Manager) preflightRetireWorkspace(ctx context.Context, rec domain.SessionRecord) error {
-	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
-		return nil
-	}
-	preflighter, ok := m.workspace.(ports.WorkspaceRemovalPreflighter)
-	if !ok {
-		return nil
-	}
-	rows, isProject, err := m.workspaceProjectRows(ctx, rec)
-	if err != nil {
-		return fmt.Errorf("workspace rows: %w", err)
-	}
-	if !isProject {
-		return preflighter.PreflightRemoval(ctx, workspaceInfo(rec))
-	}
-	for _, row := range rows {
-		if err := preflighter.PreflightRemoval(ctx, workspaceInfoFromRepoInfo(row)); err != nil {
-			return fmt.Errorf("repo %s: %w", row.RepoName, err)
-		}
-	}
-	return nil
-}
-
 func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec domain.SessionRecord, rows []ports.WorkspaceRepoInfo) error {
 	staleRepos := make(map[string]bool)
 	for _, row := range rows {
@@ -3058,40 +2959,6 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // terminal identity, and provider-native conversation remain available for an
 // exact ResumeAgentWithMode call.
 func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
-	return m.exitAgent(ctx, id, domain.StopReasonUser)
-}
-
-// stopReasonStore is the optional part of the store that records why an agent was
-// stopped on purpose, so a restart can tell "Ed stopped it" from "it was running".
-type stopReasonStore interface {
-	SetStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason, now time.Time) error
-}
-
-// recordStopReason writes the reason BEFORE the controller is stopped, so it is
-// durable ahead of the controller's own exited write. A store that cannot record
-// reasons is skipped (nothing then distinguishes a stop); a store that can but fails
-// is an error, because a stop that cannot be recorded could later be mistaken for a
-// crash and resumed against Ed's wish.
-func (m *Manager) recordStopReason(ctx context.Context, id domain.SessionID, reason domain.StopReason) error {
-	store, ok := m.store.(stopReasonStore)
-	if !ok {
-		return nil
-	}
-	return store.SetStopReason(ctx, id, reason, m.clock())
-}
-
-// exitAgent is ExitAgent with the reason the agent is being stopped.
-func (m *Manager) exitAgent(ctx context.Context, id domain.SessionID, reason domain.StopReason) (_ domain.SessionRecord, retErr error) {
-	recorded := false
-	defer func() {
-		// An exit that did not complete leaves the agent as it was; do not leave a
-		// stop reason behind that would hide a later crash from auto-resume.
-		if retErr != nil && recorded {
-			if err := m.recordStopReason(context.WithoutCancel(ctx), id, domain.StopReasonNone); err != nil {
-				m.logger.Warn("exit agent: could not clear the stop reason after a failed exit", "sessionID", id, "error", err)
-			}
-		}
-	}()
 	if err := m.beginAgentOperation(ctx, id, agentOperationExit); err != nil {
 		if errors.Is(err, errAgentOperationInProgress) {
 			err = ErrAgentExitInProgress
@@ -3118,10 +2985,6 @@ func (m *Manager) exitAgent(ctx context.Context, id domain.SessionID, reason dom
 	if rec.Activity.State == domain.ActivityExited {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrAgentExited)
 	}
-	if err := m.recordStopReason(ctx, id, reason); err != nil {
-		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: record why it stopped: %w", id, err)
-	}
-	recorded = true
 	if err := m.releaseTerminalRuntime(ctx, rec); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, err)
 	}
@@ -3301,18 +3164,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
 			return nil
 		}
-		parkedByReboot := m.parkedByAutoResume(ctx, id)
-		if parkedByReboot {
-			// A session auto-resume parked at boot wakes on the saved provider
-			// conversation or not at all: never a fresh start in its place, even for a
-			// conversation AO can prove never persisted.
-			_, err = m.resumeAgent(ctx, id, resumeOptions{neverFresh: true})
-			if err == nil {
-				m.clearAutoResumeIntent(ctx, id)
-			}
-		} else {
-			_, err = m.ResumeAgentWithMode(ctx, id)
-		}
+		_, err = m.ResumeAgentWithMode(ctx, id)
 		if errors.Is(err, ErrResumeInProgress) {
 			m.agentOpMu.Lock()
 			operation = m.agentOperations[id]
@@ -3335,60 +3187,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
-func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (RestoreResult, error) {
-	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: requireNativeHistory})
-}
-
-// resumeOptions are the knobs of one agent resume.
-type resumeOptions struct {
-	// requireNativeHistory refuses a launch that would not continue the provider's
-	// own conversation, instead of falling back to a fresh launch with the saved
-	// prompt (which would replay the original task).
-	requireNativeHistory bool
-	// skipReadinessReconcile skips the branch that, for a session whose status
-	// readiness reads "unavailable", reconciles the live session instead of
-	// resuming it. That reconcile relaunches NON-strictly, so an unattended strict
-	// resume must never take it.
-	skipReadinessReconcile bool
-	// neverFresh is the unattended resume of a CHAT session: the same provider
-	// conversation or nothing. It resumes the provider's saved session (full
-	// replay when the driver has it, model context alone when it does not) and
-	// never starts a fresh conversation in its place. It replaces
-	// requireNativeHistory for Chat, whose required-history mode is the
-	// terminal-handoff barrier rather than a restart check.
-	neverFresh bool
-}
-
-// ResumeAgentStrict resumes an exited agent for unattended (automatic) resume. It
-// is ResumeAgentWithMode with two differences: it never continues in a fresh
-// provider conversation, so a missing or unverifiable conversation ends in
-// ErrNotResumable, a history error or ErrChatResumeFailed instead of a launch that
-// re-runs the original task (a terminal session requires native history; a Chat
-// session resumes the saved provider conversation, with or without typed replay); and it never takes the
-// readiness-reconcile branch, which relaunches non-strictly (readiness reads
-// "unavailable" for any row with no recovery entry once boot reconciliation failed,
-// exited rows included). The worktree is preserved exactly as for ResumeAgentWithMode.
-func (m *Manager) ResumeAgentStrict(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
-	// The guard is code, not convention: this entry point is the unattended one, so it
-	// refuses a protected session (policy never, or unreadable) and one that was
-	// stopped on purpose, whoever calls it and however late.
-	if m.SessionProtected(ctx, id) {
-		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionProtected)
-	}
-	if reader, ok := m.store.(resumeCaptureStore); ok {
-		if reason, err := reader.StopReason(ctx, id); err != nil || reason != domain.StopReasonNone {
-			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, errors.Join(ErrStoppedOnPurpose, err))
-		}
-	}
-	if rec, found, err := m.store.GetSession(ctx, id); err == nil && found && rec.Metadata.WorkspacePath != "" &&
-		!m.workspaceExists(rec.Metadata.WorkspacePath) {
-		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrWorkspaceMissing)
-	}
-	return m.resumeAgent(ctx, id, resumeOptions{requireNativeHistory: true, neverFresh: true, skipReadinessReconcile: true})
-}
-
-func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts resumeOptions) (result RestoreResult, err error) {
-	requireNativeHistory := opts.requireNativeHistory
+func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
 	ctx, releaseCoordination := coordinationsvc.ReadLock(ctx, m.store)
 	defer releaseCoordination()
 	if err := m.beginAgentResume(ctx, id); err != nil {
@@ -3440,21 +3239,15 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 	if rec.ProvisionState.IsProvisioning() {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
 	}
-	// The never-fresh mode travels as an explicit option on every path below, the
-	// failed-spawn retry included.
-	var chatOpts []resumeOption
-	if opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		chatOpts = append(chatOpts, withNeverFresh())
-	}
 	if rec.ProvisionState == domain.SessionProvisionFailed {
-		result, handedOff, err := m.retryFailedChatSpawn(ctx, rec, releaseHarness, chatOpts...)
+		result, handedOff, err := m.retryFailedChatSpawn(ctx, rec, releaseHarness)
 		if handedOff {
 			releaseHarness = nil
 			resumeHandedOff = true
 		}
 		return result, err
 	}
-	if rec.HibernatedAt == nil && !opts.skipReadinessReconcile && m.SessionStatusReadiness(rec) == "unavailable" {
+	if rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable" {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
@@ -3529,19 +3322,8 @@ func (m *Manager) resumeAgent(ctx context.Context, id domain.SessionID, opts res
 			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation state changed: %w", id, ErrResumeInProgress)
 		}
 	}
-	strictHistory := requireNativeHistory
-	if len(chatOpts) > 0 {
-		// Chat: context resume, never a fresh conversation (see resumeOptions).
-		strictHistory = false
-	}
 	result, err = m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec,
-		strictHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil), chatOpts...)
-	if err == nil && !opts.neverFresh && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		// A resume by a person (or any ordinary path) satisfies a captured intent: drop it
-		// so the resumer leaves the session alone. The unattended resume keeps its intent
-		// for the resumer to settle.
-		m.clearAutoResumeIntent(ctx, id)
-	}
+		requireNativeHistory || (rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil))
 	if err == nil && m.chat != nil && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.StaleBinary != nil && rec.StaleBinary.SwitchFailedAt != nil {
 		// A failed move to a new release kept the user's queued messages for
@@ -3583,9 +3365,8 @@ func (m *Manager) resumeAgentRecordWithPolicy(
 	operation string,
 	rec domain.SessionRecord,
 	requireNativeHistory bool,
-	opts ...resumeOption,
 ) (RestoreResult, error) {
-	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, false, requireNativeHistory, "", opts...)
+	return m.resumeAgentRecordWithReservedGeneration(ctx, operation, rec, false, requireNativeHistory, "")
 }
 
 func (m *Manager) resumeAgentRecordWithReservedGeneration(
@@ -3595,7 +3376,6 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 	forceFresh bool,
 	requireNativeHistory bool,
 	reservedGeneration string,
-	opts ...resumeOption,
 ) (RestoreResult, error) {
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
@@ -3613,10 +3393,10 @@ func (m *Manager) resumeAgentRecordWithReservedGeneration(
 		ProjectID: rec.ProjectID,
 	}
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat || meta.RuntimeHandleID == "" {
-		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil, opts...)
+		return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, nil, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil)
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil, opts...)
+	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, &handle, forceFresh, requireNativeHistory, reservedGeneration, domain.SessionInterfaceTransitionHistoryStrict, nil)
 }
 
 func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
@@ -3646,7 +3426,7 @@ func (m *Manager) relaunchSessionWithPolicy(
 	return m.relaunchSessionWithPolicyAndGeneration(ctx, operation, rec, project, ws, restartHandle, forceFresh, requireNativeHistory, "", historyPolicy, nil)
 }
 
-func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string, opts ...resumeOption) (RestoreResult, error) {
+func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, forceFresh, requireNativeHistory bool, reservedGeneration string, historyPolicy domain.SessionInterfaceTransitionHistoryPolicy, promptOverride *string) (RestoreResult, error) {
 	ctx, releaseCoordination := coordinationsvc.ReadLock(ctx, m.store)
 	defer releaseCoordination()
 	// Relaunch dispatches from the currently committed persisted mode, never from
@@ -3659,7 +3439,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrIncompleteHandle)
 		}
 		return m.resumeChatController(
-			ctx, operation, rec, project, ws, requireNativeHistory, resumeSettingsOf(opts).neverFresh, false, reservedGeneration, historyPolicy,
+			ctx, operation, rec, project, ws, requireNativeHistory, false, reservedGeneration, historyPolicy,
 		)
 	}
 
@@ -3680,7 +3460,20 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt file: %w", operation, rec.ID, err)
 	}
 
+	// Restore resolves the project model while retaining this session's pinned
+	// permission policy independently of future project defaults.
 	agentConfig := restoredAgentConfig(rec, project.Config)
+	// A non-empty model picked in ChatUI is a durable session-level choice and
+	// must win over the project default for every harness on a TUI rebuild.
+	if model := strings.TrimSpace(rec.Metadata.Model); model != "" {
+		agentConfig.Model = model
+	}
+	// A per-spawn or ChatUI-selected reasoning effort is the same kind of
+	// durable session-level choice: it must survive the rebuild for every
+	// effort-capable harness, not only Claude Code.
+	if effort := strings.TrimSpace(rec.Metadata.Effort); effort != "" {
+		agentConfig.Effort = effort
+	}
 	agentConfig.Launch = m.sessionLaunchOptions(ctx, rec.ID)
 	// Only a provider switch passes its own prompt; it rolls back a failed start itself.
 	switching := promptOverride != nil
@@ -3690,6 +3483,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		promptOverride, savedNote = &note, true
 	}
 	agentConfig.Launch.HandoffNote = ""
+	if rec.Metadata.Permissions != "" {
+		agentConfig.Permissions = rec.Metadata.Permissions
+	}
 	var env map[string]string
 	rec, env, err = m.prepareWorkerLaunchEnv(ctx, rec, project.Config.Env)
 	if err != nil {
@@ -4005,11 +3801,6 @@ func (m *Manager) SaveAndTeardownAll(ctx context.Context) error {
 			continue
 		}
 		if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
-			continue
-		}
-		// ForceDestroy below must never reach a protected session's worktree.
-		if m.SessionProtected(ctx, rec.ID) {
-			m.logger.Info("save-teardown-all: protected session skipped; its worktree is preserved", "sessionID", rec.ID)
 			continue
 		}
 		if err := m.saveAndTeardownOne(ctx, rec); err != nil {
@@ -4488,11 +4279,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	close(jobs)
 	wg.Wait()
 	if len(retryChats) > 0 && ctx.Err() == nil {
-		m.startupRetries.Add(1)
-		go func() {
-			defer m.startupRetries.Done()
-			m.retryStartupChatChecks(ctx, retryChats)
-		}()
+		go m.retryStartupChatChecks(ctx, retryChats)
 	}
 }
 
@@ -5047,8 +4834,8 @@ func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []por
 // multiline prompt a single Enter may not submit (claude-code leaves it as an
 // unsubmitted draft). confirmActive observes the durable Activity.State
 // (flipped to active by the user-prompt-submit hook) and re-sends Enter until
-// the session is active or the budget is exhausted. Confirmation never fails
-// the send: it only decides whether to nudge again.
+// the session is active or the budget is exhausted. When budget is exhausted
+// without confirmation, it surfaces ErrDeliveryUnconfirmed.
 func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
 	// Chat keeps its established automation relay attribution unless a trusted
 	// caller supplies the explicit user-authored fact through SendWithOptions.
@@ -5100,7 +4887,13 @@ func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message
 	}
 	wrapped := domain.WrapReportDelivery(clientMessageID, message)
 	if err := m.send(ctx, id, wrapped, clientMessageID, ports.MessageDeliveryOptions{}); err != nil {
-		return err
+		// A pane write whose activity confirmation could not be observed is not
+		// fatal here: SendSemantic's own durable acceptance loop below is
+		// authoritative and correlates this exact message through its submission
+		// marker. Any other send error is a real failure.
+		if !errors.Is(err, ErrDeliveryUnconfirmed) {
+			return err
+		}
 	}
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
@@ -5202,7 +4995,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		options.InteractionAt = m.clock()
 	}
 	var afterWrite func(context.Context) error
-	_, internalReportDelivery := domain.CoordinationDeliveryID(message)
+	coordinationID, internalReportDelivery := domain.CoordinationDeliveryID(message)
 	if strings.TrimSpace(message) != "" && !internalReportDelivery && options.AuthoredByUser {
 		if recorder, ok := m.store.(latestUserPromptRecorder); ok {
 			afterWrite = func(writeCtx context.Context) error {
@@ -5212,6 +5005,32 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 				return nil
 			}
 		}
+	}
+	// Evidence the confirmation loop honors when Active is never observed (the
+	// prompt was accepted and the turn finished between activity polls). The two
+	// send kinds leave different durable markers:
+	//
+	//   - A user-authored send records a prompt: afterWrite durably writes
+	//     LatestUserPromptAt at options.InteractionAt as this delivery's own fact
+	//     (kept because the provider hook may be lost). That exact instant is the
+	//     baseline, so a LATER advance — the UserPromptSubmit hook landing after
+	//     delivery — proves acceptance, while an unsubmitted draft leaves the
+	//     marker at the baseline and still nudges. Fixing the baseline to the
+	//     delivery instant (not a post-delivery store read) closes the race where
+	//     the hook lands before that read and hides itself inside the baseline.
+	//
+	//   - A coordination (ao send) delivery deliberately leaves LatestUserPromptAt
+	//     unchanged, so that marker is the wrong evidence for it. Its durable
+	//     acceptance is the coordination checkpoint: ConversationCheckpointTurnID
+	//     equal to this exact delivery ID, scoped to the current runtime launch
+	//     (see semanticMessageAccepted). Matching the delivery ID avoids crediting
+	//     an unrelated concurrent prompt.
+	evidence := deliveryEvidence{}
+	if afterWrite != nil {
+		evidence.baselinePromptAt = options.InteractionAt
+		evidence.recordsPrompt = true
+	} else if internalReportDelivery {
+		evidence.coordinationID = coordinationID
 	}
 	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, message, afterWrite)
 	if err != nil {
@@ -5249,9 +5068,11 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	// see ports.BlockedActivitySignaler.
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
-		// Confirmation is best-effort and never fails the send (the message
-		// was already delivered above); log so a store error is not swallowed
-		// silently.
+		// This lookup only decides whether the harness is confirm-eligible; a
+		// failure here cannot tell, so confirmation is skipped and the already
+		// delivered message is left as sent. Confirmation itself (below) can
+		// still fail the send with ErrDeliveryUnconfirmed once it runs. Log so a
+		// store error is not swallowed silently.
 		m.logger.Warn("send: confirm skipped, session lookup failed", "sessionID", id, "error", err)
 		return nil
 	}
@@ -5259,7 +5080,9 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return nil
 	}
 	if m.harnessNudgeSafe(rec.Harness) {
-		m.confirmActive(ctx, m.messenger, id)
+		if err := m.confirmActive(ctx, m.messenger, id, evidence); err != nil {
+			return fmt.Errorf("send %s: %w", id, err)
+		}
 	}
 	return nil
 }
@@ -5358,40 +5181,80 @@ const (
 // attempt budget is exhausted. The initial delivery already submitted one
 // Enter; each additional attempt sends Enter again (an empty message is an
 // Enter-only nudge, see ports.AgentMessenger) after waiting for Activity.State
-// to flip. It is best-effort: on context cancellation, store failure, or budget
-// exhaustion it returns silently (the message was already delivered; the agent
-// may yet pick it up). Callers must capability-gate this loop because harnesses
-// without trustworthy submit and blocked signals cannot use it safely.
+// to flip. When the confirmation budget is exhausted without the session becoming
+// active, it returns ErrDeliveryUnconfirmed. Callers must capability-gate this
+// loop because harnesses without trustworthy submit and blocked signals cannot
+// use it safely.
 //
 // Decision safety: a session observed in ActivityBlocked stops confirmation
 // immediately with no nudge — an Enter into a pending permission dialog would
 // answer it for the user. Sticky ActivityWaitingInput does NOT stop the loop:
 // an idle-prompt session with an unsubmitted pasted draft is exactly the case
 // the nudge exists for.
-func (m *Manager) confirmActive(ctx context.Context, guard *sessionguard.Guard, id domain.SessionID) {
-	m.confirmActiveWithNudge(ctx, id, nil, func(nudgeCtx context.Context) (sessionguard.Outcome, error) {
+// deliveryEvidence is the durable proof that a delivery was accepted, honored
+// by the confirmation loop when Active is never observed because the turn
+// completed between activity polls. A send leaves exactly one kind of marker;
+// an empty value (neither kind) means confirmation relies solely on observed
+// Active/Blocked state.
+type deliveryEvidence struct {
+	// recordsPrompt is set for a user-authored send; its acceptance is an
+	// advance of LatestUserPromptAt past baselinePromptAt (the delivery instant).
+	recordsPrompt    bool
+	baselinePromptAt time.Time
+	// coordinationID is this delivery's ID for a coordination (ao send/report)
+	// delivery; its acceptance is a matching coordination checkpoint scoped to
+	// the current runtime launch (semanticMessageAccepted).
+	coordinationID string
+}
+
+// accepted reports whether rec carries this delivery's durable acceptance.
+func (e deliveryEvidence) accepted(rec domain.SessionRecord) bool {
+	if e.recordsPrompt {
+		return rec.Metadata.LatestUserPromptAt.After(e.baselinePromptAt)
+	}
+	if e.coordinationID != "" {
+		return semanticMessageAccepted(rec, e.coordinationID)
+	}
+	return false
+}
+
+func (m *Manager) confirmActive(ctx context.Context, guard *sessionguard.Guard, id domain.SessionID, evidence deliveryEvidence) error {
+	return m.confirmActiveWithNudge(ctx, id, evidence, nil, func(nudgeCtx context.Context) (sessionguard.Outcome, error) {
 		return guard.Deliver(nudgeCtx, id, "")
 	})
 }
 
 type confirmationStopCheck func(context.Context) (bool, error)
 
-func (m *Manager) confirmActiveWithNudge(ctx context.Context, id domain.SessionID, stop confirmationStopCheck, nudge func(context.Context) (sessionguard.Outcome, error)) {
+func (m *Manager) confirmActiveWithNudge(ctx context.Context, id domain.SessionID, evidence deliveryEvidence, stop confirmationStopCheck, nudge func(context.Context) (sessionguard.Outcome, error)) error {
 	for attempt := 1; ; attempt++ {
 		if m.confirmationStopRequested(ctx, id, attempt, stop) {
-			return
+			return nil
 		}
-		outcome, err := m.waitForActive(ctx, id)
-		if err != nil || outcome == waitActive {
-			return
+		outcome, err := m.waitForActive(ctx, id, evidence)
+		if err != nil {
+			return err
+		}
+		if outcome == waitActive {
+			return nil
 		}
 		if outcome == waitBlocked {
 			m.logger.Info("send: session awaiting a decision; skipping Enter nudge", "sessionID", id, "attempt", attempt)
-			return
+			return nil
 		}
 		if attempt >= m.sendConfirm.maxAttempts {
+			// A submission can land between the final poll and this decision,
+			// returning the session to idle with Active never observed. Honor the
+			// durable LatestUserPromptAt evidence before declaring failure, so an
+			// accepted message is not reported as a false ErrDeliveryUnconfirmed.
+			// The evidence is specific to this delivery (prompt baseline or
+			// coordination delivery ID), so it cannot be satisfied by unrelated
+			// activity.
+			if rec, ok, readErr := m.store.GetSession(ctx, id); readErr == nil && ok && evidence.accepted(rec) {
+				return nil
+			}
 			m.logger.Warn("send: activity confirmation budget exhausted", "sessionID", id, "attempts", attempt)
-			return
+			return ErrDeliveryUnconfirmed
 		}
 		// Timed out with budget remaining: the previous Enter did not land.
 		// Nudge again with an Enter-only send. Deliver re-reads state
@@ -5401,19 +5264,19 @@ func (m *Manager) confirmActiveWithNudge(ctx context.Context, id domain.SessionI
 		// per-poll check inside waitForActive cannot cover; a store failure
 		// inside the guard fails closed (no Enter on an unknown state).
 		if m.confirmationStopRequested(ctx, id, attempt, stop) {
-			return
+			return nil
 		}
 		nudgeOutcome, nudgeErr := nudge(ctx)
 		if nudgeErr != nil {
 			m.logger.Warn("send: confirm re-send failed", "sessionID", id, "attempt", attempt, "error", nudgeErr)
-			return
+			return nudgeErr
 		}
 		if nudgeOutcome != sessionguard.Sent {
 			// Not necessarily blocked: the session may also have become active,
 			// terminated, or vanished since the poll — the outcome says which.
 			// The mutation-safe switch path additionally suppresses active turns.
 			m.logger.Info("send: session unavailable before nudge; skipping Enter nudge", "sessionID", id, "attempt", attempt, "outcome", nudgeOutcome.String())
-			return
+			return nil
 		}
 	}
 }
@@ -5435,9 +5298,14 @@ func (m *Manager) confirmationStopRequested(ctx context.Context, id domain.Sessi
 // waitForActive polls Activity.State for up to attemptDeadline and reports
 // whether another nudge could help (see waitOutcome). Blocked is checked every
 // poll so a permission dialog appearing mid-wait aborts immediately instead of
-// burning the deadline. A non-nil error means polling cannot continue (ctx
-// cancelled, store failure, session gone).
-func (m *Manager) waitForActive(ctx context.Context, id domain.SessionID) (waitOutcome, error) {
+// burning the deadline. A prompt accepted and completed between polls returns
+// the session to idle with Active never observed, so this delivery's durable
+// acceptance marker (deliveryEvidence.accepted: a user prompt's advanced
+// LatestUserPromptAt, or a coordination delivery's matching checkpoint) is
+// honored as acceptance. The marker is specific to this delivery, so unrelated
+// activity cannot satisfy it. A non-nil error means polling cannot continue
+// (ctx cancelled, store failure, session gone).
+func (m *Manager) waitForActive(ctx context.Context, id domain.SessionID, evidence deliveryEvidence) (waitOutcome, error) {
 	deadlineAt := m.clock().Add(m.sendConfirm.attemptDeadline)
 	ticker := time.NewTicker(m.sendConfirm.pollInterval)
 	defer ticker.Stop()
@@ -5454,6 +5322,9 @@ func (m *Manager) waitForActive(ctx context.Context, id domain.SessionID) (waitO
 			return waitActive, nil
 		case domain.ActivityBlocked:
 			return waitBlocked, nil
+		}
+		if evidence.accepted(rec) {
+			return waitActive, nil
 		}
 		if !m.clock().Before(deadlineAt) {
 			return waitTimedOut, nil
@@ -5497,12 +5368,6 @@ func (m *Manager) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 	}
 	for _, rec := range recs {
 		if !rec.IsTerminated {
-			continue
-		}
-		if m.SessionProtected(ctx, rec.ID) {
-			// Never reclaimed on its own: its worktree is untracked by AO after a kill,
-			// and removing it is a deliberate, manual step after the unlock.
-			result.Skipped = append(result.Skipped, CleanupSkip{SessionID: rec.ID, Reason: "protected: allow automatic resume for it in the AO app first"})
 			continue
 		}
 		ws := workspaceInfo(rec)
@@ -5691,10 +5556,6 @@ func cleanupSkipReason(err error) string {
 	}
 	if errors.Is(err, ErrCleanupScript) {
 		return "workspace cleanup script failed"
-	}
-	if errors.Is(err, ports.ErrWorkspaceSecretsNotArchived) {
-		// Checked before ErrWorkspaceDirty, which these errors also wrap.
-		return "its git-ignored secret files (.env*) could not be archived; fix the backup location or move the unreadable file, then retry"
 	}
 	if errors.Is(err, ports.ErrWorkspaceDirty) {
 		return "workspace has uncommitted changes"
@@ -6190,6 +6051,7 @@ func (m *Manager) artifactPrompt(id domain.SessionID, chat bool) string {
 		"Keep the workspace limited to code changes that will ship in a PR. Preserve any relative asset links between files you place in the artifact directory. " +
 		"Create a separate document when the user requests a durable document or when the task needs a reviewable deliverable. Ordinary progress updates, concise final answers, and validation summaries can stay in chat or AO report notes; do not create files solely because a response is a summary, plan, analysis, or report. " +
 		"Routine test logs, command output, scratch notes, and intermediate diagnostics are working material, not deliverables. Keep them out of report attachments unless requested or needed to explain an actionable failure. Prefer one consolidated deliverable over many diagnostic files. " +
+		"Scripts, source code, and other helper files you use to produce a deliverable are working material too: keep them in the system temp directory, not in the artifact directory, unless the user asked for that code as the deliverable. " +
 		"This directory is local storage. Saving a file here or attaching its reference to an AO report does not authorize external publishing; follow the user's publishing scope."
 }
 
@@ -6304,10 +6166,6 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 	setProtectedEnv(env, EnvBrowserCapability, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeToken, "", caseInsensitive)
 	setProtectedEnv(env, EnvBrowserRuntimeTokenStdin, "", caseInsensitive)
-	setProtectedEnv(env, EnvUICapabilityStdin, "", caseInsensitive)
-	// The identity proof is minted only at a real launch (launchRuntimeEnv). A project or the
-	// daemon's own environment must never supply one.
-	setProtectedEnv(env, identity.EnvProof, "", caseInsensitive)
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
@@ -6392,9 +6250,6 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
 	env := m.runtimeEnv(id, project, issue, projectEnv)
-	if err := m.injectSessionProof(id, env); err != nil {
-		return nil, "", err
-	}
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -6407,27 +6262,6 @@ func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID
 	}
 	env[EnvBrowserCapability] = token
 	return env, verifier, nil
-}
-
-// injectSessionProof gives the session a new identity proof and puts it in its launch
-// environment. Every launch and relaunch rotates the proof, so a proof from a previous
-// process stops verifying the moment its replacement exists. A session that cannot be given a
-// proof must not start: it would run with no way to identify itself to the daemon.
-func (m *Manager) injectSessionProof(id domain.SessionID, env map[string]string) error {
-	if m.proofs == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	proof, err := m.proofs.Issue(ctx, id)
-	if err != nil {
-		return fmt.Errorf("issue session identity proof: %w", err)
-	}
-	if strings.TrimSpace(proof) == "" {
-		return errors.New("identity issuer returned an empty proof")
-	}
-	env[identity.EnvProof] = proof
-	return nil
 }
 
 // prepareWorkerLaunchEnv couples capability issuance with durable verifier
@@ -6583,9 +6417,9 @@ func safeRelPath(rel string) (string, error) {
 	return clean, nil
 }
 
-// scriptStepTimeUnit is the unit of a Setup or Cleanup step's time limit; tests
+// scriptStepMinute is the unit of a Setup or Cleanup step's time limit; tests
 // shorten it.
-var scriptStepTimeUnit = time.Minute
+var scriptStepMinute = time.Minute
 
 // scriptStepTimeout is the command a Setup or Cleanup step runs and its time
 // limit: the one its first line sets (domain.ScriptStepMinutes), else
@@ -6595,7 +6429,7 @@ func scriptStepTimeout(step string, fallbackMinutes int) (string, time.Duration)
 	if minutes == 0 {
 		minutes = fallbackMinutes
 	}
-	return command, time.Duration(minutes) * scriptStepTimeUnit
+	return command, time.Duration(minutes) * scriptStepMinute
 }
 
 // runPostCreate runs each post-create command in the workspace via the platform
@@ -6630,7 +6464,7 @@ func runPostCreate(ctx context.Context, workspacePath, sourcePath string, comman
 
 // stepMinutes says a step's time limit in minutes ("1 minute", "30 minutes").
 func stepMinutes(timeout time.Duration) string {
-	if minutes := int(timeout / scriptStepTimeUnit); minutes != 1 {
+	if minutes := int(timeout / scriptStepMinute); minutes != 1 {
 		return strconv.Itoa(minutes) + " minutes"
 	}
 	return "1 minute"

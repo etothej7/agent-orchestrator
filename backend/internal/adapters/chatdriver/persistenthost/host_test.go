@@ -9,34 +9,13 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 func TestMain(m *testing.M) {
 	if len(os.Args) >= 6 && os.Args[1] == "chat-host" {
-		if root := os.Getenv("AO_TEST_SILENT_HOST_ROOT"); root != "" {
-			file, err := os.OpenFile(filepath.Join(root, "starts"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-			if err != nil {
-				os.Exit(2)
-			}
-			_, _ = fmt.Fprintln(file, os.Getpid())
-			_ = file.Close()
-			deadline := time.Now().Add(20 * time.Second)
-			for time.Now().Before(deadline) {
-				if _, err := os.Stat(filepath.Join(root, "release")); err == nil {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			_ = os.WriteFile(filepath.Join(root, "exited"), []byte("done"), 0600)
-			os.Exit(0)
-		}
 		protocol := ProtocolRaw
 		fingerprint := ""
 		separator := 5
@@ -50,7 +29,7 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		err := Run(testparent.Context(), Config{
+		err := Run(context.Background(), Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,
@@ -1025,34 +1004,5 @@ func TestReconnectOnlyNeverPreparesOrStartsMissingHost(t *testing.T) {
 	}
 	if _, err := readDescriptor(cfg.DataDir, cfg.SessionID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("health check wrote a descriptor: %v", err)
-	}
-}
-
-func TestConnectOrStartBoundsMissingDescriptorWithoutReplacement(t *testing.T) {
-	root := t.TempDir()
-	t.Cleanup(func() {
-		if err := os.WriteFile(filepath.Join(root, "release"), nil, 0600); err != nil {
-			t.Error(err)
-		}
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(filepath.Join(root, "exited")); err == nil {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		t.Error("owned silent child did not exit")
-	})
-	start := time.Now()
-	_, err := ConnectOrStart(context.Background(), Config{SessionID: "silent-no-descriptor", DataDir: t.TempDir(), Workdir: root, Argv: []string{"unused-provider"}, Env: append(os.Environ(), "AO_TEST_SILENT_HOST_ROOT="+root)})
-	if !errors.Is(err, ErrOwnershipInconclusive) || !strings.Contains(err.Error(), "startup probes stopped") {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed < startupTimeout || elapsed > startupTimeout+3*time.Second {
-		t.Fatal("unbounded startup", elapsed)
-	}
-	starts, err := os.ReadFile(filepath.Join(root, "starts"))
-	if err != nil || len(strings.Fields(string(starts))) != 1 {
-		t.Fatalf("replacement host started: %q %v", starts, err)
 	}
 }

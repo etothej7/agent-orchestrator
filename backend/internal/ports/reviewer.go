@@ -116,13 +116,6 @@ type ReviewInvocation struct {
 	// find this daemon. Some harnesses filter shell command environments, so
 	// adapters may need to pass this value through their own command config.
 	RunFilePath string
-	// ProofFilePath is a private file (mode 0600, in AO's 0700 prompt directory) where AO places
-	// the reviewer's identity proof AFTER building the launch environment. Some harnesses filter
-	// the environment their shell commands see (Codex passes only a core set), so such an adapter
-	// passes this PATH (never the proof itself) through its own command config as
-	// AO_SESSION_PROOF_FILE, and `ao review submit` reads the proof from the file. Empty when no
-	// proof is issued.
-	ProofFilePath string
 	// Prompt and SystemPrompt are the review instructions AO authored centrally,
 	// mirroring the worker's LaunchConfig.Prompt / SystemPrompt split: SystemPrompt
 	// carries the standing reviewer role, Prompt the per-pass task. A prompt-driven

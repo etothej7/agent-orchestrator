@@ -44,7 +44,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
@@ -58,7 +57,6 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentauth"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/autoresume"
 	awakesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/awake"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
@@ -68,7 +66,6 @@ import (
 	fsbrowsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/fsbrowser"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/hookprocess"
-	humanrequestsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/humanrequest"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	linkpreviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/linkpreview"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
@@ -76,7 +73,6 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
-	storysvc "github.com/aoagents/agent-orchestrator/backend/internal/service/story"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
@@ -84,7 +80,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
-	"github.com/aoagents/agent-orchestrator/backend/internal/uicapability"
 )
 
 // usageReconcileTick is the safety-net interval for the usage pipeline
@@ -130,22 +125,11 @@ func Run(buildVersion string) error {
 
 	log := newLogger()
 	var browserRuntimeToken string
-	// Only a key the desktop app handed over on the private stdin pipe can back a
-	// human-UI capability: a daemon the app did not start (headless, ao start) has no
-	// key, so no request to it is ever human (it cannot lift a protection).
-	var uiCapabilityVerifier *uicapability.Verifier
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
-		var uiKey string
-		browserRuntimeToken, uiKey, err = browserruntime.ReadRuntimeHandoff(os.Stdin, os.Getenv(uicapability.StdinEnv) == "1")
+		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
 		if err != nil {
 			return err
 		}
-		if uiKey != "" {
-			uiCapabilityVerifier = uicapability.New(uiKey)
-		}
-		// The handoff is read once. Closing the pipe keeps the key from any later reader of
-		// fd 0; no child is ever given os.Stdin (exec gives a nil Stdin /dev/null).
-		_ = os.Stdin.Close()
 	}
 	if browserRuntimeToken == "" {
 		browserRuntimeToken, err = browserruntime.NewToken()
@@ -225,12 +209,16 @@ func Run(buildVersion string) error {
 	sentryobs.SetPolicyEnabled(eventsAllowed)
 	telemetrySink, telemetryIdentity := newTelemetrySink(cfg, store, log)
 	defer func() { _ = telemetrySink.Close(context.Background()) }()
-	// Daemon Sentry: captures genuine 5xx/panics with their Go stack. Gated on
-	// Initialize the transport once so a later policy opt-in works without a
-	// daemon restart. The policy gate remains fail-closed and is checked before
-	// every capture; a blank DSN still leaves this as a no-op.
+	installID := ""
+	if telemetryIdentity != nil {
+		installID = telemetryIdentity.Snapshot().InstallID
+	}
+	// Initialize daemon Sentry once so a later policy opt-in works without a
+	// restart. The policy gate is checked before every capture. An unavailable
+	// install ID omits the tag without disabling error reporting.
 	if err := sentryobs.Init(sentryobs.Config{
 		DSN:         cfg.Telemetry.SentryDSN,
+		InstallID:   installID,
 		Release:     cfg.Telemetry.AppVersion,
 		Environment: sentryEnvironment(cfg.Telemetry.AppVersion),
 	}); err != nil {
@@ -265,17 +253,6 @@ func Run(buildVersion string) error {
 	// graceful shutdown inside Server.Run and stops the background goroutines.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	// What the previous daemon run left behind is read ONCE, before any startup write
-	// or health pass, so auto-resume can tell exits recorded during its shutdown from
-	// older ones. This run records itself only after the boot health pass (see
-	// liveness.start below) and stamps the start of its own graceful shutdown the
-	// moment the signal context cancels.
-	bootID := uuid.NewString()
-	bootWindow := readBootWindow(ctx, store, bootID, time.Now().UTC(), log)
-	liveness := newDaemonLiveness(store, bootID, log)
-	liveness.watchShutdown(ctx)
-	log.Info("daemon boot window", "bootId", bootID, "previousRun", bootWindow.HasPrevious, "fallback", bootWindow.Fallback,
-		"shutdownWindowStart", bootWindow.ShutdownWindowStart(), "shutdownWindowRule", bootWindow.RuleBEnabled())
 	go telemetryPolicy.Watch(ctx, time.Second, cfg.Telemetry.Events, cfg.Telemetry.EventsExplicit, eventsAllowed, sentryobs.SetPolicyEnabled)
 	startGitHubLoginResolver(ctx, cfg, telemetryIdentity, log)
 	cdcPipe, err := startCDC(ctx, store, log)
@@ -362,7 +339,6 @@ func Run(buildVersion string) error {
 	var sessMgr sessionLifecycle
 	chatSvc := chatsvc.New(chatsvc.Options{
 		Store:               store,
-		Notifier:            notificationWriter,
 		Sessions:            store,
 		Renders:             attachmentstore.New(cfg.DataDir),
 		DataDir:             cfg.DataDir,
@@ -396,25 +372,6 @@ func Run(buildVersion string) error {
 		}),
 		PageReader: chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, conversationID string, beforeSequence, limit int64) (chatsvc.ConversationRows, error) {
 			rows, err := store.LoadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit)
-			if err != nil {
-				return chatsvc.ConversationRows{}, err
-			}
-			return chatsvc.ConversationRows{
-				Conversation:                     rows.Conversation,
-				ActiveBranch:                     rows.ActiveBranch,
-				EditFloorSequence:                rows.EditFloorSequence,
-				NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
-				Turns:                            rows.Turns,
-				Messages:                         rows.Messages,
-				Activities:                       rows.Activities,
-				BranchPoints:                     rows.BranchPoints,
-				BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
-				OldestSequence:                   rows.OldestSequence,
-				HasMoreBefore:                    rows.HasMoreBefore,
-			}, nil
-		}),
-		HumanPageReader: chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, conversationID string, beforeSequence, limit int64) (chatsvc.ConversationRows, error) {
-			rows, err := store.LoadCoordinatorHumanSnapshotPage(ctx, conversationID, beforeSequence, limit)
 			if err != nil {
 				return chatsvc.ConversationRows{}, err
 			}
@@ -684,8 +641,6 @@ func Run(buildVersion string) error {
 		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
-	storySvc := &storysvc.Service{Store: store, Messenger: chatSvc, Actions: sessionSvc}
-	humanRequestSvc := humanrequestsvc.New(humanrequestsvc.Config{Store: store, AutoResume: sessionSvc, Chat: chatSvc, Messenger: messenger, Log: log})
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()
@@ -872,7 +827,6 @@ func Run(buildVersion string) error {
 			Lifecycle:    lcStack.LCM,
 			Logger:       log,
 		})
-		humanRequestSvc.SetPRMerger(prActions)
 	} else {
 		log.Warn("pr action service disabled: no usable SCM provider")
 	}
@@ -1012,77 +966,50 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
-	procLookup, peerLookup := newProcessLookup(log)
-	identityObs := newIdentityObservations(log, procLookup, peerLookup)
-	guardConfig := routeGuardConfig(store)
-	guardConfig.Observer = guardObserver{rec: identityObs}
-	// Rolling re-proof: idle sessions without an identity proof are relaunched (coordinator
-	// first); a session refused for lack of one is moved to the front of that queue.
-	var sessionReproof httpd.Prioritizer
-	if reproofSvc := newReproof(log, wiredSessMgr, store, autoresume.NoticeWriter{Store: store, Notify: notificationWriter}); reproofSvc != nil {
-		guardConfig.Reproof = reproofSvc
-		sessionReproof = reproofSvc
-		go reproofSvc.Run(ctx)
-	}
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
-		UICapability: uiCapabilityVerifier,
-		SessionIdentity: identity.NewResolver(store, store).WithReviews(store, store).WithAncestry(
-			ancestryBridge(log, procLookup, peerLookup, store, func(ctx context.Context, handle string) ([]int, error) {
-				return runtimeAdapter.ProcessRootPIDs(ctx, ports.RuntimeHandle{ID: handle})
-			}, runtimeAdapter.ServerPID, cfg.DataDir)),
-		// Class-H routes need the human capability; identity is observed (ED8 rollout).
-		RouteGuard:           guardConfig,
-		IdentityObservations: identityObs,
-		SessionProofs:        sessionProofs{store: store, obs: identityObs},
-		ReviewRuns:           store,
-		IdentityMode:         func() string { return identityModeName(guardConfig.Identity) },
-		Awake:                awakeSvc,
-		Projects:             projectSvc,
-		ArtifactVersions:     lcStack.ArtifactVersions,
-		HostID:               hostIdentity.HostID,
-		Endpoints:            bs,
-		Agents:               agentSvc,
-		CodexAccounts:        agentSvc,
-		AgentAccounts:        agentAccountSvc,
-		SystemChecks:         systemChecks,
-		Installer:            systemInstall,
-		Sessions:             sessionSvc,
-		Automations:          automationSvc,
-		DesktopWorkspaces:    sessionSvc,
-		PRs:                  prActions,
-		Reviews:              reviewSvc,
-		Notifications:        notifier,
-		Reports:              reportSvc,
-		NotificationStream:   notificationHub,
-		Push:                 pushRegistry,
-		Presence:             presenceTracker,
-		DeviceRoster:         deviceRoster,
-		DeviceLive:           presenceTracker,
-		Import:               importsvc.New(importsvc.Deps{Store: store}),
-		Directories:          fsbrowsersvc.New(),
-		ShellTerminals:       shellTermSvc,
-		Cues:                 cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc, Terminals: shellTermSvc}),
-		AgentAuth:            agentAuthSvc,
-		GitHub:               newGitHubStatusService(githubpat.New(cfg.DataDir), prReader),
-		Conversations:        chatSvc,
-		Settings:             settingsSvc,
-		Coordination:         coordinationsvc.New(store, cfg.DataDir),
-		Stories:              storySvc,
-		HumanRequests:        humanRequestSvc,
-		PRMergeStore:         store,
-		SessionReproof:       sessionReproof,
-		CDC:                  store,
-		Events:               cdcPipe.Broadcaster,
-		Activity:             hookActivity,
-		NativeSessions:       nativeSessions,
-		UsageHooks:           usageCollector,
-		UsageSummary:         usagesvc.NewSummaryReader(store),
-		SessionMemory:        memoryReader,
-		SessionSteps:         lcStack.LCM,
-		Telemetry:            telemetrySink,
-		TelemetryIdentity:    telemetryIdentity,
-		Mobile:               mc,
-		BrowserLive:          browserLive,
+		Awake:              awakeSvc,
+		Projects:           projectSvc,
+		ArtifactVersions:   lcStack.ArtifactVersions,
+		HostID:             hostIdentity.HostID,
+		Endpoints:          bs,
+		Agents:             agentSvc,
+		CodexAccounts:      agentSvc,
+		AgentAccounts:      agentAccountSvc,
+		SystemChecks:       systemChecks,
+		Installer:          systemInstall,
+		Sessions:           sessionSvc,
+		Automations:        automationSvc,
+		DesktopWorkspaces:  sessionSvc,
+		PRs:                prActions,
+		Reviews:            reviewSvc,
+		Notifications:      notifier,
+		Reports:            reportSvc,
+		NotificationStream: notificationHub,
+		Push:               pushRegistry,
+		Presence:           presenceTracker,
+		DeviceRoster:       deviceRoster,
+		DeviceLive:         presenceTracker,
+		Import:             importsvc.New(importsvc.Deps{Store: store}),
+		Directories:        fsbrowsersvc.New(),
+		ShellTerminals:     shellTermSvc,
+		Cues:               cuesvc.New(cuesvc.Deps{Store: store, Sessions: sessionSvc, Terminals: shellTermSvc}),
+		AgentAuth:          agentAuthSvc,
+		GitHub:             newGitHubStatusService(githubpat.New(cfg.DataDir), prReader),
+		Conversations:      chatSvc,
+		Settings:           settingsSvc,
+		Coordination:       coordinationsvc.New(store, cfg.DataDir),
+		CDC:                store,
+		Events:             cdcPipe.Broadcaster,
+		Activity:           hookActivity,
+		NativeSessions:     nativeSessions,
+		UsageHooks:         usageCollector,
+		UsageSummary:       usagesvc.NewSummaryReader(store),
+		SessionMemory:      memoryReader,
+		SessionSteps:       lcStack.LCM,
+		Telemetry:          telemetrySink,
+		TelemetryIdentity:  telemetryIdentity,
+		Mobile:             mc,
+		BrowserLive:        browserLive,
 		DevImport: devimportsvc.New(devimportsvc.Deps{
 			Store:         store,
 			TargetDataDir: cfg.DataDir,
@@ -1150,11 +1077,6 @@ func Run(buildVersion string) error {
 	// port Start actually bound. Routed through bs, not lan directly, so the
 	// proxy never gets pinned to a dead port after an ephemeral fallback.
 	// Best-effort: never blocks boot.
-	// One-time, before the restore so the proxy is applied in the same pass.
-	switch out := bs.MigrateSecurePairingV1(); out {
-	case controllers.SecurePairingMigrationEnabled, controllers.SecurePairingMigrationForeignServe, controllers.SecurePairingMigrationFailed:
-		log.Info("secure pairing migration", "outcome", string(out))
-	}
 	if err := restoreMobileOnBoot(mobilebridge.Path(cfg.DataDir), bs); err != nil {
 		log.Warn("restore mobile bridge on boot failed", "err", err)
 	}
@@ -1182,10 +1104,6 @@ func Run(buildVersion string) error {
 
 	var startupReconcileDone <-chan struct{}
 	var usageLimitResumeDone <-chan struct{}
-	var storyContinuationsDone <-chan struct{}
-	var standingInstructionsDone <-chan struct{}
-	var autoResumeDone <-chan struct{}
-	var humanRequestsDone <-chan struct{}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1199,8 +1117,6 @@ func Run(buildVersion string) error {
 		}
 		done := make(chan struct{})
 		startupReconcileDone = done
-		autoResumeFinished := make(chan struct{})
-		autoResumeDone = autoResumeFinished
 		go func() {
 			defer close(done)
 			if reconcileErr := reconcilePersistentChatHosts(ctx, cfg.DataDir, store, cfg.AppRunID); reconcileErr != nil {
@@ -1214,22 +1130,9 @@ func Run(buildVersion string) error {
 				log.Warn("reviewer chat recovery deferred", "err", reconcileErr)
 			}
 			close(reviewerChatsRecovered)
-			// Arm resume-intent capture with the window read before any startup write.
-			if armer, ok := sessMgr.(interface{ SetBootWindow(domain.BootWindow) }); ok {
-				armer.SetBootWindow(bootWindow)
-			}
 			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
 				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
 			}
-			// The health pass is done: record this run (never before, so a boot that dies
-			// mid-pass cannot mask the previous run's shutdown window) and keep it fresh.
-			liveness.start(ctx)
-			// Bring back the agents this restart cut off, strictly and only after the
-			// health pass that captured them. It never runs before this point.
-			go func() {
-				defer close(autoResumeFinished)
-				runAutoResume(ctx, bootID, sessMgr, chatSvc, store, notificationWriter, log)
-			}()
 			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
 			}
@@ -1253,9 +1156,6 @@ func Run(buildVersion string) error {
 				}
 			}
 		}()
-		storyContinuationsDone = startStoryContinuations(ctx, done, cdcPipe.Broadcaster, &storysvc.Continuations{Store: store, Stories: storySvc, Sender: chatSvc}, log)
-		humanRequestsDone = startHumanRequestSweeper(ctx, humanRequestSvc, time.Minute)
-		standingInstructionsDone = startStandingInstructions(ctx, done, cdcPipe.Broadcaster, chatSvc, 30*time.Second, 5*time.Minute, 0, log)
 		resumeDone := make(chan struct{})
 		usageLimitResumeDone = resumeDone
 		go func() {
@@ -1303,19 +1203,6 @@ func Run(buildVersion string) error {
 	// via defer) avoids the LIFO trap where a Stop() that blocks on ctx-cancel
 	// runs before the cancel: a non-signal exit path would hang otherwise.
 	stop()
-	liveness.wait()
-	if autoResumeDone != nil {
-		<-autoResumeDone
-	}
-	if standingInstructionsDone != nil {
-		<-standingInstructionsDone
-	}
-	if humanRequestsDone != nil {
-		<-humanRequestsDone
-	}
-	if storyContinuationsDone != nil {
-		<-storyContinuationsDone
-	}
 	if usageLimitResumeDone != nil {
 		<-usageLimitResumeDone
 	}
@@ -1379,7 +1266,6 @@ func Run(buildVersion string) error {
 	if err := cdcPipe.Stop(); err != nil {
 		log.Error("cdc pipeline shutdown", "err", err)
 	}
-	liveness.endedClean()
 	return runErr
 }
 

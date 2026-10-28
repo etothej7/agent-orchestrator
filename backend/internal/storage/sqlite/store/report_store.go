@@ -3,16 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -23,64 +19,11 @@ func (s *Store) CreateReport(ctx context.Context, rec domain.ReportRecord) (doma
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if rec.StoryID != "" {
-		if strings.TrimSpace(rec.ClientReportID) == "" {
-			return domain.ReportRecord{}, apierr.Invalid("REPORT_KEY_REQUIRED", "Story reports need a stable client report id", nil)
-		}
-		old, err := s.qw.GetStoryReportByClientID(ctx, gen.GetStoryReportByClientIDParams{SessionID: string(rec.SessionID), ClientReportID: sql.NullString{String: rec.ClientReportID, Valid: true}})
-		if err == nil {
-			prior, err := s.reportWithOutputs(ctx, old)
-			if err != nil {
-				return prior, err
-			}
-			if prior.StoryID != rec.StoryID || prior.State != rec.State || prior.Note != rec.Note || prior.Message != rec.Message || !slices.Equal(prior.Outputs, rec.Outputs) {
-				return prior, apierr.Conflict("REPORT_KEY_REUSED", "Report key belongs to a different request", nil)
-			}
-			return prior, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return domain.ReportRecord{}, err
-		}
-	}
 	var row gen.Report
 	err := s.inTx(ctx, "create report", func(q *gen.Queries) error {
 		var err error
-		if rec.StoryID != "" {
-			row, err := q.GetWorkspaceStory(ctx, rec.StoryID)
-			if err != nil {
-				return err
-			}
-			var story domain.Story
-			if err := json.Unmarshal([]byte(row.Record), &story); err != nil {
-				return err
-			}
-			linked := false
-			for _, a := range story.Assignments {
-				linked = linked || a.SessionID == rec.SessionID
-			}
-			if !linked {
-				return apierr.Invalid("REPORT_STORY_SESSION", "Reporter must be explicitly assigned to this story", nil)
-			}
-			// Autonomous reports are internal manager input. They must not replace
-			// an explicit human decision or stop the manager from resolving it.
-			if !story.Autonomous && (rec.State == domain.ReportNeedsInput || rec.State == domain.ReportStuck) {
-				if rec.State == domain.ReportNeedsInput {
-					story.Question = rec.Note
-					story.QuestionEventID = "report-" + rec.ID
-					story.QuestionRequesterSessionID = rec.SessionID
-				} else {
-					story.BlockedReason = rec.Note
-				}
-				story.Revision = row.Revision + 1
-				if _, err := q.UpdateWorkspaceStory(ctx, gen.UpdateWorkspaceStoryParams{ID: story.ID, Record: storyJSON(story), Revision: row.Revision}); err != nil {
-					return err
-				}
-			}
-
-		}
 		row, err = q.CreateReport(ctx, gen.CreateReportParams{
 			ID: rec.ID, SessionID: string(rec.SessionID), ProjectID: string(rec.ProjectID),
-			StoryID: sql.NullString{String: rec.StoryID, Valid: rec.StoryID != ""}, ClientReportID: sql.NullString{String: rec.ClientReportID, Valid: rec.StoryID != ""},
 			RecipientProjectID: sql.NullString{String: string(rec.RecipientProjectID), Valid: rec.RecipientProjectID != ""},
 			State:              string(rec.State), Note: rec.Note, Message: rec.Message,
 			CreatedAt: rec.CreatedAt, AvailableAt: rec.AvailableAt,
@@ -96,10 +39,6 @@ func (s *Store) CreateReport(ctx context.Context, rec domain.ReportRecord) (doma
 			}); err != nil {
 				return err
 			}
-		}
-		if rec.StoryID != "" {
-			e := domain.StoryEvent{ID: "report-" + rec.ID, StoryID: rec.StoryID, Kind: "report", SenderSessionID: rec.SessionID, Reference: rec.ID, Text: rec.Note + rec.Message, Result: string(rec.State), CreatedAt: rec.CreatedAt}
-			return q.CreateWorkspaceEvent(ctx, gen.CreateWorkspaceEventParams{ID: e.ID, StoryID: e.StoryID, Record: storyJSON(e), Request: storyJSON(e)})
 		}
 		return nil
 	})
@@ -375,7 +314,6 @@ func orderedReportRows(rows []gen.Report) []gen.Report {
 
 func reportFromGen(r gen.Report) domain.ReportRecord {
 	return domain.ReportRecord{
-		RecipientSessionID: domain.SessionID(r.RecipientSessionID.String), StoryID: r.StoryID.String, ClientReportID: r.ClientReportID.String,
 		ID: r.ID, SessionID: domain.SessionID(r.SessionID), ProjectID: domain.ProjectID(r.ProjectID),
 		RecipientProjectID: domain.ProjectID(r.RecipientProjectID.String),
 		State:              domain.ReportState(r.State), Note: r.Note, Message: r.Message, CreatedAt: r.CreatedAt,
@@ -385,18 +323,4 @@ func reportFromGen(r gen.Report) domain.ReportRecord {
 		AcknowledgedAt: timeFromNull(r.AcknowledgedAt), LastError: r.LastError,
 		DeliveryBatchID: r.DeliveryBatchID,
 	}
-}
-
-// SetReportBatchRecipient preserves the actual destination chosen for this delivery attempt.
-func (s *Store) SetReportBatchRecipient(ctx context.Context, project domain.ProjectID, token string, recipient domain.SessionID) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	count, err := s.qw.SetReportBatchRecipient(ctx, gen.SetReportBatchRecipientParams{ProjectID: sql.NullString{String: string(project), Valid: true}, ClaimToken: token, RecipientSessionID: sql.NullString{String: string(recipient), Valid: true}})
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return domain.ErrInvalidReport
-	}
-	return nil
 }

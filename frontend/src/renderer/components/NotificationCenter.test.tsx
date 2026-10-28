@@ -10,7 +10,6 @@ import {
 	type NotificationListStatus,
 } from "../lib/notifications";
 import { useUiStore } from "../stores/ui-store";
-import { humanRequestsQueryKey } from "../hooks/useHumanRequests";
 import { NotificationCenter, NotificationRuntime } from "./NotificationCenter";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -213,7 +212,7 @@ function notificationQueryResult(
 					notifications,
 					nextCursor: hasNextPage ? "older" : undefined,
 					unreadCount: unreadNotifications.length,
-					unresolvedCount: 2, unresolvedAskCount: 0,
+					unresolvedCount: 2,
 				},
 			],
 		},
@@ -526,7 +525,7 @@ describe("NotificationCenter", () => {
 					notifications: allNotifications,
 					nextCursor: "older" as string | undefined,
 					unreadCount: 3,
-					unresolvedCount: 2, unresolvedAskCount: 0,
+					unresolvedCount: 2,
 				},
 			],
 		};
@@ -536,13 +535,13 @@ describe("NotificationCenter", () => {
 					notifications: allNotifications,
 					nextCursor: "older",
 					unreadCount: 3,
-					unresolvedCount: 2, unresolvedAskCount: 0,
+					unresolvedCount: 2,
 				},
 				{
 					notifications: [laterUnread],
 					nextCursor: undefined,
 					unreadCount: 3,
-					unresolvedCount: 2, unresolvedAskCount: 0,
+					unresolvedCount: 2,
 				},
 			];
 		});
@@ -552,7 +551,7 @@ describe("NotificationCenter", () => {
 			notifications: unreadNotifications,
 			nextCursor: "older-unread",
 			unreadCount: 3,
-			unresolvedCount: 2, unresolvedAskCount: 0,
+			unresolvedCount: 2,
 		};
 		const unreadQuery = {
 			...notificationQueryResult("unread", { hasNextPage: true }),
@@ -640,7 +639,7 @@ describe("NotificationCenter", () => {
 	it("shows the empty state when the all list loaded with nothing", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
 		}));
 		renderNotificationCenter();
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
@@ -652,7 +651,7 @@ describe("NotificationCenter", () => {
 	it("surfaces a failed refresh over an unrelated cached empty page", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status, { isError: status === "all" }),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
 		}));
 		renderNotificationCenter();
 		await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
@@ -664,7 +663,7 @@ describe("NotificationCenter", () => {
 	it("keeps the confirmed empty state when a background refresh fails after clear", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) => ({
 			...notificationQueryResult(status, { isError: status === "all" }),
-			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0, unresolvedAskCount: 0 }] },
+			data: { pageParams: [""], pages: [{ notifications: [], unreadCount: 0, unresolvedCount: 0 }] },
 		}));
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		applyNotificationsCleared(queryClient, {
@@ -687,78 +686,6 @@ describe("NotificationCenter", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-1", sessionId: "sess-1" },
-		});
-	});
-
-	describe("coordinator messages (ao ask / ao tell)", () => {
-		const message = (purpose: NonNullable<NotificationDTO["purpose"]>, status: "read" | "unread" = "unread"): NotificationDTO => ({
-			id: `ntf_${purpose}`,
-			sessionId: "coord-1",
-			projectId: "overall",
-			prUrl: "",
-			type: "coordinator_message",
-			purpose,
-			title: `Coordinator ${purpose}`,
-			body: `Body of ${purpose}`,
-			status,
-			createdAt: "2026-07-21T12:00:00Z",
-			target: { kind: "session", sessionId: "coord-1" },
-		});
-		const purposes = ["blocking_decision", "scope_question", "completion_decision", "verified_result", "stopped_work"] as const;
-
-		function withCoordinatorMessages() {
-			const all = notificationQueryResult("all");
-			all.data.pages[0].notifications = [...purposes.map((purpose) => message(purpose)), ...allNotifications];
-			const unread = notificationQueryResult("unread");
-			unread.data.pages[0].notifications = [...purposes.map((purpose) => message(purpose)), ...unreadNotifications];
-			unread.data.pages[0].unreadCount = unreadNotifications.length + purposes.length;
-			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? all : status === "unread" ? unread : notificationQueryResult(status)));
-		}
-
-		it("never lists a coordinator message: the chat and the Dock badge carry them, the bell does not", async () => {
-			withCoordinatorMessages();
-			renderNotificationCenter();
-			await clickOpen();
-			const rows = within(screen.getByRole("list")).getAllByRole("listitem");
-			expect(rows).toHaveLength(allNotifications.length);
-			for (const purpose of purposes) {
-				expect(screen.queryByText(`Coordinator ${purpose}`)).not.toBeInTheDocument();
-			}
-		});
-
-		it("also drops routine progress types from the bell and its unread number, keeping needs_input and ready_to_merge", async () => {
-			const routine = (type: NotificationDTO["type"]): NotificationDTO => ({
-				...allNotifications[0], id: `ntf_${type}`, type, title: `Routine ${type}`, body: "", status: "unread",
-			});
-			const dropped = ["review_changes_requested", "review_completed", "pr_merged", "pr_closed_unmerged"] as const;
-			const all = notificationQueryResult("all");
-			all.data.pages[0].notifications = [...dropped.map(routine), ...allNotifications];
-			const unread = notificationQueryResult("unread");
-			unread.data.pages[0].notifications = [...dropped.map(routine), ...unreadNotifications];
-			unread.data.pages[0].unreadCount = unreadNotifications.length + dropped.length;
-			notificationQueryMock.mockImplementation((status: NotificationListStatus) => (status === "all" ? all : status === "unread" ? unread : notificationQueryResult(status)));
-			renderNotificationCenter();
-			expect(screen.getByRole("button", { name: `${unreadNotifications.length} unread notifications` })).toBeInTheDocument();
-			await clickOpen();
-			for (const type of dropped) expect(screen.queryByText(`Routine ${type}`)).not.toBeInTheDocument();
-			expect(screen.getByText("Checkout flow needs input")).toBeInTheDocument();
-			expect(within(screen.getByRole("list")).getAllByRole("listitem")).toHaveLength(allNotifications.length);
-		});
-
-		it("does not count them in the bell's unread number", async () => {
-			withCoordinatorMessages();
-			renderNotificationCenter();
-			expect(screen.getByRole("button", { name: `${unreadNotifications.length} unread notifications` })).toBeInTheDocument();
-		});
-
-		it("does not mark them read when the panel opens: only seeing them in the chat does", async () => {
-			withCoordinatorMessages();
-			renderNotificationCenter();
-			await clickOpen();
-			await waitFor(() => expect(markAllMock).toHaveBeenCalled());
-			const ids = markAllMock.mock.calls.flatMap((call) => call[0] as string[]);
-			expect(ids.length).toBeGreaterThan(0);
-			expect(ids.filter((id) => id.startsWith("ntf_") && purposes.some((purpose) => id === `ntf_${purpose}`))).toEqual([]);
 		});
 	});
 
@@ -824,7 +751,7 @@ describe("NotificationCenter", () => {
 					{
 						notifications: [legacyReady],
 						unreadCount: 1,
-						unresolvedCount: 1, unresolvedAskCount: 0,
+						unresolvedCount: 1,
 					},
 				],
 			},
@@ -876,7 +803,7 @@ describe("NotificationCenter", () => {
 	// A PR outcome describes work that already finished — there's no paused
 	// agent to resume, so a terminated session behind one should stay directly
 	// viewable instead of gated behind restore.
-	it("opens a terminated session directly for a PR notification that is not waiting on input, with no restore option", async () => {
+	it("opens a terminated session directly for a PR-outcome notification, with no restore option", async () => {
 		notificationQueryMock.mockImplementation((status: NotificationListStatus) =>
 			status === "all"
 				? {
@@ -891,7 +818,7 @@ describe("NotificationCenter", () => {
 											sessionId: "sess-dead",
 											projectId: "proj-1",
 											prUrl: "https://github.com/acme/app/pull/9",
-											type: "ready_to_merge",
+											type: "pr_merged",
 											title: "PR #9 merged",
 											body: "The agent session has ended.",
 											status: "read",
@@ -900,7 +827,7 @@ describe("NotificationCenter", () => {
 										},
 									],
 									unreadCount: 0,
-									unresolvedCount: 0, unresolvedAskCount: 0,
+									unresolvedCount: 0,
 								},
 							],
 						},
@@ -912,7 +839,7 @@ describe("NotificationCenter", () => {
 
 		expect(screen.queryByRole("button", { name: "Restore session" })).not.toBeInTheDocument();
 
-		await userEvent.click(screen.getByText(/PR from session Old PR is ready to merge/));
+		await userEvent.click(screen.getByText("The agent session has ended."));
 		expect(restoreSessionMock).not.toHaveBeenCalled();
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
@@ -1181,37 +1108,5 @@ describe("NotificationCenter cloud rows", () => {
 		expect(screen.getByText("acme/cloud#8 is ready to merge.")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
 		expect(refetch).toHaveBeenCalledTimes(1);
-	});
-});
-
-describe("NotificationCenter human requests", () => {
-	const pending = {
-		id: "hr-1", kind: "conversation_settings", sessionId: "sess-1", requester: { kind: "session" as const, sessionId: "sess-9" },
-		summary: "Change Checkout flow (sess-1): model to m-b.", changes: [{ field: "model", from: "m-a", to: "m-b" }], payloadHash: "hash-1",
-		state: "pending" as const, createdAt: "2026-10-27T12:00:00Z", expiresAt: "2026-10-28T12:00:00Z",
-	};
-	const bellCount = () => Number(screen.getByRole("button", { name: /unread notifications/ }).getAttribute("aria-label")?.match(/^\d+/)?.[0]);
-
-	it("counts requests waiting for the person on the bell, and lists them at the top of the panel", async () => {
-		const plain = renderNotificationCenter();
-		const without = bellCount();
-		plain.unmount();
-
-		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-		client.setQueryData(humanRequestsQueryKey, [pending]);
-		renderNotificationCenter(client);
-		expect(bellCount()).toBe(without + 1);
-		await clickOpen();
-		const section = screen.getByRole("region", { name: "Requests waiting for your approval" });
-		expect(section).toHaveTextContent("Change Checkout flow (sess-1): model to m-b.");
-		expect(section).toHaveTextContent("Requested by session sess-9");
-		const dialog = screen.getByRole("dialog", { name: "Notifications" });
-		expect(dialog.firstElementChild?.nextElementSibling).toBe(section);
-	});
-
-	it("shows no section and adds nothing to the bell when nothing is waiting", async () => {
-		renderNotificationCenter();
-		await clickOpen();
-		expect(screen.queryByRole("region", { name: "Requests waiting for your approval" })).not.toBeInTheDocument();
 	});
 });

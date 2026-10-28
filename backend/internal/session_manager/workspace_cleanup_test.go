@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func newCleanupFixture(t *testing.T, command string) (*Manager, *fakeStore, *fakeWorkspace, domain.SessionRecord) {
@@ -213,20 +211,6 @@ func TestCleanupReportsOnlyStepAndExitStatus(t *testing.T) {
 	}
 }
 
-// An archive failure is still a refusal (ErrWorkspaceDirty) but must not be reported
-// as "uncommitted changes", and the report must not carry the internal path.
-func TestCleanupSkipReasonDistinguishesAnArchiveFailureFromUncommittedChanges(t *testing.T) {
-	archiveFailure := fmt.Errorf("gitworktree: refusing to remove %q: %w", "/private/ws/mer-1",
-		errors.Join(ports.ErrWorkspaceDirty, ports.ErrWorkspaceSecretsNotArchived))
-	got := cleanupSkipReason(archiveFailure)
-	if !strings.Contains(got, "secret files (.env*) could not be archived") || strings.Contains(got, "/private/ws") || strings.Contains(got, "uncommitted") {
-		t.Fatalf("archive failure reported as %q", got)
-	}
-	if got := cleanupSkipReason(fmt.Errorf("refusing: %w", ports.ErrWorkspaceDirty)); got != "workspace has uncommitted changes" {
-		t.Fatalf("a dirty worktree must keep its reason, got %q", got)
-	}
-}
-
 func TestCleanupFiltersReservedProjectEnvironment(t *testing.T) {
 	t.Setenv("AO_TEST_RESERVED", "inherited")
 	command := "printf '%s\\n' \"$AO_TEST_RESERVED\" \"$AO_WORKTREE_PATH\" \"$PROJECT_VALUE\" > env-check"
@@ -377,9 +361,9 @@ func TestRequestKillCleanupFailureRemainsRetryable(t *testing.T) {
 // A Cleanup step runs without a limit unless it sets one; one that sets one
 // is stopped at it and reported as timed out, keeping the worktree.
 func TestCleanupStepUsesItsOwnTimeLimit(t *testing.T) {
-	previous := scriptStepTimeUnit
-	scriptStepTimeUnit = 100 * time.Millisecond
-	t.Cleanup(func() { scriptStepTimeUnit = previous })
+	previous := scriptStepMinute
+	scriptStepMinute = 100 * time.Millisecond
+	t.Cleanup(func() { scriptStepMinute = previous })
 	slow := "sleep 2"
 	if runtime.GOOS == "windows" {
 		slow = "ping -n 3 127.0.0.1 > NUL"
@@ -398,9 +382,9 @@ func TestCleanupStepUsesItsOwnTimeLimit(t *testing.T) {
 // A step that exits cleanly at the very moment its limit expires succeeded and
 // must not be reported as timed out.
 func TestCleanupStepSucceedingAtItsDeadlineIsNotATimeout(t *testing.T) {
-	previousMinute, previousRun := scriptStepTimeUnit, runCleanupStep
-	scriptStepTimeUnit = 20 * time.Millisecond
-	t.Cleanup(func() { scriptStepTimeUnit, runCleanupStep = previousMinute, previousRun })
+	previousMinute, previousRun := scriptStepMinute, runCleanupStep
+	scriptStepMinute = 20 * time.Millisecond
+	t.Cleanup(func() { scriptStepMinute, runCleanupStep = previousMinute, previousRun })
 	runCleanupStep = func(ctx context.Context, _, _ string, _ map[string]string, _ io.Writer) error {
 		<-ctx.Done()
 		return nil

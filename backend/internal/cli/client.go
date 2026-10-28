@@ -10,11 +10,9 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
@@ -202,17 +200,6 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	}
 	if sideID := os.Getenv("AO_SIDE_CONVERSATION_ID"); sideID != "" {
 		req.Header.Set("X-AO-Side-Conversation", sideID)
-	}
-	// A session's identity: the proof the daemon put in its environment at launch. It is set
-	// after the caller's headers so nothing a command passes can replace it, and it only ever
-	// goes to the fixed loopback daemon URL above. Outside a session there is none.
-	if proof := identity.ProofFromEnv(os.Getenv); proof != "" {
-		req.Header.Set(identity.HeaderProof, proof)
-	} else if id := strings.TrimSpace(os.Getenv("AO_SESSION_ID")); id != "" {
-		// No proof (a session that has not been relaunched since proofs arrived): say which session
-		// this process believes it is. A CLAIM only: the daemon uses it to count the call and to
-		// prioritize that session's relaunch, and never as an identity.
-		req.Header.Set(identity.HeaderClaim, id)
 	}
 
 	// Reuse the injected client's transport (keeps it stubbable in tests) but

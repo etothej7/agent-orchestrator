@@ -5,7 +5,7 @@ import { setEventsConnectionState } from "./events-connection";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
-import { conversationQueryRoot, conversationSessionQueryKey, refreshRemoteConversation } from "../hooks/useConversation";
+import { conversationQueryKey, conversationQueryRoot, refreshRemoteConversation } from "../hooks/useConversation";
 import {
 	reviewerConversationQueryKey,
 	reviewerConversationQueryRoot,
@@ -263,9 +263,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					pendingEditorHandoffSessions.clear();
 				}
 				for (const sessionId of pendingConversationSessions) {
-					// Both audiences of the coordinator conversation: a reply that just became visible
-					// must reach whichever view is open, and the other must not come back stale.
-					invalidate(conversationSessionQueryKey(sessionId));
+					invalidate(conversationQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
 				for (const sessionId of pendingReviewSessions) {
@@ -359,18 +357,13 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 								? (decoded.payload as {
 										conversationId?: unknown;
 										reviewId?: unknown;
-										workspaceChanged?: unknown;
- interfaceTransitionId?: unknown;
+										interfaceTransitionId?: unknown;
 										kind?: unknown;
 										agentId?: unknown;
 										projectId?: unknown;
 								  })
 								: undefined;
-						if (typeof payload?.workspaceChanged === "string") {
- invalidate(["story-workspace"]);
- invalidate(["story-detail"]);
- }
- // A review run can start or finish without this window asking for
+						// A review run can start or finish without this window asking for
 						// it: an agent ran `ao review trigger`, auto-review fired, or a
 						// reviewer submitted. Refresh that session's reviews so the
 						// inspector shows it instead of a stale verdict.

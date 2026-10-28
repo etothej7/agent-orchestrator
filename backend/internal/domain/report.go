@@ -113,12 +113,9 @@ const (
 // ReportRecord is the durable report and outbox persistence shape. State and
 // outputs are independent, and neither changes authoritative session state.
 type ReportRecord struct {
-	RecipientSessionID SessionID
-	StoryID            string
-	ClientReportID     string
-	ID                 string
-	SessionID          SessionID
-	ProjectID          ProjectID
+	ID        string
+	SessionID SessionID
+	ProjectID ProjectID
 	// RecipientProjectID is set only for manager-to-coordinator reports. Empty
 	// preserves worker-to-project routing. ProjectID always identifies the source.
 	RecipientProjectID ProjectID

@@ -177,8 +177,6 @@ export type WorkspaceSession = {
 	branchNaming?: boolean;
 	/** Set while this launch runs a harness release an update replaced; it moves to `version` when idle. */
 	staleBinary?: SessionStaleBinary;
-	/** Set while this live session holds no identity proof, so it must be relaunched before it can prove who it is. */
-	needsIdentityRelaunch?: boolean;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** Whether the cloud worker has a current control-plane connection. */

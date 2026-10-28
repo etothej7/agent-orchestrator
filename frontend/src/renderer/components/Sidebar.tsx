@@ -1,6 +1,3 @@
-import { useCoordinationQuery } from "../hooks/useCoordinationQuery";
-import { useCoordinatorAskPending } from "../hooks/useCoordinatorAskPending";
-import { useOpenMainCoordinator } from "../hooks/useOpenMainCoordinator";
 import { useQueryClient } from "@tanstack/react-query";
 import { paidPlanBadge, useCloudBilling } from "../hooks/useCloudBilling";
 import { useTranslation } from "react-i18next";
@@ -29,7 +26,6 @@ import {
 	FolderOpen,
 	LogIn,
 	LogOut,
-	MessagesSquare,
 	MoreVertical,
 	PanelLeft,
 	Pencil,
@@ -83,6 +79,7 @@ import { hasTrustedApiBaseUrl } from "../lib/api-client";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { canResumeAgent, resumeAgentOnOpen, useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { cloudSessionsQueryKey, workspaceQueryKey, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { useCloudOffering } from "../hooks/useCloudOffering";
 import { conversationQueryKey, conversationQueryOptions } from "../hooks/useConversation";
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
@@ -548,8 +545,6 @@ function useSelection() {
 	);
 	return useMemo(() => ({
 		isHome: pathname === "/",
-		isWorkspace: pathname === "/workspace",
-		isTeam: pathname === "/team",
 		isAutomations: pathname === "/automations",
 		isArtifacts: pathname === "/artifacts",
 		activeRemoteHostId: params.hostId,
@@ -625,13 +620,6 @@ export function Sidebar({
 	const { t } = useTranslation();
 	const remoteNavigate = useNavigate();
 	const selection = useSelection();
-	const coordination = useCoordinationQuery();
-	const mainCoordinator = useOpenMainCoordinator(workspaces);
-	const mainCoordinatorNeedsYou = useCoordinatorAskPending(mainCoordinator.projectId);
-	const mainCoordinatorError = mainCoordinator.error;
-	useEffect(() => {
-		if (mainCoordinatorError) useUiStore.getState().showGlobalToast(t("workspace.mainCoordinatorOpenFailed"), mainCoordinatorError, "error");
-	}, [mainCoordinatorError, t]);
 	const { state, setOpen, toggleSidebar } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	// List behavior (force-open sections, lifted Show more caps) belongs to the
@@ -649,7 +637,12 @@ export function Sidebar({
 	const commandPaletteEnabled = useCommandPaletteEnabled();
 	const settingsPage = useSettingsPage();
 	const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
-	const artifactTotal = useMemo(() => artifactCount(groupArtifactsByProject(workspaces)), [workspaces]);
+	// Cloud projects count only while the control plane keeps artifacts, as on the Artifacts page.
+	const cloudArtifacts = useCloudOffering().artifacts;
+	const artifactTotal = useMemo(
+		() => artifactCount(groupArtifactsByProject(cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"))),
+		[cloudArtifacts, workspaces],
+	);
 	const existingProjectPaths = useMemo(
 		() => workspaces
 			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
@@ -808,8 +801,8 @@ export function Sidebar({
 	// gets its own Scratchpad section below the project list rather than a
 	// project row appended to the end of it.
 	const projectWorkspaces = useMemo(
-		() => orderedWorkspaces.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND && workspace.id !== coordination.data?.coordinatorProjectId),
-		[orderedWorkspaces, coordination.data?.coordinatorProjectId],
+		() => orderedWorkspaces.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND),
+		[orderedWorkspaces],
 	);
 	const standaloneWorkspace = useMemo(
 		() => workspaces.find((workspace) => workspace.kind === STANDALONE_PROJECT_KIND),
@@ -1029,22 +1022,6 @@ export function Sidebar({
 					</SidebarGroup>
 				) : null}
 				<SidebarMenu className="mb-3 gap-0.5 group-data-[collapsible=icon]:gap-1">
-					{mainCoordinator.projectId ? (
-						<SidebarMenuItem>
-							<SidebarTopNavRow
-								active={selection.activeProjectId === mainCoordinator.projectId}
-								attention={mainCoordinatorNeedsYou ? t("workspace.needsYou") : undefined}
-								disabled={mainCoordinator.busy}
-								icon={<MessagesSquare aria-hidden="true" />}
-								label={t("workspace.mainCoordinator")}
-								// Opens the running coordinator; with none (or a list still loading) Home is where one is started.
-								onClick={() => void mainCoordinator.open().then((outcome) => { if (outcome === "none") void remoteNavigate({ to: "/workspace" }); })}
-								tooltip={isCollapsed ? t("workspace.mainCoordinator") : undefined}
-							/>
-						</SidebarMenuItem>
-					) : null}
-					<SidebarMenuItem><SidebarTopNavRow active={selection.isWorkspace} icon={<FolderOpen aria-hidden="true" />} label={t("workspace.home")} onClick={() => void remoteNavigate({ to: "/workspace" })} tooltip={isCollapsed ? t("workspace.home") : undefined} /></SidebarMenuItem>
-					<SidebarMenuItem><SidebarTopNavRow active={selection.isTeam} icon={<User aria-hidden="true" />} label={t("workspace.team")} onClick={() => void remoteNavigate({ to: "/team" })} tooltip={isCollapsed ? t("workspace.team") : undefined} /></SidebarMenuItem>
 					<SidebarMenuItem>
 						<SidebarTopNavRow
 							active={selection.isAutomations}
@@ -3345,7 +3322,6 @@ function SectionDisclosure({
  * (NavRowHighlight pill, foreground text, instant) cannot drift apart. */
 function SidebarTopNavRow({
 	active = false,
-	attention,
 	disabled,
 	icon,
 	label,
@@ -3354,8 +3330,6 @@ function SidebarTopNavRow({
 	trailing,
 }: {
 	active?: boolean;
-	/** Something here needs the person; drawn as a dot and named in the accessible label. */
-	attention?: string;
 	disabled?: boolean;
 	icon: ReactNode;
 	label: string;
@@ -3365,7 +3339,7 @@ function SidebarTopNavRow({
 }) {
 	return (
 		<SidebarMenuButton
-			aria-label={attention ? `${label}, ${attention}` : label}
+			aria-label={label}
 			className={cn(
 				NAV_ROW_CLASS,
 				SIDEBAR_ROW_CLASS,
@@ -3388,9 +3362,6 @@ function SidebarTopNavRow({
 				<span className="sidebar-expanded-chrome relative z-[1] ml-auto shrink-0 font-sans text-caption text-passive group-data-[collapsible=icon]:hidden">
 					{trailing}
 				</span>
-			) : null}
-			{attention ? (
-				<span aria-hidden="true" className="relative z-[1] ml-auto size-2 shrink-0 rounded-full bg-status-needs-you group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:top-1" />
 			) : null}
 		</SidebarMenuButton>
 	);

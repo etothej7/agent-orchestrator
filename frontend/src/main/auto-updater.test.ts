@@ -497,39 +497,6 @@ describe("startAutoUpdates", () => {
     vi.resetModules();
   });
 
-  it.each([false, true])("blocks personal startup, preference changes and stale-stage downloads (enabled=%s)", async enabled => {
-    vi.useFakeTimers();
-    const timers = vi.spyOn(globalThis, "setInterval");
-    const staged = JSON.stringify({ version: "99.0.0", stagedAt: Date.now(), channel: "pr123", ready: false });
-    writeFileSync(nodePath.join(stateDir, "staged-update.json"), staged);
-    const settings: UpdateSettings = { enabled, channel: "latest", nightlyAck: false, feature: null };
-    const { module, autoUpdater, dialog, readUpdateSettings, writeUpdateSettings, statusMessages, startMacUpdateProgress } =
-      await importAutoUpdater(settings, { version: "0.14.5-ed.4", nativeReadyManually: true });
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
-    await module.ensureUpdatePrefs(stateDir);
-    await module.startAutoUpdates(stateDir);
-    await module.setUpdateSettings(stateDir, { ...settings, enabled: true });
-    await module.checkForUpdatesNow(stateDir, { requestId: "personal-check", settings: { ...settings, enabled: true } });
-    await module.returnToHome(stateDir, "personal-home");
-    await module.downloadUpdateNow("personal-download");
-    await expect(module.quitAndInstallUpdate("99.0.0")).rejects.toThrow("Personal builds are updated locally");
-    module.applyUpdaterPolicy({ ...settings, enabled: true });
-    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
-    expect(timers).not.toHaveBeenCalled();
-    expect(readUpdateSettings).not.toHaveBeenCalled();
-    expect(writeUpdateSettings).not.toHaveBeenCalled();
-    expect(dialog.showMessageBox).not.toHaveBeenCalled();
-    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
-    expect(autoUpdater.downloadUpdate).not.toHaveBeenCalled();
-    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
-    expect(startMacUpdateProgress).not.toHaveBeenCalled();
-    expect(autoUpdater.autoDownload).toBe(false);
-    expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
-    expect(statusMessages().at(-1)?.payload).toMatchObject({ state: "unsupported" });
-    expect(readFileSync(nodePath.join(stateDir, "staged-update.json"), "utf8")).toBe(staged);
-  });
-
   it("recovers a macOS ShipIt missing-file failure instead of retaining a ready update", async () => {
     const restore = stubProcess("darwin", "/usr/local/bin/node");
     try {

@@ -11,7 +11,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
@@ -102,8 +101,6 @@ type SubmitReviewInput struct {
 // ReviewsController owns the session-scoped /reviews routes. A nil Svc returns 501.
 type ReviewsController struct {
 	Svc reviewsvc.Manager
-	// Runs binds a verified reviewer to its own active run on submit. Nil refuses a reviewer.
-	Runs ReviewRunReader
 }
 
 // Register mounts the review routes on the supplied router.
@@ -200,7 +197,6 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := c.Svc.TriggerRequested(r.Context(), sessionID(r), reviewsvc.TriggerRequest{
-		StoryID:            in.StoryID,
 		Harness:            in.Harness,
 		Config:             in.AgentConfig,
 		Source:             domain.ReviewTriggerSource(strings.TrimSpace(in.Source)),
@@ -420,10 +416,6 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 			Body:           in.Body,
 			GithubReviewID: in.GithubReviewID,
 		})
-	}
-	if reason := submitterRefusal(r.Context(), sessionID(r), identity.FromContext(r.Context()), reviews, c.Runs); reason != "" {
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "REVIEW_SUBMIT_NOT_PERMITTED", reason, nil)
-		return
 	}
 	runs, err := c.Svc.SubmitMany(r.Context(), sessionID(r), reviews)
 	if err != nil {

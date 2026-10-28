@@ -10,7 +10,6 @@ import (
 	workeragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/reviewer/agentrestore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/identity"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -128,11 +127,8 @@ func codexReadOnlyArgs(inv ports.ReviewInvocation) ([]string, error) {
 		"AO_PORT":     os.Getenv("AO_PORT"),
 		"AO_DATA_DIR": firstNonEmpty(inv.DataDir, os.Getenv("AO_DATA_DIR")),
 		"AO_RUN_FILE": firstNonEmpty(inv.RunFilePath, os.Getenv("AO_RUN_FILE")),
-		// The reviewer's identity proof reaches `ao review submit` through a private file, not the
-		// filtered environment: only the file's PATH is placed on the command line (never the proof).
-		identity.EnvProofFile: inv.ProofFilePath,
 	}
-	for _, name := range []string{"AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE", identity.EnvProofFile} {
+	for _, name := range []string{"AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE"} {
 		value := values[name]
 		if value == "" {
 			continue

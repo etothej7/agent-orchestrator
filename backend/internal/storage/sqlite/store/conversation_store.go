@@ -789,9 +789,6 @@ func (s *Store) commitChatSpawn(
 		if rows != 1 {
 			return fmt.Errorf("move conversation head: conversation %s not found", branch.ConversationID)
 		}
-		if err := moveUndispatchedIntakeTx(ctx, q, rec.ID, branch); err != nil {
-			return err
-		}
 		if prepare != nil {
 			// Provider-event projection is fenced by controller generation. Stage
 			// that generation only inside this transaction, after the new branch is
@@ -817,29 +814,6 @@ func (s *Store) commitChatSpawn(
 		}
 		return nil
 	})
-}
-
-// moveUndispatchedIntakeTx hands the session's queued, never-dispatched turns
-// to the fresh provider boundary. They will run on that provider, and native
-// replay only correlates turns inside the active provider scope; left on the
-// parent branch, a restart would import the replayed prompt a second time.
-func moveUndispatchedIntakeTx(ctx context.Context, q *gen.Queries, session domain.SessionID, branch domain.ConversationBranch) error {
-	if err := q.MoveUndispatchedTurnMessagesToBranch(ctx, gen.MoveUndispatchedTurnMessagesToBranchParams{
-		BranchID: branch.ID, ConversationID: branch.ConversationID, ParentBranchID: branch.ParentBranchID, SessionID: session,
-	}); err != nil {
-		return fmt.Errorf("move undispatched intake messages: %w", err)
-	}
-	if err := q.MoveUndispatchedTurnActivitiesToBranch(ctx, gen.MoveUndispatchedTurnActivitiesToBranchParams{
-		BranchID: branch.ID, ConversationID: branch.ConversationID, ParentBranchID: branch.ParentBranchID, SessionID: session,
-	}); err != nil {
-		return fmt.Errorf("move undispatched intake activities: %w", err)
-	}
-	if err := q.MoveUndispatchedTurnsToBranch(ctx, gen.MoveUndispatchedTurnsToBranchParams{
-		BranchID: branch.ID, ConversationID: branch.ConversationID, ParentBranchID: branch.ParentBranchID, SessionID: session,
-	}); err != nil {
-		return fmt.Errorf("move undispatched intake turns: %w", err)
-	}
-	return nil
 }
 
 // ConversationBranch reads one branch and reports whether it is active.
@@ -1195,16 +1169,6 @@ func (s *Store) HasConversationTurns(ctx context.Context, conversationID string)
 	return hasTurns, nil
 }
 
-// SessionHasOpenTurn reports whether the session still has queued or running
-// chat work, regardless of the activity state its provider has reported yet.
-func (s *Store) SessionHasOpenTurn(ctx context.Context, session domain.SessionID) (bool, error) {
-	open, err := s.qr.SessionHasOpenConversationTurn(ctx, session)
-	if err != nil {
-		return false, fmt.Errorf("check open turns for %s: %w", session, err)
-	}
-	return open, nil
-}
-
 // LatestConversationTurn reads the latest non-rolled-back turn on the active
 // branch lineage without loading messages or activities.
 func (s *Store) LatestConversationTurn(ctx context.Context, conversationID string) (domain.ConversationTurn, error) {
@@ -1440,12 +1404,6 @@ func (s *Store) appendUserMessage(
 		}); err != nil {
 			return err
 		}
-		if msg.Origin == domain.MessageOriginHuman && msg.SenderSessionID == "" {
-			if err := q.InsertCoordinatorHumanMessage(ctx, gen.InsertCoordinatorHumanMessageParams{MessageID: msg.ID, Purpose: "human_request"}); err != nil {
-				return err
-			}
-		}
-
 		interactionAt := msg.InteractionAt
 		if interactionAt.IsZero() {
 			interactionAt = now
@@ -3559,16 +3517,6 @@ func (s *Store) LoadConversationSnapshotPage(
 	beforeSequence int64,
 	limit int64,
 ) (ConversationSnapshot, error) {
-	return s.loadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit, 0)
-}
-
-// LoadCoordinatorHumanSnapshotPage applies the public audience before LIMIT so
-// internal turns cannot displace human messages or create empty visible pages.
-func (s *Store) LoadCoordinatorHumanSnapshotPage(ctx context.Context, conversationID string, beforeSequence, limit int64) (ConversationSnapshot, error) {
-	return s.loadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit, 1)
-}
-
-func (s *Store) loadConversationSnapshotPage(ctx context.Context, conversationID string, beforeSequence, limit, humanOnly int64) (ConversationSnapshot, error) {
 	conv, err := s.qr.SelectConversationByID(ctx, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationSnapshot{}, ErrConversationNotFound
@@ -3621,7 +3569,6 @@ func (s *Store) loadConversationSnapshotPage(ctx context.Context, conversationID
 	fetchLimit := limit + 1
 
 	messageRows, err := s.qr.SelectConversationMessagesPage(ctx, gen.SelectConversationMessagesPageParams{
-		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		BeforeSequence: beforeSequence,
 		PageLimit:      fetchLimit,
@@ -3630,7 +3577,6 @@ func (s *Store) loadConversationSnapshotPage(ctx context.Context, conversationID
 		return ConversationSnapshot{}, fmt.Errorf("select message page: %w", err)
 	}
 	activityRows, err := s.qr.SelectConversationActivitiesPage(ctx, gen.SelectConversationActivitiesPageParams{
-		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		BeforeSequence: beforeSequence,
 		PageLimit:      fetchLimit,
@@ -3667,7 +3613,6 @@ func (s *Store) loadConversationSnapshotPage(ctx context.Context, conversationID
 	}
 
 	turnRows, err := s.qr.SelectConversationTurnsPage(ctx, gen.SelectConversationTurnsPageParams{
-		HumanOnly:      humanOnly,
 		ConversationID: conversationID,
 		OldestSequence: oldest,
 		BeforeSequence: beforeSequence,

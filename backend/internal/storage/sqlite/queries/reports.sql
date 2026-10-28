@@ -1,9 +1,9 @@
 -- name: CreateReport :one
 INSERT INTO reports (
     id, session_id, project_id, state, note, message, created_at, available_at,
-    settlement_deadline, repeat_count, recipient_project_id, story_id, client_report_id
+    settlement_deadline, repeat_count, recipient_project_id
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: CreateReportOutput :exec
@@ -121,8 +121,3 @@ UPDATE reports
 SET delivery_state = 'pending', claim_token = '', claimed_at = NULL,
     last_error = 'delivery claim recovered after daemon restart'
 WHERE delivery_state = 'claimed';
-
--- name: SetReportBatchRecipient :execrows
-UPDATE reports SET recipient_session_id=sqlc.arg(recipient_session_id)
-WHERE COALESCE(recipient_project_id,project_id)=sqlc.arg(project_id)
-AND claim_token=sqlc.arg(claim_token) AND delivery_state='claimed';

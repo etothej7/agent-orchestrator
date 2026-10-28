@@ -24,7 +24,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/testparent"
 )
 
 func TestMain(m *testing.M) {
@@ -42,7 +41,7 @@ func TestMain(m *testing.M) {
 		if len(os.Args) <= separator || os.Args[separator] != "--" {
 			os.Exit(2)
 		}
-		err := persistenthost.Run(testparent.Context(), persistenthost.Config{
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
 			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
 			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
 			OwnershipFingerprint: fingerprint,
@@ -1250,7 +1249,7 @@ func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 			return Launch{Command: "fake"}, nil
 		},
 		SessionMeta: func(cfg LaunchConfig) map[string]any {
-			return map[string]any{"systemPrompt": map[string]any{"append": cfg.SystemPrompt}}
+			return map[string]any{"systemPrompt": map[string]any{"append": cfg.SystemPrompt}, "disableTools": cfg.DisableTools}
 		},
 		SessionMode: func(permission ports.PermissionMode) string {
 			if permission == ports.PermissionModeAcceptEdits {
@@ -1268,7 +1267,7 @@ func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 	driver.useTestProcess(fakeSpawn(agent))
 
 	conversation, err := driver.Start(context.Background(), ports.ChatStartConfig{
-		WorkspacePath: t.TempDir(), SystemPrompt: "AO instructions",
+		WorkspacePath: t.TempDir(), SystemPrompt: "AO instructions", DisableTools: true,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1282,6 +1281,9 @@ func TestACPDriverDefersPromptUntilDurableTurnBinding(t *testing.T) {
 	agent.mu.Unlock()
 	if meta["systemPrompt"] == nil {
 		t.Fatal("session/new did not receive provider metadata")
+	}
+	if meta["disableTools"] != true {
+		t.Fatal("session/new did not receive the background tool restriction")
 	}
 
 	// Consume controller.ready from session setup.
@@ -1789,8 +1791,16 @@ func runOneTurn(t *testing.T, agent *fakeAgent, conv ports.ChatConversation, tex
 	if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 		t.Fatalf("StartDeferredTurn: %v", err)
 	}
+	// The turn is released only after it completes, just before the driver
+	// announces it is ready; wait for that, as a caller sending the next turn
+	// must, or the next SendTurn can find the turn still in flight.
+	completed := false
 	for {
-		if event := nextEvent(t, conv.Events()); event.Kind == ports.ChatEventTurnCompleted {
+		event := nextEvent(t, conv.Events())
+		if event.Kind == ports.ChatEventTurnCompleted {
+			completed = true
+		}
+		if completed && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerReady {
 			break
 		}
 	}

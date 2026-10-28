@@ -475,7 +475,6 @@ func (m *Manager) resumeChatController(
 	project domain.ProjectRecord,
 	ws ports.WorkspaceInfo,
 	requireNativeHistory bool,
-	neverFresh bool,
 	reconnectOnly bool,
 	controllerGeneration string,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
@@ -498,6 +497,9 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err)
 	}
 	agentConfig := restoredAgentConfig(rec, project.Config)
+	if rec.Metadata.Permissions != "" {
+		agentConfig.Permissions = rec.Metadata.Permissions
+	}
 	additionalDirectories, err := m.restoredWorkspaceProjectDirectories(ctx, rec, project, ws.Path)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err)
@@ -517,8 +519,7 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
-	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && !neverFresh &&
-		m.providerNeverPersisted(ctx, rec)
+	freshIfMissing := !requireNativeHistory && !reconnectOnly && providerHandoff == nil && m.providerNeverPersisted(ctx, rec)
 	var awakeTarget *domain.AwakeAgentTarget
 	if len(awakeTargets) > 0 {
 		if len(awakeTargets) != 1 || !reconnectOnly || awakeTargets[0].SessionID != rec.ID || awakeTargets[0].Owner != rec.ControllerOwner() {
@@ -755,26 +756,4 @@ func (m *Manager) restoredWorkspaceProjectDirectories(
 		directories = append(directories, row.WorktreePath)
 	}
 	return directories, nil
-}
-
-// resumeOption is an explicit option of one resume, threaded through the whole chain
-// as a parameter. It is deliberately not a context value: a hand-off that rebuilt or
-// dropped the context (the failed-spawn retry, a background retry) would silently turn
-// a never-fresh resume back into one that may start fresh in place.
-type resumeOption func(*resumeSettings)
-
-type resumeSettings struct {
-	// neverFresh: continue the saved provider conversation or fail; never start a
-	// fresh one in its place, even for a conversation AO can prove never persisted.
-	neverFresh bool
-}
-
-func withNeverFresh() resumeOption { return func(s *resumeSettings) { s.neverFresh = true } }
-
-func resumeSettingsOf(opts []resumeOption) resumeSettings {
-	var s resumeSettings
-	for _, opt := range opts {
-		opt(&s)
-	}
-	return s
 }

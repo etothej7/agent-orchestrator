@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { meetsMinimumVersion, parseGoVersion, parseMinimumGoVersion, requiredDaemonGoVersion } from "./go-version.mjs";
+import { meetsMinimumVersion, parseGoVersion, parseMinimumGoVersion } from "./go-version.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(scriptsDir, "..");
@@ -14,19 +14,14 @@ const isWindowsDev = process.platform === "win32" && process.argv.includes("--de
 const windowsDevOutDir = join(outDir, `dev-${Date.now()}-${process.pid}`);
 const buildOutPath = isWindowsDev ? join(windowsDevOutDir, "ao.exe") : outPath;
 const windowsDevManifestPath = join(outDir, "dev-daemon.json");
-const goModMinimum = parseMinimumGoVersion(readFileSync(join(backendRoot, "go.mod"), "utf8"));
+const minimumGoVersion = parseMinimumGoVersion(readFileSync(join(backendRoot, "go.mod"), "utf8"));
 
-if (!goModMinimum) {
+if (!minimumGoVersion) {
 	console.error("Could not determine the required Go version from backend/go.mod.");
 	process.exit(1);
 }
 
-const minimumGoVersion = requiredDaemonGoVersion(goModMinimum);
-// Build with the Go release installed on this machine, never one fetched on the
-// fly: a newer go.mod must fail here instead of silently downloading a toolchain.
-const goEnv = { ...process.env, GOTOOLCHAIN: "local" };
-
-const versionResult = spawnSync("go", ["version"], { encoding: "utf8", windowsHide: true, env: goEnv });
+const versionResult = spawnSync("go", ["version"], { encoding: "utf8", windowsHide: true });
 if (versionResult.error) {
 	console.error(
 		`Go ${minimumGoVersion.join(".")}+ is required, but Go could not be started: ${versionResult.error.message}`,
@@ -58,7 +53,6 @@ if (isWindowsDev) {
 
 const result = spawnSync("go", ["build", "-o", buildOutPath, "./cmd/ao"], {
 	cwd: backendRoot,
-	env: goEnv,
 	stdio: "inherit",
 	windowsHide: true,
 });

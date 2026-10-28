@@ -1,9 +1,6 @@
 import type { BaseWindow, WebContents, WebContentsView } from "electron";
 
-type MainWindowHost = Pick<BaseWindow, "contentView" | "getContentBounds" | "isDestroyed" | "on" | "removeListener">;
-
-const windowResizeEvents = ["resize", "show", "restore", "enter-full-screen", "leave-full-screen"] as const;
-const windowRefreshEvents = ["show", "restore", "focus"] as const;
+type MainWindowHost = Pick<BaseWindow, "contentView" | "isDestroyed">;
 
 export type WebContentsViewConstructor = new (options: {
 	webPreferences: Electron.WebPreferences;
@@ -46,54 +43,28 @@ export function createWindowComposition(options: {
 	options.mainWindow.contentView.addChildView(shellView, 0);
 
 	let overlayOpen = false;
-	let disposed = false;
-	let surfaceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-	let surfaceRefreshRequest: ReturnType<typeof setTimeout> | undefined;
 	const resize = (): void => {
-		if (disposed || options.mainWindow.isDestroyed?.()) return;
-		const bounds = options.mainWindow.getContentBounds();
+		if (options.mainWindow.isDestroyed?.()) return;
+		const bounds = options.mainWindow.contentView.getBounds();
 		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
 		shellView.setVisible(true);
 	};
 	options.mainWindow.contentView.on("bounds-changed", resize);
-	// A native fullscreen/restore transition can miss the View notification or
-	// leave its bounds stale. Use the window's content dimensions and events so
-	// both rendering and hit testing follow the actual window size.
-	for (const event of windowResizeEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).on(event, resize);
 
 	// Force Chromium to rebuild the shell surface after reordering it. Identical
 	// bounds are ignored, so nudge by one pixel and restore on the next tick.
 	// The shell stays visible throughout; hiding either native view causes a flash.
 	const forceSurfaceRefresh = (): void => {
-		if (disposed || options.mainWindow.isDestroyed?.()) return;
-		const bounds = options.mainWindow.getContentBounds();
+		if (options.mainWindow.isDestroyed?.()) return;
+		const bounds = options.mainWindow.contentView.getBounds();
 		if (bounds.width <= 0 || bounds.height <= 0) return;
-		clearTimeout(surfaceRefreshTimer);
 		shellView.setBounds({ x: 0, y: 0, width: bounds.width, height: Math.max(1, bounds.height - 1) });
-		surfaceRefreshTimer = setTimeout(() => {
-			surfaceRefreshTimer = undefined;
-			if (disposed || options.mainWindow.isDestroyed?.()) return;
-			const current = options.mainWindow.getContentBounds();
+		setTimeout(() => {
+			if (options.mainWindow.isDestroyed?.()) return;
+			const current = options.mainWindow.contentView.getBounds();
 			shellView.setBounds({ x: 0, y: 0, width: current.width, height: current.height });
 		}, 0);
 	};
-	const requestSurfaceRefresh = (): void => {
-		if (disposed || options.mainWindow.isDestroyed?.()) return;
-		clearTimeout(surfaceRefreshRequest);
-		surfaceRefreshRequest = setTimeout(() => {
-			surfaceRefreshRequest = undefined;
-			forceSurfaceRefresh();
-		}, 0);
-	};
-	// Our load listener runs before showWhenRendererLoaded shows the window.
-	// Defer the nudge until after that show (and its resize callbacks), otherwise
-	// the hidden surface is refreshed and the show immediately undoes the nudge.
-	// Refresh on activation too: macOS can replace the surface when a background
-	// launch is first focused or a minimized window is restored.
-	if (options.platform === "darwin") {
-		shellView.webContents.on("did-finish-load", requestSurfaceRefresh);
-		for (const event of windowRefreshEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).on(event, requestSurfaceRefresh);
-	}
 
 	const placeShell = (open: boolean): void => {
 		if (open) {
@@ -138,13 +109,6 @@ export function createWindowComposition(options: {
 		restackShell,
 		resize,
 		dispose: () => {
-			if (disposed) return;
-			disposed = true;
-			clearTimeout(surfaceRefreshTimer);
-			clearTimeout(surfaceRefreshRequest);
-			shellView.webContents.removeListener("did-finish-load", requestSurfaceRefresh);
-			for (const event of windowRefreshEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).removeListener(event, requestSurfaceRefresh);
-			for (const event of windowResizeEvents) (options.mainWindow as Pick<NodeJS.EventEmitter, "on" | "removeListener">).removeListener(event, resize);
 			try {
 				// Reading `contentView` on an already-destroyed BaseWindow throws
 				// "Object has been destroyed". On window close the `closed` event

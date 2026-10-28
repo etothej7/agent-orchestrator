@@ -12,10 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
-	"github.com/aoagents/agent-orchestrator/backend/internal/terminalticket"
 )
 
 // terminalMuxReadLimit caps a single inbound frame. Client→server frames are small
@@ -27,17 +25,17 @@ const terminalMuxReadLimit = 1 << 20
 // is intentionally outside the per-request Timeout middleware (the connection is
 // long-lived). When mgr is nil the route is not mounted — the daemon simply has
 // no terminal surface yet.
-func mountTerminalMux(r chi.Router, mgr *terminal.Manager, log *slog.Logger, allowedOrigins []string, tickets *terminalticket.Store) {
+func mountTerminalMux(r chi.Router, mgr *terminal.Manager, log *slog.Logger, allowedOrigins []string) {
 	if mgr == nil {
 		return
 	}
-	r.Get("/mux", terminalMuxHandler(mgr, log, allowedOrigins, tickets))
+	r.Get("/mux", terminalMuxHandler(mgr, log, allowedOrigins))
 }
 
 // terminalMuxHandler upgrades the request to a WebSocket and hands the connection to the
 // terminal manager. httpd owns only the upgrade and the transport adaptation;
 // all stream logic lives in internal/terminal.
-func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger, allowedOrigins []string, tickets *terminalticket.Store) http.HandlerFunc {
+func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger, allowedOrigins []string) http.HandlerFunc {
 	allowed := exactAllowedOrigins(allowedOrigins)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !terminalMuxRequestAllowed(r, allowed) {
@@ -46,16 +44,9 @@ func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger, allowedOrigins 
 			envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "ORIGIN_FORBIDDEN", "Origin is not allowed to attach terminals", nil)
 			return
 		}
-		// Attaching a terminal means typing into the person's shells and agent terminals. On the loopback
-		// listener of a daemon the app started, that takes a ticket only the app could have asked for (a signed
-		// POST); a LAN client has already proved itself with the connection password.
-		if tickets != nil && !requestscope.IsLAN(r.Context()) && !tickets.Redeem(ticketFromSubprotocols(r)) {
-			envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "TERMINAL_TICKET_REQUIRED", "Attaching a terminal needs a ticket from the AO app", nil)
-			return
-		}
 		// The explicit exact-origin check above supports app://renderer and the
 		// authenticated native mobile Origin, unlike the library's same-host rule.
-		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true, Subprotocols: []string{terminalticket.Subprotocol}})
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			log.Warn("terminal mux: websocket upgrade failed", "err", err)
 			return
@@ -63,19 +54,6 @@ func terminalMuxHandler(mgr *terminal.Manager, log *slog.Logger, allowedOrigins 
 		c.SetReadLimit(terminalMuxReadLimit)
 		mgr.Serve(r.Context(), &terminalMuxConn{c: c})
 	}
-}
-
-// ticketFromSubprotocols reads the ticket the client offered as the subprotocol "ao.ticket.<ticket>". It is never
-// read from the URL, where it would end up in logs and history.
-func ticketFromSubprotocols(r *http.Request) string {
-	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
-		for _, offered := range strings.Split(header, ",") {
-			if ticket, ok := strings.CutPrefix(strings.TrimSpace(offered), terminalticket.SubprotocolPrefix); ok {
-				return ticket
-			}
-		}
-	}
-	return ""
 }
 
 // terminalMuxConn adapts a coder/websocket connection to terminal.wsConn. JSON framing

@@ -245,7 +245,6 @@ type RestoreReviewerResult struct {
 // TriggerOptions selects the reviewer, its surface, and the same-commit policy
 // for one trigger.
 type TriggerOptions struct {
-	StoryID string
 	// Harness and Config override the resolved reviewer for this pass only.
 	Harness domain.ReviewerHarness
 	Config  domain.AgentConfig
@@ -354,33 +353,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
 	if err != nil {
 		return TriggerResult{}, err
-	}
-
-	if opts.StoryID != "" {
-		reader, ok := e.sessions.(interface {
-			GetStory(stdctx.Context, string) (domain.Story, error)
-		})
-		if !ok {
-			return TriggerResult{}, fmt.Errorf("%w: story reader unavailable", ErrInvalid)
-		}
-		story, err := reader.GetStory(ctx, opts.StoryID)
-		if err != nil {
-			return TriggerResult{}, err
-		}
-		linked := false
-		for _, a := range story.Assignments {
-			linked = linked || (a.SessionID == workerID && a.Role == "worker")
-		}
-		if !linked {
-			return TriggerResult{}, fmt.Errorf("%w: worker is not assigned to this story", ErrInvalid)
-		}
-		for _, run := range runs {
-			for _, pr := range prs {
-				if run.PRURL == pr.URL && run.StoryID != opts.StoryID {
-					return TriggerResult{}, fmt.Errorf("%w: existing review belongs to a different story; use its original context", ErrInvalid)
-				}
-			}
-		}
 	}
 
 	if err := overrideConfig.Validate(); err != nil {
@@ -530,7 +502,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			batchID = e.newID()
 		}
 		run := domain.ReviewRun{
-			StoryID:       opts.StoryID,
 			ID:            e.newID(),
 			ReviewID:      reviewRow.ID,
 			SessionID:     workerID,

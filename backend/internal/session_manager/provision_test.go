@@ -106,13 +106,9 @@ func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
-		EnvUICapabilityStdin:        "1",
 	})
 	if env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
 		t.Fatalf("daemon browser runtime credentials leaked to worker: token=%q stdin=%q", env[EnvBrowserRuntimeToken], env[EnvBrowserRuntimeTokenStdin])
-	}
-	if env[EnvUICapabilityStdin] != "" {
-		t.Fatalf("the daemon-only human-capability marker leaked to worker: %q", env[EnvUICapabilityStdin])
 	}
 }
 
@@ -873,9 +869,9 @@ func TestResolveClaudeFamilyAliasUsesNewestModelEfforts(t *testing.T) {
 // A Setup step runs with the time limit its first line sets, which never
 // reaches the shell, and a step over it fails saying so.
 func TestRunPostCreateUsesEachStepsTimeLimit(t *testing.T) {
-	previous := scriptStepTimeUnit
-	scriptStepTimeUnit = 100 * time.Millisecond
-	t.Cleanup(func() { scriptStepTimeUnit = previous })
+	previous := scriptStepMinute
+	scriptStepMinute = 100 * time.Millisecond
+	t.Cleanup(func() { scriptStepMinute = previous })
 	workspace := t.TempDir()
 	write := "echo ran > out.txt"
 	slow := "sleep 2"
